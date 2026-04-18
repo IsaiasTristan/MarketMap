@@ -1,0 +1,226 @@
+// MarketMap — PostgreSQL schema
+// See docs/ARCHITECTURE.md for entity relationships and job flow.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- Enums ---
+
+enum RowLevel {
+  SECTOR
+  SUB_THEME
+  COMPANY
+}
+
+enum MetricKind {
+  RETURN
+  EXCESS_RETURN
+  VOLATILITY
+  SHARPE
+}
+
+enum Horizon {
+  D1
+  D5
+  M1
+  M3
+  M6
+  Y1
+}
+
+enum BenchmarkCode {
+  SP500
+  NASDAQ
+  DOW
+}
+
+enum RefreshJobType {
+  MARKET_DATA
+  BENCHMARK
+  ANALYTICS
+}
+
+enum RefreshJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+// --- Core reference ---
+
+model Universe {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  constituents UniverseConstituent[]
+  analyticsSnapshots AnalyticsSnapshot[]
+}
+
+/// One row per ticker in a universe; hierarchy fields drive map + rollups.
+model UniverseConstituent {
+  id          String   @id @default(cuid())
+  universeId  String
+  securityId  String
+  sector      String
+  subTheme    String
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  universe  Universe @relation(fields: [universeId], references: [id], onDelete: Cascade)
+  security  Security @relation(fields: [securityId], references: [id], onDelete: Restrict)
+
+  @@unique([universeId, securityId])
+  @@index([universeId, sector])
+  @@index([universeId, subTheme])
+}
+
+/// Normalized tradable / listed instrument (equity or benchmark proxy).
+model Security {
+  id        String   @id @default(cuid())
+  ticker    String   @unique // uppercase normalized in app layer
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  priceHistory       PriceHistory[]
+  universeRows       UniverseConstituent[]
+  portfolioHoldings  PortfolioHolding[]
+  factorSnapshots    FactorExposureSnapshot[]
+}
+
+model PriceHistory {
+  id          String   @id @default(cuid())
+  securityId  String
+  tradeDate   DateTime @db.Date
+  adjClose    Decimal  @db.Decimal(20, 8)
+  // optional raw fields for future use
+  close       Decimal? @db.Decimal(20, 8)
+  volume      BigInt?
+
+  security Security @relation(fields: [securityId], references: [id], onDelete: Cascade)
+
+  @@unique([securityId, tradeDate])
+  @@index([tradeDate])
+}
+
+model Benchmark {
+  id           String         @id @default(cuid())
+  code         BenchmarkCode  @unique
+  displayName  String
+  proxyTicker  String // e.g. ^GSPC — also stored as Security if we ingest as series
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  priceHistory         BenchmarkPriceHistory[]
+  analyticsMetricCells AnalyticsMetricCell[]
+}
+
+model BenchmarkPriceHistory {
+  id           String   @id @default(cuid())
+  benchmarkId  String
+  tradeDate    DateTime @db.Date
+  adjClose     Decimal  @db.Decimal(20, 8)
+
+  benchmark Benchmark @relation(fields: [benchmarkId], references: [id], onDelete: Cascade)
+
+  @@unique([benchmarkId, tradeDate])
+  @@index([tradeDate])
+}
+
+// --- Portfolio ---
+
+model Portfolio {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  holdings           PortfolioHolding[]
+  factorSnapshots    FactorExposureSnapshot[]
+}
+
+model PortfolioHolding {
+  id          String  @id @default(cuid())
+  portfolioId String
+  securityId  String
+  weight      Decimal @db.Decimal(10, 8) // 0–1 in application; enforce in service
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  security  Security  @relation(fields: [securityId], references: [id], onDelete: Restrict)
+
+  @@unique([portfolioId, securityId])
+}
+
+// --- Analytics & factors ---
+
+/// Roll-up of a market-map or similar analytics run for caching and audit.
+model AnalyticsSnapshot {
+  id               String    @id @default(cuid())
+  universeId       String
+  asOfTradeDate    DateTime? @db.Date // latest common date used in calcs
+  methodologyLabel String    // e.g. version string for Sharpe/r_f
+  createdAt        DateTime  @default(now())
+
+  universe Universe           @relation(fields: [universeId], references: [id], onDelete: Cascade)
+  cells    AnalyticsMetricCell[]
+}
+
+model AnalyticsMetricCell {
+  id              String       @id @default(cuid())
+  snapshotId      String
+  rowLevel        RowLevel
+  rowKey          String // sector name, sub-theme, or ticker
+  metric          MetricKind
+  horizon         Horizon
+  benchmarkId     String?      // for excess return vs benchmark; null for others
+  value           Decimal?     @db.Decimal(20, 10) // null if undefined (e.g. missing data)
+
+  snapshot  AnalyticsSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  benchmark Benchmark?        @relation(fields: [benchmarkId], references: [id], onDelete: SetNull)
+
+  @@index([snapshotId, rowLevel, metric])
+}
+
+model FactorExposureSnapshot {
+  id          String   @id @default(cuid())
+  securityId  String?  // null if portfolio-level factor model later
+  portfolioId String?
+  asOfDate    DateTime @db.Date
+  modelName   String
+  factorsJson Json     // { "marketBeta": ..., "size": ..., ... }
+  createdAt   DateTime @default(now())
+
+  security Security? @relation(fields: [securityId], references: [id], onDelete: Cascade)
+  portfolio Portfolio? @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@index([asOfDate])
+  @@index([securityId])
+  @@index([portfolioId])
+}
+
+// --- Operations ---
+
+model RefreshJob {
+  id          String             @id @default(cuid())
+  type        RefreshJobType
+  status      RefreshJobStatus   @default(PENDING)
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  errorMessage String?
+  metadata    Json?
+  createdAt   DateTime           @default(now())
+
+  @@index([status, createdAt])
+}

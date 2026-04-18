@@ -1,0 +1,48 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  color: #0f1419;
+  background: #f5f6f8;
+}
+
+.appBody {
+  min-height: 100vh;
+}
+
+main.shell {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem 4rem;
+}
+
+h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem;
+}
+
+p {
+  margin: 0.5rem 0 0.75rem;
+  color: #3d4a5c;
+}
+
+ul {
+  margin: 0.5rem 0 0.75rem;
+  padding-left: 1.25rem;
+  color: #3d4a5c;
+}
+
+code {
+  background: #e8eaef;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
