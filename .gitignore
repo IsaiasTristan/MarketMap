@@ -30,3 +30,6 @@ prisma/migrations/*_migration_lock.toml
 # Test / coverage
 coverage
 .vitest
+
+# TypeScript
+*.tsbuildinfo

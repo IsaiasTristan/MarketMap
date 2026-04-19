@@ -1,5 +1,5 @@
-import { UniversePageClient } from "./UniversePageClient";
+import { redirect } from "next/navigation";
 
 export default function UniversePage() {
-  return <UniversePageClient />;
+  redirect("/market-map");
 }
