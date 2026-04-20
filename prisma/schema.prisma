@@ -91,13 +91,20 @@ model Security {
   ticker    String   @unique // uppercase normalized in app layer
   name      String
   isActive  Boolean  @default(true)
+  // Profile fields backfilled from Yahoo assetProfile
+  sector    String?
+  country   String?
+  currency  String?
+  assetClass String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   priceHistory       PriceHistory[]
   universeRows       UniverseConstituent[]
   portfolioHoldings  PortfolioHolding[]
+  portfolioPositions PortfolioPosition[]
   factorSnapshots    FactorExposureSnapshot[]
+  fundamentals       SecurityFundamentals[]
 }
 
 model PriceHistory {
@@ -148,19 +155,170 @@ model Portfolio {
   updatedAt DateTime @updatedAt
 
   holdings           PortfolioHolding[]
+  positions          PortfolioPosition[]
   factorSnapshots    FactorExposureSnapshot[]
+  stressRuns         StressScenarioRun[]
 }
 
 model PortfolioHolding {
-  id          String  @id @default(cuid())
+  id          String    @id @default(cuid())
   portfolioId String
   securityId  String
-  weight      Decimal @db.Decimal(10, 8) // 0–1 in application; enforce in service
+  weight      Decimal   @db.Decimal(10, 8) // 0–1 in application; enforce in service
+  shares      Decimal?  @db.Decimal(20, 8) // optional number of shares held
+  entryDate   DateTime? @db.Date           // optional position entry date
+  sector      String?                      // optional sector label override
 
   portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
   security  Security  @relation(fields: [securityId], references: [id], onDelete: Restrict)
 
   @@unique([portfolioId, securityId])
+}
+
+/// Lot-based position (shares + entry price) for portfolio analysis.
+/// Closed positions (closedAt set) drive trade statistics.
+model PortfolioPosition {
+  id          String   @id @default(cuid())
+  portfolioId String
+  securityId  String
+  shares      Decimal  @db.Decimal(20, 8)
+  entryPrice  Decimal  @db.Decimal(20, 8)
+  entryDate   DateTime @db.Date
+  sector      String?  // override; falls back to Security.sector
+  currency    String?  @default("USD")
+  notes       String?
+  // null = open; set on close
+  closedAt    DateTime? @db.Date
+  exitPrice   Decimal?  @db.Decimal(20, 8)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  security  Security  @relation(fields: [securityId], references: [id], onDelete: Restrict)
+
+  @@index([portfolioId, closedAt])
+  @@index([securityId])
+}
+
+/// Fundamental data per security per date (for factor scoring).
+model SecurityFundamentals {
+  id               String   @id @default(cuid())
+  securityId       String
+  asOfDate         DateTime @db.Date
+  marketCap        Decimal? @db.Decimal(30, 2)
+  bookToPrice      Decimal? @db.Decimal(20, 8)
+  earningsToPrice  Decimal? @db.Decimal(20, 8)
+  fcfYield         Decimal? @db.Decimal(20, 8)
+  roe              Decimal? @db.Decimal(20, 8)
+  grossMargin      Decimal? @db.Decimal(20, 8)
+  debtToEquity     Decimal? @db.Decimal(20, 8)
+  earningsStability Decimal? @db.Decimal(20, 8)
+  shortRatio       Decimal? @db.Decimal(20, 8)
+  createdAt        DateTime @default(now())
+
+  security Security @relation(fields: [securityId], references: [id], onDelete: Cascade)
+
+  @@unique([securityId, asOfDate])
+  @@index([asOfDate])
+}
+
+enum FactorCode {
+  MKT_RF
+  SMB
+  HML
+  RMW
+  CMA
+  MOM
+  RF
+}
+
+enum FactorSource {
+  FF     // official Fama-French published
+  PROXY  // ETF-based proxy (gap period)
+}
+
+/// Daily factor returns from the unified factor pipeline.
+model FactorReturnDaily {
+  id         String       @id @default(cuid())
+  tradeDate  DateTime     @db.Date
+  factorCode FactorCode
+  value      Decimal      @db.Decimal(20, 10) // already decimal (not pct)
+  source     FactorSource
+
+  @@unique([tradeDate, factorCode])
+  @@index([tradeDate])
+}
+
+/// Singleton status record for the factor data pipeline.
+model FactorPipelineStatus {
+  id               String   @id @default(cuid())
+  lastFrenchDate   DateTime? @db.Date
+  gapTradingDays   Int      @default(0)
+  activeProxiesJson Json    @default("{}")
+  lastRefreshAt    DateTime?
+  updatedAt        DateTime @updatedAt
+}
+
+/// Daily risk-free rate from FRED TB3MS (annualized).
+model RiskFreeRate {
+  id         String   @id @default(cuid())
+  tradeDate  DateTime @db.Date @unique
+  annualRate Decimal  @db.Decimal(10, 6) // e.g. 0.0525 = 5.25%
+
+  @@index([tradeDate])
+}
+
+/// Key-value application settings (singleton per key).
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+/// Append-only audit log for data changes.
+model AuditLog {
+  id          String   @id @default(cuid())
+  at          DateTime @default(now())
+  actor       String   @default("system")
+  action      String
+  payloadJson Json?
+
+  @@index([at])
+  @@index([action])
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+/// Generated alerts surfaced in Module 9.
+model Alert {
+  id          String        @id @default(cuid())
+  at          DateTime      @default(now())
+  severity    AlertSeverity
+  type        String        // "drawdown" | "stop_loss" | "factor_breach" | "crowding"
+  message     String
+  contextJson Json?
+  dismissedAt DateTime?
+
+  @@index([at, dismissedAt])
+}
+
+/// Cached historical scenario results per portfolio.
+model StressScenarioRun {
+  id           String   @id @default(cuid())
+  portfolioId  String
+  scenarioKey  String   // e.g. "2008_crisis" or "custom"
+  asOfDate     DateTime @db.Date
+  resultJson   Json
+  createdAt    DateTime @default(now())
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@unique([portfolioId, scenarioKey, asOfDate])
+  @@index([portfolioId])
 }
 
 // --- Analytics & factors ---

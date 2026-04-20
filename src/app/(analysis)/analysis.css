@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Background layers */
+  --bg-base: #0f1117;
+  --bg-surface: #1a1d27;
+  --bg-elevated: #222636;
+  --bg-border: #2e3347;
+
+  /* Text */
+  --text-primary: #e8eaf0;
+  --text-secondary: #8b92a8;
+  --text-muted: #555e78;
+
+  /* Semantic colors */
+  --color-positive: #22c55e;
+  --color-negative: #ef4444;
+  --color-warning: #f59e0b;
+  --color-neutral: #6b7280;
+  --color-accent: #6366f1;
+  --color-info: #38bdf8;
+
+  /* Chart palette */
+  --chart-1: #6366f1;
+  --chart-2: #22c55e;
+  --chart-3: #f59e0b;
+  --chart-4: #38bdf8;
+  --chart-5: #e879f9;
+  --chart-6: #fb923c;
+}
+
+/* Analysis shell base styles */
+.analysis-shell {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  min-height: 100vh;
+  font-family: var(--font-inter), system-ui, sans-serif;
+}
+
+/* Numeric values always monospace */
+.num {
+  font-family: var(--font-jetbrains-mono), monospace;
+}
+
+/* Positive / negative coloring */
+.text-pos { color: var(--color-positive); }
+.text-neg { color: var(--color-negative); }
+.text-warn { color: var(--color-warning); }
+
+/* Card base */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-border);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+/* Scrollbar (webkit) */
+.analysis-shell ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.analysis-shell ::-webkit-scrollbar-track {
+  background: var(--bg-base);
+}
+.analysis-shell ::-webkit-scrollbar-thumb {
+  background: var(--bg-border);
+  border-radius: 3px;
+}

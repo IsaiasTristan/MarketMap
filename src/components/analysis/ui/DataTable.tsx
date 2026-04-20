@@ -1,0 +1,291 @@
+"use client";
+import { useState, useMemo } from "react";
+
+export interface Column<T> {
+  key: string;
+  label: string;
+  align?: "left" | "right" | "center";
+  render?: (row: T) => React.ReactNode;
+  sortValue?: (row: T) => number | string;
+  colorize?: (row: T) => "positive" | "negative" | "warning" | "neutral" | null;
+}
+
+interface DataTableProps<T> {
+  columns: Column<T>[];
+  rows: T[];
+  getRowKey: (row: T) => string;
+  searchable?: boolean;
+  searchFields?: (row: T) => string;
+  pageSize?: number;
+  exportFilename?: string;
+}
+
+function exportCsv<T>(columns: Column<T>[], rows: T[], filename: string) {
+  const header = columns.map((c) => c.label).join(",");
+  const body = rows
+    .map((row) =>
+      columns
+        .map((c) => {
+          const raw = c.render ? "" : (row as Record<string, unknown>)[c.key];
+          return `"${String(raw ?? "").replace(/"/g, '""')}"`;
+        })
+        .join(","),
+    )
+    .join("\n");
+  const blob = new Blob([header + "\n" + body], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || "export.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+const SEMANTIC: Record<string, string> = {
+  positive: "var(--color-positive)",
+  negative: "var(--color-negative)",
+  warning: "var(--color-warning)",
+  neutral: "var(--color-neutral)",
+};
+
+export function DataTable<T>({
+  columns,
+  rows,
+  getRowKey,
+  searchable = true,
+  searchFields,
+  pageSize = 25,
+  exportFilename = "export.csv",
+}: DataTableProps<T>) {
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [page, setPage] = useState(0);
+
+  const filtered = useMemo(() => {
+    if (!search || !searchFields) return rows;
+    const q = search.toLowerCase();
+    return rows.filter((r) => searchFields(r).toLowerCase().includes(q));
+  }, [rows, search, searchFields]);
+
+  const sorted = useMemo(() => {
+    if (!sortKey) return filtered;
+    const col = columns.find((c) => c.key === sortKey);
+    if (!col?.sortValue) return filtered;
+    return [...filtered].sort((a, b) => {
+      const av = col.sortValue!(a);
+      const bv = col.sortValue!(b);
+      const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [filtered, sortKey, sortDir, columns]);
+
+  const paged = useMemo(
+    () => sorted.slice(page * pageSize, (page + 1) * pageSize),
+    [sorted, page, pageSize],
+  );
+  const totalPages = Math.ceil(sorted.length / pageSize);
+
+  const handleSort = (key: string) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+    setPage(0);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {/* Controls */}
+      {(searchable || exportFilename) && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {searchable && (
+            <input
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(0);
+              }}
+              placeholder="Search…"
+              style={{
+                flex: 1,
+                padding: "6px 10px",
+                borderRadius: 6,
+                border: "1px solid var(--bg-border)",
+                background: "var(--bg-elevated)",
+                color: "var(--text-primary)",
+                fontSize: 12,
+                outline: "none",
+              }}
+            />
+          )}
+          <button
+            onClick={() => exportCsv(columns, sorted, exportFilename)}
+            style={{
+              padding: "6px 12px",
+              borderRadius: 6,
+              border: "1px solid var(--bg-border)",
+              background: "transparent",
+              color: "var(--text-secondary)",
+              cursor: "pointer",
+              fontSize: 12,
+            }}
+          >
+            ↓ CSV
+          </button>
+        </div>
+      )}
+
+      {/* Table */}
+      <div style={{ overflowX: "auto", borderRadius: 8, border: "1px solid var(--bg-border)" }}>
+        <table
+          style={{
+            width: "100%",
+            borderCollapse: "collapse",
+            fontSize: 13,
+          }}
+        >
+          <thead>
+            <tr
+              style={{
+                background: "var(--bg-elevated)",
+                position: "sticky",
+                top: 0,
+              }}
+            >
+              {columns.map((col) => (
+                <th
+                  key={col.key}
+                  onClick={() => col.sortValue && handleSort(col.key)}
+                  style={{
+                    padding: "10px 12px",
+                    textAlign: col.align ?? "left",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--text-secondary)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.04em",
+                    cursor: col.sortValue ? "pointer" : "default",
+                    whiteSpace: "nowrap",
+                    borderBottom: "1px solid var(--bg-border)",
+                    userSelect: "none",
+                  }}
+                >
+                  {col.label}
+                  {sortKey === col.key && (
+                    <span style={{ marginLeft: 4, fontSize: 10 }}>
+                      {sortDir === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {paged.map((row, i) => (
+              <tr
+                key={getRowKey(row)}
+                style={{
+                  background: i % 2 === 0 ? "var(--bg-surface)" : "var(--bg-base)",
+                  borderBottom: "1px solid var(--bg-border)",
+                  transition: "background 0.1s",
+                }}
+                onMouseEnter={(e) =>
+                  ((e.currentTarget as HTMLTableRowElement).style.background =
+                    "var(--bg-elevated)")
+                }
+                onMouseLeave={(e) =>
+                  ((e.currentTarget as HTMLTableRowElement).style.background =
+                    i % 2 === 0 ? "var(--bg-surface)" : "var(--bg-base)")
+                }
+              >
+                {columns.map((col) => {
+                  const colorKey = col.colorize?.(row);
+                  const cellColor = colorKey ? SEMANTIC[colorKey] : undefined;
+                  return (
+                    <td
+                      key={col.key}
+                      style={{
+                        padding: "8px 12px",
+                        textAlign: col.align ?? "left",
+                        color: cellColor ?? "var(--text-primary)",
+                        fontFamily:
+                          col.align === "right"
+                            ? "var(--font-jetbrains-mono, monospace)"
+                            : undefined,
+                      }}
+                    >
+                      {col.render
+                        ? col.render(row)
+                        : String(
+                            (row as Record<string, unknown>)[col.key] ?? "",
+                          )}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+            {paged.length === 0 && (
+              <tr>
+                <td
+                  colSpan={columns.length}
+                  style={{
+                    padding: 24,
+                    textAlign: "center",
+                    color: "var(--text-muted)",
+                    fontSize: 13,
+                  }}
+                >
+                  No data
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            {page * pageSize + 1}–{Math.min((page + 1) * pageSize, sorted.length)} of{" "}
+            {sorted.length}
+          </span>
+          <button
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            disabled={page === 0}
+            style={{
+              padding: "3px 8px",
+              borderRadius: 4,
+              border: "1px solid var(--bg-border)",
+              background: "transparent",
+              color: page === 0 ? "var(--text-muted)" : "var(--text-secondary)",
+              cursor: page === 0 ? "not-allowed" : "pointer",
+              fontSize: 12,
+            }}
+          >
+            ←
+          </button>
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+            disabled={page >= totalPages - 1}
+            style={{
+              padding: "3px 8px",
+              borderRadius: 4,
+              border: "1px solid var(--bg-border)",
+              background: "transparent",
+              color:
+                page >= totalPages - 1 ? "var(--text-muted)" : "var(--text-secondary)",
+              cursor: page >= totalPages - 1 ? "not-allowed" : "pointer",
+              fontSize: 12,
+            }}
+          >
+            →
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -72,6 +72,10 @@ export async function createPortfolio(db: PrismaClient, name: string) {
   return db.portfolio.create({ data: { name } });
 }
 
+export async function renamePortfolio(db: PrismaClient, id: string, name: string) {
+  return db.portfolio.update({ where: { id }, data: { name } });
+}
+
 export async function deletePortfolio(db: PrismaClient, id: string) {
   await db.portfolio.delete({ where: { id } });
 }
@@ -79,7 +83,13 @@ export async function deletePortfolio(db: PrismaClient, id: string) {
 export async function replaceHoldings(
   db: PrismaClient,
   portfolioId: string,
-  holdings: { ticker: string; weight: number }[]
+  holdings: {
+    ticker: string;
+    weight: number;
+    shares?: number | null;
+    entryDate?: string | null;
+    sector?: string | null;
+  }[]
 ): Promise<void> {
   const wsum = sumWeights(holdings.map((h) => h.weight));
   if (Math.abs(wsum - 1) > 0.001) {
@@ -96,6 +106,9 @@ export async function replaceHoldings(
           portfolioId,
           securityId: sec.id,
           weight: new Decimal(h.weight),
+          shares: h.shares != null ? new Decimal(h.shares) : null,
+          entryDate: h.entryDate ? new Date(h.entryDate) : null,
+          sector: h.sector ?? null,
         },
       });
     }

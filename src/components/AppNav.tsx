@@ -36,6 +36,9 @@ export function AppNav() {
         <Link href="/portfolios" style={linkStyle}>
           Portfolios
         </Link>
+        <Link href="/overview" style={linkStyle}>
+          Analysis
+        </Link>
       </nav>
     </header>
   );
