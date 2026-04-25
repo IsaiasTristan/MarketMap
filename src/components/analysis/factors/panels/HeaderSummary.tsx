@@ -30,7 +30,7 @@ export function HeaderSummary({ exposure, attribution, selectedPeriod, loading }
               height: 90,
               background: "var(--bg-surface)",
               border: "1px solid var(--bg-border)",
-              borderRadius: 12,
+              borderRadius: 2,
               animation: "pulse 1.5s ease-in-out infinite",
             }}
           />

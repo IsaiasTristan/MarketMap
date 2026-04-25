@@ -40,7 +40,7 @@ async function computeHistoricalShocks(
 ): Promise<{ code: FactorCode; shockValue: number }[]> {
   const rows = await db.factorReturnDaily.findMany({
     where: {
-      factorCode: { in: factorCodes as string[] },
+      factorCode: { in: factorCodes },
       tradeDate: { gte: new Date(start), lte: new Date(end) },
     },
     select: { factorCode: true, value: true },

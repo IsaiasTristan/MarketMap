@@ -14,11 +14,11 @@ export function ProvenanceBadge({ frenchThrough, proxyFrom, proxyTo }: Provenanc
         display: "inline-flex",
         alignItems: "center",
         gap: 6,
-        fontSize: 11,
-        color: "var(--color-info)",
-        background: "rgba(56,189,248,0.08)",
-        border: "1px solid rgba(56,189,248,0.2)",
-        borderRadius: 4,
+        fontSize: 10,
+        color: "var(--bb-chrome-text)",
+        background: "var(--bb-chrome)",
+        border: "1px solid var(--chrome-border)",
+        borderRadius: 0,
         padding: "2px 8px",
         cursor: "help",
       }}
@@ -44,43 +44,45 @@ export function ChartCard({ title, subtitle, children, provenance, action, style
       style={{
         background: "var(--bg-surface)",
         border: "1px solid var(--bg-border)",
-        borderRadius: 12,
-        padding: 20,
+        borderRadius: 0,
+        overflow: "hidden",
         ...style,
       }}
     >
       <div
         style={{
+          height: 20,
+          background: "var(--bb-chrome)",
           display: "flex",
-          alignItems: "flex-start",
-          justifyContent: "space-between",
-          marginBottom: 16,
-          gap: 12,
+          alignItems: "center",
+          gap: 8,
+          padding: "0 10px",
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: "0.07em",
+          color: "#fff",
+          textTransform: "uppercase",
         }}
       >
-        <div>
-          <div
-            style={{
-              fontSize: 14,
-              fontWeight: 600,
-              color: "var(--text-primary)",
-              marginBottom: subtitle ? 4 : 0,
-            }}
-          >
-            {title}
-          </div>
-          {subtitle && (
-            <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-              {subtitle}
-            </div>
-          )}
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          {provenance && <ProvenanceBadge {...provenance} />}
-          {action}
-        </div>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
+        <div style={{ flex: 1 }} />
+        {provenance && <ProvenanceBadge {...provenance} />}
+        {action}
       </div>
-      {children}
+      {subtitle ? (
+        <div
+          style={{
+            padding: "6px 10px",
+            fontSize: 10,
+            color: "var(--text-muted)",
+            borderBottom: "1px solid var(--bg-border)",
+            background: "var(--bg-base)",
+          }}
+        >
+          {subtitle}
+        </div>
+      ) : null}
+      <div style={{ padding: "6px 8px" }}>{children}</div>
     </div>
   );
 }

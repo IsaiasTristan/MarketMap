@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAnalysisStore } from "@/store/analysis";
@@ -208,7 +208,7 @@ function PortfolioManager() {
               ...btnBase,
               border: `1px solid ${activePortfolioId === p.id ? "var(--color-accent)" : "var(--bg-border)"}`,
               background: activePortfolioId === p.id ? "var(--color-accent)" : "transparent",
-              color: activePortfolioId === p.id ? "#fff" : "var(--text-secondary)",
+              color: activePortfolioId === p.id ? "var(--bg-base)" : "var(--text-secondary)",
             }}
           >
             {p.name}
@@ -233,7 +233,7 @@ function PortfolioManager() {
         <button
           onClick={() => newName.trim() && createMut.mutate(newName.trim())}
           disabled={createMut.isPending}
-          style={{ ...btnBase, border: "none", background: "var(--color-accent)", color: "#fff" }}
+          style={{ ...btnBase, border: "none", background: "var(--color-accent)", color: "var(--bg-base)" }}
         >
           Create
         </button>
@@ -280,7 +280,7 @@ function PortfolioManager() {
                     ...btnBase,
                     border: "none",
                     background: "var(--color-accent)",
-                    color: "#fff",
+                    color: "var(--bg-base)",
                   }}
                 >
                   Save
@@ -381,7 +381,7 @@ function PortfolioManager() {
               No positions yet -- add one below or upload a CSV.
             </div>
           ) : (
-            <div style={{ overflowX: "auto", borderRadius: 8, border: "1px solid var(--bg-border)" }}>
+            <div style={{ overflowX: "auto", borderRadius: 2, border: "1px solid var(--bg-border)" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
                   <tr style={{ background: "var(--bg-elevated)" }}>
@@ -418,7 +418,7 @@ function PortfolioManager() {
                       background: "var(--bg-surface)",
                       color: "var(--text-primary)",
                       fontSize: 12,
-                      fontFamily: mono ? "var(--font-jetbrains-mono, monospace)" : "inherit",
+                      fontFamily: mono ? "var(--font-mono, monospace)" : "inherit",
                       width: "100%",
                       boxSizing: "border-box" as const,
                     });
@@ -433,7 +433,7 @@ function PortfolioManager() {
                         }}
                       >
                         {/* Ticker — never editable */}
-                        <td style={{ padding: "8px 12px", fontFamily: "var(--font-jetbrains-mono, monospace)", fontWeight: 700, color: "var(--text-primary)" }}>
+                        <td style={{ padding: "8px 12px", fontFamily: "var(--font-mono, monospace)", fontWeight: 700, color: "var(--text-primary)" }}>
                           {pos.ticker}
                         </td>
                         {/* Name */}
@@ -447,7 +447,7 @@ function PortfolioManager() {
                               onChange={(e) => setEditDraft((d) => ({ ...d, shares: e.target.value }))}
                               style={editInput(true)} />
                           ) : (
-                            <span style={{ fontFamily: "var(--font-jetbrains-mono, monospace)", color: "var(--text-primary)" }}>
+                            <span style={{ fontFamily: "var(--font-mono, monospace)", color: "var(--text-primary)" }}>
                               {pos.shares.toLocaleString("en-US", { maximumFractionDigits: 4 })}
                             </span>
                           )}
@@ -459,7 +459,7 @@ function PortfolioManager() {
                               onChange={(e) => setEditDraft((d) => ({ ...d, entryPrice: e.target.value }))}
                               style={editInput(true)} />
                           ) : (
-                            <span style={{ fontFamily: "var(--font-jetbrains-mono, monospace)", color: "var(--text-primary)" }}>
+                            <span style={{ fontFamily: "var(--font-mono, monospace)", color: "var(--text-primary)" }}>
                               ${pos.entryPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </span>
                           )}
@@ -471,7 +471,7 @@ function PortfolioManager() {
                               onChange={(e) => setEditDraft((d) => ({ ...d, entryDate: e.target.value }))}
                               style={editInput()} />
                           ) : (
-                            <span style={{ fontFamily: "var(--font-jetbrains-mono, monospace)", color: "var(--text-secondary)" }}>
+                            <span style={{ fontFamily: "var(--font-mono, monospace)", color: "var(--text-secondary)" }}>
                               {pos.entryDate}
                             </span>
                           )}
@@ -492,7 +492,7 @@ function PortfolioManager() {
                           {isEditing ? (
                             <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
                               <button onClick={() => saveEdit(pos.id)} disabled={updatePositionMut.isPending}
-                                style={{ padding: "3px 10px", borderRadius: 4, border: "none", background: "var(--color-accent, #6366f1)", color: "#fff", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>
+                                style={{ padding: "3px 10px", borderRadius: 4, border: "none", background: "var(--color-accent)", color: "var(--bg-base)", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>
                                 Save
                               </button>
                               <button onClick={cancelEdit}
@@ -595,7 +595,7 @@ function CsvUpload() {
         onClick={() => inputRef.current?.click()}
         style={{
           border: `2px dashed ${dragging ? "var(--color-accent)" : "var(--bg-border)"}`,
-          borderRadius: 10,
+          borderRadius: 2,
           padding: "32px 24px",
           textAlign: "center",
           cursor: "pointer",
@@ -723,7 +723,7 @@ function TickerCombobox({ value, onChange, onSelect }: TickerComboboxProps) {
           color: "var(--text-primary)",
           fontSize: 13,
           boxSizing: "border-box",
-          fontFamily: "var(--font-jetbrains-mono, monospace)",
+          fontFamily: "var(--font-mono, monospace)",
         }}
       />
       {open && suggestions.length > 0 && (
@@ -739,7 +739,7 @@ function TickerCombobox({ value, onChange, onSelect }: TickerComboboxProps) {
             listStyle: "none",
             background: "var(--bg-panel, #1a2332)",
             border: "1px solid var(--bg-border)",
-            borderRadius: 8,
+            borderRadius: 2,
             boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
             maxHeight: 260,
             overflowY: "auto",
@@ -761,7 +761,7 @@ function TickerCombobox({ value, onChange, onSelect }: TickerComboboxProps) {
               onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = "transparent")}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                <span style={{ fontFamily: "var(--font-jetbrains-mono, monospace)", fontSize: 13, fontWeight: 700, color: "var(--text-primary)", flexShrink: 0 }}>
+                <span style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 13, fontWeight: 700, color: "var(--text-primary)", flexShrink: 0 }}>
                   {s.ticker}
                 </span>
                 {s.isBenchmark && (
@@ -892,7 +892,7 @@ function ManualEntry() {
     background: "var(--bg-elevated)",
     color: "var(--text-primary)",
     fontSize: 13,
-    fontFamily: mono ? "var(--font-jetbrains-mono, monospace)" : "inherit",
+    fontFamily: mono ? "var(--font-mono, monospace)" : "inherit",
   });
 
   return (
@@ -994,10 +994,10 @@ function ManualEntry() {
             type="submit"
             style={{
               padding: "8px 20px",
-              borderRadius: 6,
+              borderRadius: 2,
               border: "none",
               background: "var(--color-accent)",
-              color: "#fff",
+              color: "var(--bg-base)",
               cursor: "pointer",
               fontSize: 13,
               fontWeight: 600,
@@ -1085,7 +1085,7 @@ function DataSourceStatus() {
               alignItems: "center",
               padding: "10px 12px",
               background: "var(--bg-elevated)",
-              borderRadius: 8,
+              borderRadius: 2,
             }}
           >
             <div>
@@ -1117,7 +1117,7 @@ const auditCols: Column<{ id: string; at: string; action: string; actor: string;
     key: "payloadJson",
     label: "Detail",
     render: (r) => (
-      <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-jetbrains-mono, monospace)" }}>
+      <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono, monospace)" }}>
         {JSON.stringify(r.payloadJson).slice(0, 80)}
       </span>
     ),

@@ -108,7 +108,7 @@ export function Gauge({
       {label && (
         <div
           style={{
-            fontFamily: "var(--font-jetbrains-mono, monospace)",
+            fontFamily: "var(--font-mono, monospace)",
             fontSize: 22,
             fontWeight: 700,
             color: currentZone.color,

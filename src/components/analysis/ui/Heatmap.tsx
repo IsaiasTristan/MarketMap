@@ -1,5 +1,7 @@
 "use client";
 
+import { divergingHeatColor } from "@/domain/calculations/heatmap";
+
 interface HeatmapCell {
   x: string;
   y: string;
@@ -14,38 +16,6 @@ interface HeatmapProps {
   maxValue?: number;
   formatter?: (v: number) => string;
   cellSize?: number;
-}
-
-function lerp(a: number, b: number, t: number) {
-  return a + (b - a) * t;
-}
-
-function valueToColor(
-  value: number,
-  min: number,
-  max: number,
-): string {
-  const range = max - min || 1;
-  const t = (value - min) / range; // 0 = min, 1 = max
-  const mid = (0 - min) / range;
-
-  let r: number, g: number, b: number;
-
-  if (t < mid) {
-    // blue (0,50,200) → white (255,255,255)
-    const tt = t / (mid || 0.5);
-    r = lerp(0, 255, tt);
-    g = lerp(50, 255, tt);
-    b = lerp(200, 255, tt);
-  } else {
-    // white (255,255,255) → dark red (180,20,20)
-    const tt = (t - mid) / (1 - mid || 0.5);
-    r = lerp(255, 180, tt);
-    g = lerp(255, 20, tt);
-    b = lerp(255, 20, tt);
-  }
-
-  return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
 }
 
 export function Heatmap({
@@ -86,12 +56,11 @@ export function Heatmap({
         {/* Rows */}
         {yLabels.map((yl) => (
           <div key={yl} style={{ display: "flex", alignItems: "center" }}>
-            {/* Y label */}
             <div
               style={{
                 width: 80,
                 fontSize: 10,
-                color: "var(--text-secondary)",
+                color: "var(--text-label)",
                 textAlign: "right",
                 paddingRight: 8,
                 overflow: "hidden",
@@ -104,10 +73,8 @@ export function Heatmap({
               const val = lookup.get(`${yl}||${xl}`);
               const bg =
                 val !== undefined
-                  ? valueToColor(val, minValue, maxValue)
+                  ? divergingHeatColor(val, minValue, maxValue)
                   : "var(--bg-elevated)";
-              const textColor =
-                val !== undefined && Math.abs(val) > 0.5 ? "#fff" : "#000";
 
               return (
                 <div
@@ -121,8 +88,8 @@ export function Heatmap({
                     alignItems: "center",
                     justifyContent: "center",
                     fontSize: 9,
-                    color: textColor,
-                    fontFamily: "var(--font-jetbrains-mono, monospace)",
+                    color: val !== undefined ? "#fff" : "var(--text-muted)",
+                    fontFamily: "var(--font-mono, monospace)",
                     border: "1px solid var(--bg-base)",
                     cursor: "default",
                   }}
@@ -152,8 +119,8 @@ export function Heatmap({
               flex: 1,
               height: 8,
               background:
-                "linear-gradient(90deg, #0032c8, #fff, #b41414)",
-              borderRadius: 4,
+                "linear-gradient(90deg, #8B0000, #330000, #000000, #003300, #006400)",
+              borderRadius: 0,
               maxWidth: Math.min(200, xLabels.length * cellSize),
             }}
           />

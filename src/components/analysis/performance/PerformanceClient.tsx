@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAnalysisStore } from "@/store/analysis";
+import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import { MetricCard } from "@/components/analysis/ui/MetricCard";
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
@@ -21,6 +22,7 @@ import {
   Legend,
   Customized,
 } from "recharts";
+import { heatSignedBloomberg } from "@/domain/calculations/heatmap";
 import type { PerformanceMetrics } from "@/server/services/performance.service";
 
 const BENCHMARKS = ["SP500", "NASDAQ", "DOW"] as const;
@@ -35,13 +37,10 @@ function fmtPct(n: number | null | undefined) {
   return `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
 }
 
-// Monthly heatmap color
+// Monthly heatmap — Bloomberg-style signed ramp
 function monthColor(v: number): string {
   if (Math.abs(v) < 0.001) return "var(--bg-elevated)";
-  const intensity = Math.min(1, Math.abs(v) / 0.1);
-  return v > 0
-    ? `rgba(34,197,94,${0.15 + intensity * 0.7})`
-    : `rgba(239,68,68,${0.15 + intensity * 0.7})`;
+  return heatSignedBloomberg(v, 0.1);
 }
 
 function MonthlyHeatmap({ calendar }: { calendar: Record<string, number> }) {
@@ -71,7 +70,7 @@ function MonthlyHeatmap({ calendar }: { calendar: Record<string, number> }) {
 
             return (
               <tr key={year}>
-                <td style={{ padding: "4px 8px", color: "var(--text-secondary)", fontFamily: "var(--font-jetbrains-mono, monospace)" }}>
+                <td style={{ padding: "4px 8px", color: "var(--text-secondary)", fontFamily: "var(--font-mono, monospace)" }}>
                   {year}
                 </td>
                 {months.map((_, mi) => {
@@ -84,9 +83,9 @@ function MonthlyHeatmap({ calendar }: { calendar: Record<string, number> }) {
                         padding: "4px 6px",
                         background: v != null ? monthColor(v) : "transparent",
                         textAlign: "center",
-                        borderRadius: 3,
-                        color: v != null ? "var(--text-primary)" : "var(--text-muted)",
-                        fontFamily: "var(--font-jetbrains-mono, monospace)",
+                        borderRadius: 0,
+                        color: v != null ? "#fff" : "var(--text-muted)",
+                        fontFamily: "var(--font-mono, monospace)",
                       }}
                     >
                       {v != null ? `${(v * 100).toFixed(1)}%` : "—"}
@@ -99,8 +98,8 @@ function MonthlyHeatmap({ calendar }: { calendar: Record<string, number> }) {
                     background: yearTotal !== 0 ? monthColor(yearTotal) : "transparent",
                     textAlign: "right",
                     fontWeight: 600,
-                    fontFamily: "var(--font-jetbrains-mono, monospace)",
-                    color: yearTotal >= 0 ? "var(--color-positive)" : "var(--color-negative)",
+                    fontFamily: "var(--font-mono, monospace)",
+                    color: yearTotal !== 0 ? "#fff" : "var(--text-muted)",
                   }}
                 >
                   {`${(yearTotal * 100).toFixed(1)}%`}
@@ -138,7 +137,7 @@ function DistributionOverlay({ offset, mu, sigma, histMin, histMax }: DistOverla
   const bands = [
     { x1: toX(mu - 3 * sigma), x2: toX(mu - 2 * sigma), fill: "#ef4444", opacity: 0.08 },
     { x1: toX(mu - 2 * sigma), x2: toX(mu - sigma),     fill: "#f59e0b", opacity: 0.11 },
-    { x1: toX(mu - sigma),     x2: toX(mu + sigma),     fill: "#6366f1", opacity: 0.13 },
+    { x1: toX(mu - sigma),     x2: toX(mu + sigma),     fill: "var(--chart-1)", opacity: 0.13 },
     { x1: toX(mu + sigma),     x2: toX(mu + 2 * sigma), fill: "#f59e0b", opacity: 0.11 },
     { x1: toX(mu + 2 * sigma), x2: toX(mu + 3 * sigma), fill: "#ef4444", opacity: 0.08 },
   ];
@@ -352,7 +351,7 @@ export function PerformanceClient() {
           style={{
             background: "var(--bg-elevated)",
             border: "1px solid var(--bg-border)",
-            borderRadius: 10,
+            borderRadius: 2,
             padding: "28px 32px",
             display: "flex",
             flexDirection: "column",
@@ -573,9 +572,9 @@ export function PerformanceClient() {
                   <XAxis dataKey="date" tick={{ fontSize: 10, fill: "var(--text-secondary)" }} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
                   <YAxis tickFormatter={(v) => `${v >= 0 ? "+" : ""}${(v as number).toFixed(0)}%`} tick={{ fontSize: 10, fill: "var(--text-secondary)" }} axisLine={false} tickLine={false} />
                   <ReferenceLine y={0} stroke="var(--bg-border)" strokeDasharray="3 3" />
-                  <Tooltip contentStyle={{ background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", borderRadius: 8, fontSize: 12 }} formatter={(v) => [`${(v as number).toFixed(2)}%`]} />
+                  <Tooltip contentStyle={bbTooltipStyle} formatter={(v) => [`${(v as number).toFixed(2)}%`]} />
                   <Legend wrapperStyle={{ fontSize: 12, color: "var(--text-secondary)" }} />
-                  <Line type="monotone" dataKey="portfolio" stroke="#6366f1" strokeWidth={2} dot={false} name="Portfolio" />
+                  <Line type="monotone" dataKey="portfolio" stroke="var(--chart-1)" strokeWidth={2} dot={false} name="Portfolio" />
                   <Line type="monotone" dataKey="benchmark" stroke="#6b7280" strokeWidth={1.5} strokeDasharray="4 2" dot={false} name={benchLabel} />
                 </LineChart>
               ) : chartView === "value" ? (
@@ -583,11 +582,11 @@ export function PerformanceClient() {
                   <XAxis dataKey="date" tick={{ fontSize: 10, fill: "var(--text-secondary)" }} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
                   <YAxis tickFormatter={(v) => fmtDollars(v as number)} tick={{ fontSize: 10, fill: "var(--text-secondary)" }} axisLine={false} tickLine={false} width={52} />
                   <Tooltip
-                    contentStyle={{ background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", borderRadius: 8, fontSize: 12 }}
+                    contentStyle={bbTooltipStyle}
                     formatter={(v) => [`$${(v as number).toLocaleString("en-US", { maximumFractionDigits: 0 })}`]}
                   />
                   <Legend wrapperStyle={{ fontSize: 12, color: "var(--text-secondary)" }} />
-                  <Line type="monotone" dataKey="portfolio" stroke="#6366f1" strokeWidth={2} dot={false} name="Portfolio" />
+                  <Line type="monotone" dataKey="portfolio" stroke="var(--chart-1)" strokeWidth={2} dot={false} name="Portfolio" />
                   <Line type="monotone" dataKey="benchmark" stroke="#6b7280" strokeWidth={1.5} strokeDasharray="4 2" dot={false} name={benchLabel} />
                 </LineChart>
               ) : (() => {
@@ -597,14 +596,14 @@ export function PerformanceClient() {
                     <AreaChart data={sharpeData} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
                       <defs>
                         <linearGradient id="sharpeGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#6366f1" stopOpacity={0.25} />
-                          <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                          <stop offset="5%" stopColor="var(--chart-1)" stopOpacity={0.25} />
+                          <stop offset="95%" stopColor="var(--chart-1)" stopOpacity={0} />
                         </linearGradient>
                       </defs>
                       <XAxis dataKey="date" tick={{ fontSize: 10, fill: "var(--text-secondary)" }} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
                       <YAxis tickFormatter={(v) => (v as number).toFixed(1)} tick={{ fontSize: 10, fill: "var(--text-secondary)" }} axisLine={false} tickLine={false} />
                       <ReferenceLine y={0} stroke="var(--bg-border)" strokeDasharray="3 3" />
-                      <ReferenceLine y={1} stroke="rgba(34,197,94,0.3)" strokeDasharray="4 2" label={{ value: "1.0", position: "insideTopRight", fontSize: 10, fill: "var(--color-positive)" }} />
+                      <ReferenceLine y={1} stroke="color-mix(in srgb, var(--color-positive) 35%, transparent)" strokeDasharray="4 2" label={{ value: "1.0", position: "insideTopRight", fontSize: 10, fill: "var(--color-positive)" }} />
                       {/* Current value line — ties the chart to the metric card */}
                       {displaySharpe != null && (
                         <ReferenceLine
@@ -621,11 +620,11 @@ export function PerformanceClient() {
                         />
                       )}
                       <Tooltip
-                        contentStyle={{ background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", borderRadius: 8, fontSize: 12 }}
+                        contentStyle={bbTooltipStyle}
                         formatter={(v) => [`${(v as number).toFixed(2)}`, "Sharpe (63d)"]}
                       />
                       {/* Main area — endpoint dot rendered separately so it's always visible */}
-                      <Area type="monotone" dataKey="sharpe" stroke="#6366f1" fill="url(#sharpeGrad)" strokeWidth={2} connectNulls={false} name="Sharpe (63d)"
+                      <Area type="monotone" dataKey="sharpe" stroke="var(--chart-1)" fill="url(#sharpeGrad)" strokeWidth={2} connectNulls={false} name="Sharpe (63d)"
                         dot={(props) => {
                           if (props.payload?.date !== lastSharpeEntry?.date) return <g key={props.key} />;
                           return <circle key={props.key} cx={props.cx} cy={props.cy} r={4} fill="#f59e0b" stroke="#1e1e2e" strokeWidth={2} />;
@@ -679,7 +678,7 @@ export function PerformanceClient() {
         const barColor = (bin: typeof bins[0]) => {
           const center = (bin.rangeMin + bin.rangeMax) / 2;
           const dist = Math.abs(center - mu);
-          if (dist < sigma)         return "#6366f1"; // ±1σ — indigo
+          if (dist < sigma)         return "var(--chart-1)"; // ±1σ — indigo
           if (dist < 2 * sigma)     return "#f59e0b"; // ±2σ — amber
           return "#ef4444";                            // beyond ±2σ — red
         };
@@ -687,7 +686,7 @@ export function PerformanceClient() {
         const statsItems = [
           { label: "μ daily",   value: pct(mu),    color: "var(--text-primary)" },
           { label: "σ daily",   value: pct(sigma), color: "var(--text-primary)" },
-          { label: "−1σ / +1σ", value: `${pct(mu - sigma)} / ${pct(mu + sigma)}`, color: "#6366f1" },
+          { label: "−1σ / +1σ", value: `${pct(mu - sigma)} / ${pct(mu + sigma)}`, color: "var(--chart-1)" },
           { label: "−2σ / +2σ", value: `${pct(mu - 2 * sigma)} / ${pct(mu + 2 * sigma)}`, color: "#f59e0b" },
           { label: "10th %ile", value: pct(p10), color: "#22d3ee" },
           { label: "50th %ile", value: pct(p50), color: "#a3e635" },
@@ -740,7 +739,7 @@ export function PerformanceClient() {
                   <span style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
                     {item.label}
                   </span>
-                  <span style={{ fontSize: 11, fontFamily: "var(--font-jetbrains-mono, monospace)", color: item.color, fontWeight: 600 }}>
+                  <span style={{ fontSize: 11, fontFamily: "var(--font-mono, monospace)", color: item.color, fontWeight: 600 }}>
                     {item.value}
                   </span>
                 </div>
@@ -750,7 +749,7 @@ export function PerformanceClient() {
             {/* Legend strip */}
             <div style={{ display: "flex", gap: 14, marginBottom: 8, flexWrap: "wrap" }}>
               {[
-                { swatch: <rect x="0" y="0" width="20" height="10" fill="#6366f1" fillOpacity={0.7} rx="2" />, label: "±1σ (68%)" },
+                { swatch: <rect x="0" y="0" width="20" height="10" fill="var(--chart-1)" fillOpacity={0.7} rx="2" />, label: "±1σ (68%)" },
                 { swatch: <rect x="0" y="0" width="20" height="10" fill="#f59e0b" fillOpacity={0.7} rx="2" />, label: "±2σ (95%)" },
                 { swatch: <rect x="0" y="0" width="20" height="10" fill="#ef4444" fillOpacity={0.7} rx="2" />, label: ">±2σ" },
                 { swatch: <line x1="0" y1="5" x2="20" y2="5" stroke="#22d3ee" strokeWidth="2" strokeDasharray="6 3" />, label: "5th/10th/90th/95th %ile (exact value labelled)" },
@@ -779,8 +778,8 @@ export function PerformanceClient() {
                 const sigmaLines = [
                   { v: mu - 3 * sigma, label: "−3σ", color: "#ef4444", pos: "insideTopRight" as const },
                   { v: mu - 2 * sigma, label: "−2σ", color: "#f59e0b", pos: "insideTopRight" as const },
-                  { v: mu - sigma,     label: "−1σ", color: "#6366f1", pos: "insideTopRight" as const },
-                  { v: mu + sigma,     label: "+1σ", color: "#6366f1", pos: "insideTopLeft"  as const },
+                  { v: mu - sigma,     label: "−1σ", color: "var(--chart-1)", pos: "insideTopRight" as const },
+                  { v: mu + sigma,     label: "+1σ", color: "var(--chart-1)", pos: "insideTopLeft"  as const },
                   { v: mu + 2 * sigma, label: "+2σ", color: "#f59e0b", pos: "insideTopLeft"  as const },
                   { v: mu + 3 * sigma, label: "+3σ", color: "#ef4444", pos: "insideTopLeft"  as const },
                 ];
@@ -801,10 +800,11 @@ export function PerformanceClient() {
                     <XAxis dataKey="label" tick={{ fontSize: 8, fill: "var(--text-secondary)" }} tickLine={false} axisLine={false} interval={4} />
                     <YAxis tick={{ fontSize: 9, fill: "var(--text-secondary)" }} axisLine={false} tickLine={false} width={28} />
                     <Tooltip
-                      contentStyle={{ background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", borderRadius: 8, fontSize: 12 }}
-                      labelFormatter={(binLabel: string) => `Bin centre: ${binLabel}`}
-                      formatter={(v: unknown, name: string) => [
-                        name === "Normal fit" ? `${(v as number).toFixed(1)}` : `${v} days`, name,
+                      contentStyle={bbTooltipStyle}
+                      labelFormatter={(binLabel) => `Bin centre: ${String(binLabel ?? "")}`}
+                      formatter={(v, name) => [
+                        String(name ?? "") === "Normal fit" ? `${Number(v ?? 0).toFixed(1)}` : `${v} days`,
+                        String(name ?? ""),
                       ]}
                     />
                     {/* σ background shading via Customized (rect elements always render) */}
@@ -822,14 +822,14 @@ export function PerformanceClient() {
                     <Line type="monotone" dataKey="normalDensity" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="Normal fit" isAnimationActive={false} />
                     {/* σ boundary reference lines — isFront renders above bars */}
                     {sigmaLines.map((l) => (
-                      <ReferenceLine key={l.label} x={snapLabel(l.v)} stroke={l.color} strokeWidth={1.5} strokeDasharray="4 3" isFront
-                        label={{ value: l.label, position: l.pos, fontSize: 9, fill: l.color, fontFamily: "var(--font-jetbrains-mono,monospace)" }}
+                      <ReferenceLine key={l.label} x={snapLabel(l.v)} stroke={l.color} strokeWidth={1.5} strokeDasharray="4 3"
+                        label={{ value: l.label, position: l.pos, fontSize: 9, fill: l.color, fontFamily: "var(--font-mono,monospace)" }}
                       />
                     ))}
                     {/* Percentile reference lines */}
                     {pctLines.map((l) => (
-                      <ReferenceLine key={l.label} x={snapLabel(l.v)} stroke={l.color} strokeWidth={2} strokeDasharray={l.dash || undefined} isFront
-                        label={{ value: l.label, position: l.pos, fontSize: 9, fill: l.color, fontFamily: "var(--font-jetbrains-mono,monospace)" }}
+                      <ReferenceLine key={l.label} x={snapLabel(l.v)} stroke={l.color} strokeWidth={2} strokeDasharray={l.dash || undefined}
+                        label={{ value: l.label, position: l.pos, fontSize: 9, fill: l.color, fontFamily: "var(--font-mono,monospace)" }}
                       />
                     ))}
                   </ComposedChart>

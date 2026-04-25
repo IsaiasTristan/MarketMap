@@ -6,6 +6,7 @@ import { ChartCard } from "@/components/analysis/ui/ChartCard";
 import { Gauge } from "@/components/analysis/ui/Gauge";
 import { Heatmap } from "@/components/analysis/ui/Heatmap";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
+import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import {
   BarChart,
   Bar,
@@ -18,7 +19,7 @@ import {
 import type { ConcentrationMetrics } from "@/server/services/concentration.service";
 
 const SECTOR_COLORS = [
-  "#6366f1", "#22c55e", "#f59e0b", "#38bdf8",
+  "var(--chart-1)", "#22c55e", "#f59e0b", "var(--chart-4)",
   "#e879f9", "#fb923c", "#84cc16", "#06b6d4",
 ];
 
@@ -86,7 +87,7 @@ export function ConcentrationClient() {
       {/* Level 1: Headline cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, alignItems: "start" }}>
         {/* HHI Gauge */}
-        <div style={{ background: "var(--bg-surface)", border: "1px solid var(--bg-border)", borderRadius: 12, padding: 16 }}>
+        <div style={{ background: "var(--bg-surface)", border: "1px solid var(--bg-border)", borderRadius: 2, padding: 16 }}>
           <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
             HHI Score
           </div>
@@ -172,9 +173,9 @@ export function ConcentrationClient() {
               />
               <Tooltip
                 formatter={(v) => [`${((v as number) * 100).toFixed(1)}%`, "Allocation"]}
-                contentStyle={{ background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", borderRadius: 8 }}
+                contentStyle={bbTooltipStyle}
               />
-              <Bar dataKey="pct" radius={[0, 4, 4, 0]}>
+              <Bar dataKey="pct" radius={0}>
                 {data.sectorAllocation.map((_, i) => (
                   <Cell key={i} fill={SECTOR_COLORS[i % SECTOR_COLORS.length]} />
                 ))}

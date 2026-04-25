@@ -21,7 +21,7 @@ function ScenarioCard({ scenario }: { scenario: ScenarioResult }) {
       style={{
         background: "var(--bg-surface)",
         border: `1px solid ${isNeg ? "rgba(239,68,68,0.3)" : "var(--bg-border)"}`,
-        borderRadius: 12,
+        borderRadius: 2,
         padding: 16,
       }}
     >
@@ -38,7 +38,7 @@ function ScenarioCard({ scenario }: { scenario: ScenarioResult }) {
             style={{
               fontSize: 20,
               fontWeight: 700,
-              fontFamily: "var(--font-jetbrains-mono, monospace)",
+              fontFamily: "var(--font-mono, monospace)",
               color: isNeg ? "var(--color-negative)" : "var(--color-positive)",
             }}
           >
@@ -51,7 +51,7 @@ function ScenarioCard({ scenario }: { scenario: ScenarioResult }) {
             style={{
               fontSize: 20,
               fontWeight: 700,
-              fontFamily: "var(--font-jetbrains-mono, monospace)",
+              fontFamily: "var(--font-mono, monospace)",
               color: isNeg ? "var(--color-negative)" : "var(--color-positive)",
             }}
           >
@@ -173,7 +173,7 @@ export function StressClient() {
           <div>
             <CardLabel>Result</CardLabel>
             {shockResult ? (
-              <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "var(--font-jetbrains-mono, monospace)", color: shockResult.estimatedPnlDollar < 0 ? "var(--color-negative)" : "var(--color-positive)" }}>
+              <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", color: shockResult.estimatedPnlDollar < 0 ? "var(--color-negative)" : "var(--color-positive)" }}>
                 {fmt$(shockResult.estimatedPnlDollar)}
               </div>
             ) : (
@@ -199,9 +199,9 @@ export function StressClient() {
               { label: "Stressed VaR 95% (ρ=1)", value: fmt$(corrStress.stressedVar95), color: "var(--color-negative)" },
               { label: "Diversification Benefit", value: fmt$(corrStress.diversificationBenefit), color: "var(--color-info)" },
             ].map((m) => (
-              <div key={m.label} style={{ background: "var(--bg-elevated)", borderRadius: 8, padding: 16 }}>
+              <div key={m.label} style={{ background: "var(--bg-elevated)", borderRadius: 2, padding: 16 }}>
                 <CardLabel>{m.label}</CardLabel>
-                <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "var(--font-jetbrains-mono, monospace)", color: m.color }}>
+                <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "var(--font-mono, monospace)", color: m.color }}>
                   {m.value}
                 </div>
               </div>

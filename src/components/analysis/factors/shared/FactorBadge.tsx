@@ -22,7 +22,7 @@ export function FactorBadge({ code, value, showValue = false }: FactorBadgeProps
         fontSize: 11,
         fontWeight: 600,
         color: def.color,
-        fontFamily: "var(--font-jetbrains-mono, monospace)",
+        fontFamily: "var(--font-mono, monospace)",
         letterSpacing: "0.04em",
         whiteSpace: "nowrap",
       }}

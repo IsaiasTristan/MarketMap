@@ -48,6 +48,14 @@ const SEMANTIC: Record<string, string> = {
   neutral: "var(--color-neutral)",
 };
 
+const btnFlat = {
+  padding: "3px 8px",
+  borderRadius: 0,
+  border: "1px solid var(--chrome-border)",
+  background: "var(--bg-base)",
+  fontSize: 11,
+} as const;
+
 export function DataTable<T>({
   columns,
   rows,
@@ -97,8 +105,7 @@ export function DataTable<T>({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      {/* Controls */}
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       {(searchable || exportFilename) && (
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {searchable && (
@@ -111,8 +118,9 @@ export function DataTable<T>({
               placeholder="Search…"
               style={{
                 flex: 1,
-                padding: "6px 10px",
-                borderRadius: 6,
+                padding: "0 6px",
+                height: 18,
+                borderRadius: 0,
                 border: "1px solid var(--bg-border)",
                 background: "var(--bg-elevated)",
                 color: "var(--text-primary)",
@@ -122,15 +130,12 @@ export function DataTable<T>({
             />
           )}
           <button
+            type="button"
             onClick={() => exportCsv(columns, sorted, exportFilename)}
             style={{
-              padding: "6px 12px",
-              borderRadius: 6,
-              border: "1px solid var(--bg-border)",
-              background: "transparent",
+              ...btnFlat,
               color: "var(--text-secondary)",
               cursor: "pointer",
-              fontSize: 12,
             }}
           >
             ↓ CSV
@@ -138,13 +143,19 @@ export function DataTable<T>({
         </div>
       )}
 
-      {/* Table */}
-      <div style={{ overflowX: "auto", borderRadius: 8, border: "1px solid var(--bg-border)" }}>
+      <div
+        style={{
+          overflowX: "auto",
+          borderRadius: 0,
+          border: "1px solid var(--bg-border)",
+        }}
+      >
         <table
+          className="data-table"
           style={{
             width: "100%",
             borderCollapse: "collapse",
-            fontSize: 13,
+            fontSize: 12,
           }}
         >
           <thead>
@@ -160,13 +171,13 @@ export function DataTable<T>({
                   key={col.key}
                   onClick={() => col.sortValue && handleSort(col.key)}
                   style={{
-                    padding: "10px 12px",
+                    padding: "7px 8px",
                     textAlign: col.align ?? "left",
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: "var(--text-secondary)",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "var(--color-accent)",
                     textTransform: "uppercase",
-                    letterSpacing: "0.04em",
+                    letterSpacing: "0.3px",
                     cursor: col.sortValue ? "pointer" : "default",
                     whiteSpace: "nowrap",
                     borderBottom: "1px solid var(--bg-border)",
@@ -175,53 +186,33 @@ export function DataTable<T>({
                 >
                   {col.label}
                   {sortKey === col.key && (
-                    <span style={{ marginLeft: 4, fontSize: 10 }}>
-                      {sortDir === "asc" ? "▲" : "▼"}
-                    </span>
+                    <span style={{ marginLeft: 4, fontSize: 9 }}>{sortDir === "asc" ? "▲" : "▼"}</span>
                   )}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {paged.map((row, i) => (
-              <tr
-                key={getRowKey(row)}
-                style={{
-                  background: i % 2 === 0 ? "var(--bg-surface)" : "var(--bg-base)",
-                  borderBottom: "1px solid var(--bg-border)",
-                  transition: "background 0.1s",
-                }}
-                onMouseEnter={(e) =>
-                  ((e.currentTarget as HTMLTableRowElement).style.background =
-                    "var(--bg-elevated)")
-                }
-                onMouseLeave={(e) =>
-                  ((e.currentTarget as HTMLTableRowElement).style.background =
-                    i % 2 === 0 ? "var(--bg-surface)" : "var(--bg-base)")
-                }
-              >
+            {paged.map((row) => (
+              <tr key={getRowKey(row)} style={{ borderBottom: "1px solid var(--bg-border)" }}>
                 {columns.map((col) => {
                   const colorKey = col.colorize?.(row);
                   const cellColor = colorKey ? SEMANTIC[colorKey] : undefined;
+                  const isNum = col.align === "right";
                   return (
                     <td
                       key={col.key}
+                      className={isNum ? "bb-num" : undefined}
                       style={{
-                        padding: "8px 12px",
                         textAlign: col.align ?? "left",
-                        color: cellColor ?? "var(--text-primary)",
-                        fontFamily:
-                          col.align === "right"
-                            ? "var(--font-jetbrains-mono, monospace)"
-                            : undefined,
+                        color: cellColor ?? "#fff",
+                        fontFamily: isNum ? "var(--font-mono, monospace)" : undefined,
+                        fontVariantNumeric: isNum ? "tabular-nums" : undefined,
                       }}
                     >
                       {col.render
                         ? col.render(row)
-                        : String(
-                            (row as Record<string, unknown>)[col.key] ?? "",
-                          )}
+                        : String((row as Record<string, unknown>)[col.key] ?? "")}
                     </td>
                   );
                 })}
@@ -235,7 +226,7 @@ export function DataTable<T>({
                     padding: 24,
                     textAlign: "center",
                     color: "var(--text-muted)",
-                    fontSize: 13,
+                    fontSize: 12,
                   }}
                 >
                   No data
@@ -246,40 +237,31 @@ export function DataTable<T>({
         </table>
       </div>
 
-      {/* Pagination */}
       {totalPages > 1 && (
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, alignItems: "center" }}>
-          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-            {page * pageSize + 1}–{Math.min((page + 1) * pageSize, sorted.length)} of{" "}
-            {sorted.length}
+          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+            {page * pageSize + 1}–{Math.min((page + 1) * pageSize, sorted.length)} of {sorted.length}
           </span>
           <button
+            type="button"
             onClick={() => setPage((p) => Math.max(0, p - 1))}
             disabled={page === 0}
             style={{
-              padding: "3px 8px",
-              borderRadius: 4,
-              border: "1px solid var(--bg-border)",
-              background: "transparent",
+              ...btnFlat,
               color: page === 0 ? "var(--text-muted)" : "var(--text-secondary)",
               cursor: page === 0 ? "not-allowed" : "pointer",
-              fontSize: 12,
             }}
           >
             ←
           </button>
           <button
+            type="button"
             onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
             disabled={page >= totalPages - 1}
             style={{
-              padding: "3px 8px",
-              borderRadius: 4,
-              border: "1px solid var(--bg-border)",
-              background: "transparent",
-              color:
-                page >= totalPages - 1 ? "var(--text-muted)" : "var(--text-secondary)",
+              ...btnFlat,
+              color: page >= totalPages - 1 ? "var(--text-muted)" : "var(--text-secondary)",
               cursor: page >= totalPages - 1 ? "not-allowed" : "pointer",
-              fontSize: 12,
             }}
           >
             →

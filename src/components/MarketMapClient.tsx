@@ -331,22 +331,22 @@ export function MarketMapClient({
           {sectorsAllExpanded ? "Hide sub-themes" : "Show sub-themes"}
         </button>
         {loading && (
-          <span style={{ color: "#8c99a8", fontSize: "0.85rem" }}>
+          <span style={{ color: "var(--text-secondary)", fontSize: "12px" }}>
             Loading…
           </span>
         )}
       </div>
 
       {err && (
-        <p style={{ color: "#ff8d8d" }} role="alert">
+        <p style={{ color: "var(--color-negative)" }} role="alert">
           {err}
         </p>
       )}
       {data?.warnings?.length ? (
         <ul
           style={{
-            color: "#d5a64a",
-            fontSize: "0.88rem",
+            color: "var(--color-warning)",
+            fontSize: "12px",
             marginBottom: "0.5rem",
           }}
         >
@@ -458,7 +458,7 @@ export function MarketMapClient({
             {displayRows.length === 0 && !loading && (
               <tr>
                 <td
-                  style={{ ...emptyStateCell, color: "#8c99a8" }}
+                  style={{ ...emptyStateCell, color: "var(--text-secondary)" }}
                   colSpan={TOTAL_COLS}
                 >
                   No data to display.
@@ -492,14 +492,14 @@ function SectorTableRow({
     // When the sector is open we want it to read as the "header of a block",
     // so drop the bottom border (the sub-themes pick up directly underneath
     // with no visible seam) and lean a bit more on background contrast.
-    borderBottomColor: hasExpansion ? "transparent" : "#222b3a",
+    borderBottomColor: hasExpansion ? "transparent" : "var(--bg-border)",
     boxShadow: expanded
-      ? "inset 4px 0 0 #d5a64a"
+      ? "inset 4px 0 0 var(--color-accent)"
       : "inset 4px 0 0 transparent",
   };
   const filler: CSSProperties = {
     ...sectorEmptyCell,
-    borderBottomColor: hasExpansion ? "transparent" : "#222b3a",
+    borderBottomColor: hasExpansion ? "transparent" : "var(--bg-border)",
   };
   return (
     <tr style={sectorRowStyle}>
@@ -513,7 +513,7 @@ function SectorTableRow({
             node.sector
           }`}
         >
-          <span style={chevronStyle(expanded, "#f0b65d")}>
+          <span style={chevronStyle(expanded, "var(--color-accent)")}>
             {expanded ? "▼" : "▶"}
           </span>
           <span style={sectorLabelText}>{node.sector}</span>
@@ -552,15 +552,15 @@ function SubThemeTableRow({
     position !== "last" && position !== "only" ? false : hasExpandedTickers;
   const sectorCell: CSSProperties = {
     ...subThemeSectorCell,
-    borderBottomColor: hideBottom ? "transparent" : "#1c2533",
+    borderBottomColor: hideBottom ? "transparent" : "var(--bg-border)",
   };
   const labelCell: CSSProperties = {
     ...subThemeLabelCell,
-    borderBottomColor: hideBottom ? "transparent" : "#1c2533",
+    borderBottomColor: hideBottom ? "transparent" : "var(--bg-border)",
   };
   const trailing: CSSProperties = {
     ...subThemeTrailingCell,
-    borderBottomColor: hideBottom ? "transparent" : "#1c2533",
+    borderBottomColor: hideBottom ? "transparent" : "var(--bg-border)",
   };
   return (
     <tr style={subThemeRowStyle}>
@@ -575,7 +575,7 @@ function SubThemeTableRow({
             node.subTheme
           }`}
         >
-          <span style={chevronStyle(expanded, "#9eafc4")}>
+          <span style={chevronStyle(expanded, "var(--text-secondary)")}>
             {expanded ? "▼" : "▶"}
           </span>
           <span style={subThemeLabelText}>{node.subTheme}</span>
@@ -603,15 +603,15 @@ function CompanyTableRow({
   const isLast = position === "last" || position === "only";
   const sectorCell: CSSProperties = {
     ...companySectorCell,
-    borderBottomColor: isLast ? "#1c2533" : "transparent",
+    borderBottomColor: isLast ? "var(--bg-border)" : "transparent",
   };
   const subCell: CSSProperties = {
     ...companySubCell,
-    borderBottomColor: isLast ? "#1c2533" : "transparent",
+    borderBottomColor: isLast ? "var(--bg-border)" : "transparent",
   };
   const tickerCell: CSSProperties = {
     ...companyTickerCell,
-    borderBottomColor: isLast ? "#1c2533" : "transparent",
+    borderBottomColor: isLast ? "var(--bg-border)" : "transparent",
   };
   return (
     <tr style={companyRowStyle}>
@@ -653,7 +653,7 @@ function renderHeatCell(
         color: pickTextColor(bg),
         textAlign: "right",
         fontVariantNumeric: "tabular-nums",
-        borderBottomColor: suppressBottom ? "transparent" : "#141d2c",
+        borderBottomColor: suppressBottom ? "transparent" : "var(--bg-border)",
       }}
     >
       {formatMetricValue(v, metric)}
@@ -793,8 +793,8 @@ function horizonHeaderRgb(
   max: number,
   metric: MetricKind
 ): string {
-  if (value == null || !Number.isFinite(value)) return "#141a25";
-  if (max <= min) return "#1f2a3a";
+  if (value == null || !Number.isFinite(value)) return "#0a0a0a";
+  if (max <= min) return "#0a0a0a";
   let t = (value - min) / (max - min);
   if (metric === "VOLATILITY") t = 1 - t;
   const synthetic = t * 2 - 1;
@@ -803,12 +803,12 @@ function horizonHeaderRgb(
 
 function pickTextColor(bg: string): string {
   const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(bg);
-  if (!m) return "#e6ebf2";
+  if (!m) return "#ffffff";
   const r = Number(m[1]);
   const g = Number(m[2]);
   const b = Number(m[3]);
   const yiq = (r * 299 + g * 587 + b * 114) / 1000;
-  return yiq >= 150 ? "#0b1018" : "#f5f8fd";
+  return yiq >= 150 ? "#000000" : "#ffffff";
 }
 
 function Legend({ metric }: { metric: MetricKind }) {
@@ -849,54 +849,66 @@ function chevronStyle(open: boolean, color: string): CSSProperties {
 const controlRow: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
-  gap: "1rem",
-  marginBottom: "1rem",
+  gap: "6px",
+  marginBottom: "6px",
   alignItems: "flex-end",
+  lineHeight: 1.25,
 };
 
 const labelStyle: CSSProperties = {
-  fontSize: "0.72rem",
-  color: "#8c99a8",
+  fontSize: "11px",
+  color: "var(--text-secondary)",
   marginBottom: 2,
+  lineHeight: 1.25,
+  fontFamily:
+    'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
 };
 
 const selectStyle: CSSProperties = {
   minWidth: "11rem",
-  padding: "0.35rem 0.5rem",
-  borderRadius: 5,
-  border: "1px solid #2a3444",
-  background: "#0f141d",
-  color: "#e6ebf2",
+  padding: "2px 6px",
+  borderRadius: 0,
+  border: "1px solid var(--chrome-border)",
+  background: "var(--bg-surface)",
+  color: "var(--text-primary)",
+  fontSize: "12px",
+  lineHeight: 1.25,
+  fontFamily:
+    'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
 };
 
 const legendText: CSSProperties = {
-  fontSize: "0.8rem",
-  color: "#8c99a8",
+  fontSize: "11px",
+  color: "var(--text-secondary)",
   marginBottom: "0.5rem",
+  lineHeight: 1.25,
 };
 
 const tableWrap: CSSProperties = {
   overflowX: "auto",
-  border: "1px solid #1e2636",
-  borderRadius: 8,
-  background: "#0c111c",
+  border: "1px solid var(--bg-border)",
+  borderRadius: 0,
+  background: "var(--bg-surface)",
 };
 
 const tableStyle: CSSProperties = {
   borderCollapse: "separate",
   borderSpacing: 0,
   width: "100%",
-  fontSize: "0.88rem",
+  fontSize: "12px",
+  fontFamily:
+    'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
 };
 
 const thStyle: CSSProperties = {
-  padding: "0.55rem 0.7rem",
-  borderBottom: "1px solid #2a3444",
-  background: "#141a25",
-  color: "#c7d0dc",
+  padding: "2px 6px",
+  borderBottom: "1px solid var(--bg-border)",
+  background: "var(--bg-surface)",
+  color: "var(--text-primary)",
   textAlign: "right",
   whiteSpace: "nowrap",
-  fontWeight: 600,
+  fontWeight: 700,
+  lineHeight: 1.25,
 };
 
 // Base styles for the label column cells. Borders use solid 1px lines whose
@@ -905,13 +917,13 @@ const thStyle: CSSProperties = {
 // below adjust padding (density) and background tint so sectors, sub-themes,
 // and tickers each read as visually distinct horizontal bands.
 const labelCellBase: CSSProperties = {
-  borderBottom: "1px solid #141d2c",
+  borderBottom: "1px solid var(--bg-border)",
   whiteSpace: "nowrap",
   maxWidth: "20rem",
 };
 
 const tdCellStyle: CSSProperties = {
-  borderBottom: "1px solid #141d2c",
+  borderBottom: "1px solid var(--bg-border)",
 };
 
 // Heat cells inherit the same vertical density as their row level so the
@@ -920,13 +932,13 @@ const HEAT_CELL_DENSITY: Record<
   LevelKey,
   { padding: string; fontSize: string; fontWeight: number }
 > = {
-  SECTOR: { padding: "0.7rem 0.7rem", fontSize: "0.86rem", fontWeight: 600 },
-  SUB_THEME: { padding: "0.42rem 0.7rem", fontSize: "0.84rem", fontWeight: 500 },
-  COMPANY: { padding: "0.32rem 0.7rem", fontSize: "0.8rem", fontWeight: 500 },
+  SECTOR: { padding: "0 6px", fontSize: "12px", fontWeight: 700 },
+  SUB_THEME: { padding: "0 6px", fontSize: "12px", fontWeight: 500 },
+  COMPANY: { padding: "0 6px", fontSize: "12px", fontWeight: 500 },
 };
 
 // === Sector row (warm amber, tall, uppercase) ===
-const SECTOR_BG = "#1c2638";
+const SECTOR_BG = "#0a0a0a";
 
 const sectorRowStyle: CSSProperties = {
   background: SECTOR_BG,
@@ -934,26 +946,26 @@ const sectorRowStyle: CSSProperties = {
 
 const sectorLabelCell: CSSProperties = {
   ...labelCellBase,
-  padding: "0.7rem 0.85rem",
+  padding: "0 6px",
   background: SECTOR_BG,
 };
 
 const sectorEmptyCell: CSSProperties = {
   ...labelCellBase,
-  padding: "0.7rem 0.85rem",
+  padding: "0 6px",
   background: SECTOR_BG,
 };
 
 const sectorLabelText: CSSProperties = {
-  color: "#f0b65d",
+  color: "var(--color-accent)",
   fontWeight: 700,
   textTransform: "uppercase",
-  letterSpacing: "0.085em",
-  fontSize: "0.82rem",
+  letterSpacing: "0.08em",
+  fontSize: "12px",
 };
 
 // === Sub-theme row (cool, mid-density, light text) ===
-const SUB_THEME_BG = "#0e1624";
+const SUB_THEME_BG = "#080808";
 
 const subThemeRowStyle: CSSProperties = {
   background: SUB_THEME_BG,
@@ -961,35 +973,35 @@ const subThemeRowStyle: CSSProperties = {
 
 const subThemeSectorCell: CSSProperties = {
   ...labelCellBase,
-  padding: "0.42rem 0.85rem",
+  padding: "0 6px",
   background: SUB_THEME_BG,
   // Continuous "spine" down the sector column ties every sub-theme back to
   // its parent sector visually.
-  boxShadow: "inset 4px 0 0 #2c3a55",
+  boxShadow: "inset 4px 0 0 #1a1a1a",
 };
 
 const subThemeLabelCell: CSSProperties = {
   ...labelCellBase,
-  padding: "0.42rem 0.85rem",
-  paddingLeft: "1.5rem",
+  padding: "0 6px",
+  paddingLeft: "12px",
   background: SUB_THEME_BG,
 };
 
 const subThemeTrailingCell: CSSProperties = {
   ...labelCellBase,
-  padding: "0.42rem 0.85rem",
+  padding: "0 6px",
   background: SUB_THEME_BG,
 };
 
 const subThemeLabelText: CSSProperties = {
-  color: "#d8e3f0",
+  color: "#d0d0d0",
   fontWeight: 500,
-  fontSize: "0.86rem",
+  fontSize: "12px",
   letterSpacing: "0.005em",
 };
 
 // === Company row (compact, monospaced ticker, recessed) ===
-const COMPANY_BG = "#091018";
+const COMPANY_BG = "#050505";
 
 const companyRowStyle: CSSProperties = {
   background: COMPANY_BG,
@@ -997,48 +1009,47 @@ const companyRowStyle: CSSProperties = {
 
 const companySectorCell: CSSProperties = {
   ...labelCellBase,
-  padding: "0.32rem 0.85rem",
+  padding: "0 6px",
   background: COMPANY_BG,
   // Sector spine continues through company rows so the whole sector reads as
   // one connected block.
-  boxShadow: "inset 4px 0 0 #2c3a55",
+  boxShadow: "inset 4px 0 0 #1a1a1a",
 };
 
 const companySubCell: CSSProperties = {
   ...labelCellBase,
-  padding: "0.32rem 0.85rem",
+  padding: "0 6px",
   background: COMPANY_BG,
   // Secondary spine through the sub-theme column groups companies under
   // their sub-theme parent.
-  boxShadow: "inset 3px 0 0 #243149",
+  boxShadow: "inset 3px 0 0 #141414",
 };
 
 const companyTickerCell: CSSProperties = {
   ...labelCellBase,
-  padding: "0.32rem 0.85rem",
-  paddingLeft: "1.95rem",
+  padding: "0 6px",
+  paddingLeft: "16px",
   background: COMPANY_BG,
 };
 
 const tickerText: CSSProperties = {
-  color: "#9eb0c8",
+  color: "var(--text-secondary)",
   fontWeight: 500,
-  fontSize: "0.8rem",
+  fontSize: "12px",
   fontVariantNumeric: "tabular-nums",
-  letterSpacing: "0.04em",
-  fontFamily:
-    'ui-monospace, SFMono-Regular, "JetBrains Mono", "Cascadia Mono", Menlo, monospace',
+  letterSpacing: "0.02em",
+  fontFamily: 'var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace',
 };
 
 // === Gap row between sectors ===
 const gapRowStyle: CSSProperties = {
-  background: "#06090f",
+  background: "#000000",
 };
 
 const gapCellStyle: CSSProperties = {
-  height: 12,
+  height: 2,
   padding: 0,
-  background: "#06090f",
+  background: "#000000",
   borderBottom: "none",
 };
 
@@ -1050,7 +1061,7 @@ const emptyStateCell: CSSProperties = {
 const treeToggleBtn: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
-  gap: "0.55rem",
+  gap: "4px",
   background: "transparent",
   border: "none",
   color: "inherit",
@@ -1061,19 +1072,19 @@ const treeToggleBtn: CSSProperties = {
 };
 
 const btnGhost: CSSProperties = {
-  padding: "0.4rem 0.85rem",
-  borderRadius: 6,
-  border: "1px solid #384454",
-  background: "transparent",
-  color: "#c7d0dc",
-  fontSize: "0.85rem",
+  padding: "1px 8px",
+  borderRadius: 0,
+  border: "1px solid var(--bg-border)",
+  background: "var(--bg-base)",
+  color: "var(--text-secondary)",
+  fontSize: "11px",
   fontWeight: 500,
   cursor: "pointer",
 };
 
 const btnGhostActive: CSSProperties = {
   ...btnGhost,
-  background: "#1f2a3d",
-  borderColor: "#4a5b7a",
-  color: "#f2f5f9",
+  background: "var(--bg-elevated)",
+  borderColor: "var(--color-accent)",
+  color: "var(--text-primary)",
 };

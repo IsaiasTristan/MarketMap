@@ -11,6 +11,7 @@ import { ScenariosPanel } from "./panels/ScenariosPanel";
 import { RiskPanel } from "./panels/RiskPanel";
 import { MarketContextPanel } from "./panels/MarketContextPanel";
 import { AlertsPanel } from "./panels/AlertsPanel";
+import { BloombergTabStrip } from "@/components/analysis/BloombergTabStrip";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
 import type { FactorExposureSnapshot, AttributionResult, DriversResult, RiskDecomposition, FactorAlert } from "@/types/factors";
 
@@ -128,7 +129,7 @@ export function FactorsClient() {
     !exposureLoading &&
     exposureError === null &&
     exposure &&
-    "error" in (exposure as Record<string, unknown>);
+    "error" in (exposure as unknown as Record<string, unknown>);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -156,7 +157,7 @@ export function FactorsClient() {
             padding: "10px 16px",
             background: "rgba(245,158,11,0.06)",
             border: "1px solid rgba(245,158,11,0.25)",
-            borderRadius: 8,
+            borderRadius: 2,
             fontSize: 13,
             color: "var(--color-warning)",
           }}
@@ -174,66 +175,30 @@ export function FactorsClient() {
         </div>
       ) : (
         <HeaderSummary
-          exposure={exposure && !("error" in (exposure as Record<string, unknown>)) ? (exposure as FactorExposureSnapshot) : null}
+          exposure={exposure && !("error" in (exposure as unknown as Record<string, unknown>)) ? (exposure as FactorExposureSnapshot) : null}
           attribution={attribution}
           selectedPeriod={factorPeriod}
         />
       )}
 
       {/* Tab bar */}
-      <div
-        style={{
-          display: "flex",
-          gap: 2,
-          borderBottom: "1px solid var(--bg-border)",
-          paddingBottom: 0,
-        }}
-      >
-        {TABS.map((t) => {
-          const active = t.key === activeTab;
-          return (
-            <button
-              key={t.key}
-              onClick={() => setActiveTab(t.key)}
-              style={{
-                padding: "8px 14px",
-                fontSize: 12,
-                fontWeight: active ? 600 : 400,
-                color: active ? "var(--color-accent)" : "var(--text-secondary)",
-                background: "transparent",
-                border: "none",
-                borderBottom: active ? "2px solid var(--color-accent)" : "2px solid transparent",
-                cursor: "pointer",
-                marginBottom: -1,
-                transition: "all 0.12s",
-              }}
-            >
-              {t.label}
-              {t.key === "alerts" && alerts.length > 0 && (
-                <span
-                  style={{
-                    marginLeft: 5,
-                    background: "var(--color-negative)",
-                    color: "#fff",
-                    fontSize: 9,
-                    fontWeight: 700,
-                    padding: "1px 5px",
-                    borderRadius: 10,
-                  }}
-                >
-                  {alerts.length}
-                </span>
-              )}
-            </button>
-          );
-        })}
+      <div style={{ borderBottom: "1px solid var(--bg-border)", marginBottom: 8 }}>
+        <BloombergTabStrip
+          tabs={TABS.map((t) => ({
+            key: t.key,
+            label: t.label,
+            badge: t.key === "alerts" ? alerts.length : undefined,
+          }))}
+          activeKey={activeTab}
+          onChange={(k) => setActiveTab(k as Tab)}
+        />
       </div>
 
       {/* Tab content */}
       <div>
         {activeTab === "exposure" && (
           <ExposurePanel
-            exposure={exposure && !("error" in (exposure as Record<string, unknown>)) ? (exposure as FactorExposureSnapshot) : null}
+            exposure={exposure && !("error" in (exposure as unknown as Record<string, unknown>)) ? (exposure as FactorExposureSnapshot) : null}
             attribution={attribution}
             selectedPeriod={factorPeriod}
           />

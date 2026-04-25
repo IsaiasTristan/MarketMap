@@ -7,6 +7,7 @@ import { ChartCard } from "@/components/analysis/ui/ChartCard";
 import { DataTable, type Column } from "@/components/analysis/ui/DataTable";
 import { Donut } from "@/components/analysis/ui/Donut";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
+import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import {
   BarChart,
   Bar,
@@ -231,7 +232,7 @@ export function OverviewClient() {
               <YAxis
                 type="category"
                 dataKey="ticker"
-                tick={{ fontSize: 11, fill: "var(--text-secondary)", fontFamily: "var(--font-jetbrains-mono, monospace)" }}
+                tick={{ fontSize: 11, fill: "var(--text-secondary)", fontFamily: "var(--font-mono, monospace)" }}
                 axisLine={false}
                 tickLine={false}
                 width={50}
@@ -239,11 +240,11 @@ export function OverviewClient() {
               <ReferenceLine x={0} stroke="var(--bg-border)" />
               <Tooltip
                 formatter={(v) => [fmt$(v as number), "Daily P&L"]}
-                contentStyle={{ background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", borderRadius: 8 }}
-                labelStyle={{ color: "var(--text-primary)" }}
+                contentStyle={bbTooltipStyle}
+                labelStyle={{ color: "#fff" }}
                 itemStyle={{ color: "var(--text-secondary)" }}
               />
-              <Bar dataKey="dailyPnl" radius={[0, 4, 4, 0]}>
+              <Bar dataKey="dailyPnl" radius={0}>
                 {contribData.map((entry, i) => (
                   <Cell
                     key={i}

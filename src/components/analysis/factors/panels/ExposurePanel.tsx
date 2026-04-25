@@ -18,7 +18,7 @@ function SignedVal({ v, digits = 3 }: { v: number; digits?: number }) {
   return (
     <span
       style={{
-        fontFamily: "var(--font-jetbrains-mono, monospace)",
+        fontFamily: "var(--font-mono, monospace)",
         color: pos ? "var(--color-positive)" : "var(--color-negative)",
         fontWeight: 600,
         fontSize: 12,
@@ -36,7 +36,7 @@ function TStatBadge({ t }: { t: number }) {
     <span
       style={{
         fontSize: 11,
-        fontFamily: "var(--font-jetbrains-mono, monospace)",
+        fontFamily: "var(--font-mono, monospace)",
         color: significant ? "var(--color-positive)" : "var(--text-muted)",
         background: significant ? "rgba(34,197,94,0.08)" : "transparent",
         padding: "1px 6px",
@@ -70,12 +70,12 @@ function MicroBar({ pct }: { pct: number }) {
             top: 0,
             height: "100%",
             width: `${abs * 100}%`,
-            background: pct > 0 ? "#6366f1" : "#ef4444",
+            background: pct > 0 ? "var(--chart-1)" : "#ef4444",
             borderRadius: 3,
           }}
         />
       </div>
-      <span style={{ fontSize: 10, fontFamily: "var(--font-jetbrains-mono, monospace)", color: "var(--text-muted)", minWidth: 36 }}>
+      <span style={{ fontSize: 10, fontFamily: "var(--font-mono, monospace)", color: "var(--text-muted)", minWidth: 36 }}>
         {(pct * 100).toFixed(1)}%
       </span>
     </div>
@@ -159,7 +159,7 @@ export function ExposurePanel({ exposure, attribution, selectedPeriod }: Exposur
                   </td>
                   <td style={{ ...cellStyle, textAlign: "right" }}>
                     {f.holdingsImplied !== null ? (
-                      <span style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "var(--font-jetbrains-mono, monospace)" }}>
+                      <span style={{ fontSize: 11, color: "var(--text-secondary)", fontFamily: "var(--font-mono, monospace)" }}>
                         {f.holdingsImplied >= 0 ? "+" : ""}
                         {f.holdingsImplied.toFixed(2)}
                       </span>

@@ -56,7 +56,7 @@ export async function getFactorDrivers(
   const factorRows = await db.factorReturnDaily.findMany({
     where: {
       tradeDate: { gte: new Date(allDates[0]!), lte: new Date(allDates[allDates.length - 1]!) },
-      factorCode: { in: factorCodes as string[] },
+      factorCode: { in: factorCodes },
     },
     select: { tradeDate: true, factorCode: true, value: true },
   });

@@ -7,6 +7,8 @@ import { MarketMapClient } from "@/components/MarketMapClient";
 import { ManageTickersModal } from "@/components/ManageTickersModal";
 
 const AUTO_REFRESH_MS = 30_000;
+/** Abort hanging Prisma/DB connects so the UI does not sit on "Loading universe…" forever. */
+const UNIVERSE_DEFAULT_FETCH_MS = 20_000;
 
 export function MarketMapPageInner() {
   const sp = useSearchParams();
@@ -33,16 +35,34 @@ export function MarketMapPageInner() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/universe/default", { cache: "no-store" });
+        const res = await fetch("/api/universe/default", {
+          cache: "no-store",
+          signal: AbortSignal.timeout(UNIVERSE_DEFAULT_FETCH_MS),
+        });
         const j = (await res.json()) as { id?: string; error?: string };
         if (cancelled) return;
         if (!res.ok || !j.id) {
-          setResolveErr(j.error ?? "Failed to load universe.");
+          setResolveErr(
+            j.error ??
+              "Failed to load universe. Is PostgreSQL running and DATABASE_URL set in .env?"
+          );
           return;
         }
         setResolvedUniverseId(j.id);
       } catch (e) {
         if (cancelled) return;
+        if (e instanceof Error && e.name === "TimeoutError") {
+          setResolveErr(
+            `Timed out after ${UNIVERSE_DEFAULT_FETCH_MS / 1000}s loading the default universe. Start PostgreSQL, set DATABASE_URL in .env, then run: npx prisma db push`
+          );
+          return;
+        }
+        if (e instanceof Error && e.name === "AbortError") {
+          setResolveErr(
+            "Request was cancelled or timed out. Check PostgreSQL and DATABASE_URL, then refresh."
+          );
+          return;
+        }
         setResolveErr(e instanceof Error ? e.message : String(e));
       }
     })();
@@ -121,14 +141,27 @@ export function MarketMapPageInner() {
     void triggerIngest(resolvedUniverseId, "missing");
   }, [resolvedUniverseId, triggerIngest]);
 
-  // Auto-refresh the chart on a fixed cadence regardless of ingest state so
-  // the user never has to press a button to see the latest data.
+  // Auto-refresh the chart on a fixed cadence while the tab is visible so
+  // backgrounded windows do not hammer Postgres / Next RSC.
   useEffect(() => {
     if (!resolvedUniverseId) return;
-    const t = setInterval(() => {
+    const bump = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
       setReloadToken((n) => n + 1);
-    }, AUTO_REFRESH_MS);
-    return () => clearInterval(t);
+    };
+    const t = setInterval(bump, AUTO_REFRESH_MS);
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        bump();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [resolvedUniverseId]);
 
   const marketStatus = useMemo(() => getUsMarketStatus(new Date(now)), [now]);
@@ -187,12 +220,12 @@ export function MarketMapPageInner() {
       </div>
 
       {resolveErr && (
-        <p style={{ padding: "0 1.5rem", color: "#ff8d8d" }} role="alert">
+        <p style={{ padding: "0 8px", color: "var(--color-negative)" }} role="alert">
           {resolveErr}
         </p>
       )}
       {ingestErr && (
-        <p style={{ padding: "0 1.5rem", color: "#d5a64a", fontSize: "0.88rem" }}>
+        <p style={{ padding: "0 8px", color: "var(--color-warning)", fontSize: "11px" }}>
           {ingestErr}
         </p>
       )}
@@ -206,7 +239,7 @@ export function MarketMapPageInner() {
             onLoaded={onDataLoaded}
           />
         ) : !resolveErr ? (
-          <p style={{ color: "#8c99a8" }}>Loading universe…</p>
+          <p style={{ color: "var(--text-secondary)" }}>Loading universe…</p>
         ) : null}
       </div>
 
@@ -245,9 +278,9 @@ function getUsMarketStatus(now: Date): MarketStatus {
   const open = 9 * 60 + 30;
   const close = 16 * 60;
   if (isWeekday && minutesInDay >= open && minutesInDay < close) {
-    return { label: "Open", color: "#3acf6b" };
+    return { label: "Open", color: "var(--color-positive)" };
   }
-  return { label: "Closed", color: "#6a7582" };
+  return { label: "Closed", color: "var(--text-secondary)" };
 }
 
 function formatAgo(at: number | null, now: number): string {
@@ -263,34 +296,36 @@ function formatAgo(at: number | null, now: number): string {
 }
 
 const page: CSSProperties = {
-  background: "#0b1018",
-  color: "#e6ebf2",
-  margin: -24,        // cancel the analysis layout's 24px padding so the map fills edge-to-edge
+  background: "var(--bg-base)",
+  color: "var(--text-primary)",
 };
 
 const topBar: CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
-  padding: "0.9rem 1.5rem",
-  borderBottom: "1px solid #1e2636",
-  background: "#0f141d",
+  padding: "4px 8px",
+  borderBottom: "1px solid var(--bg-border)",
+  background: "var(--bg-surface)",
   flexWrap: "wrap",
-  gap: "0.75rem",
+  gap: "6px",
+  lineHeight: 1.25,
 };
 
 const pageTitle: CSSProperties = {
   margin: 0,
-  fontSize: "1.05rem",
-  fontWeight: 600,
-  color: "#f2f5f9",
-  letterSpacing: "0.01em",
+  fontSize: "12px",
+  fontWeight: 700,
+  color: "var(--text-primary)",
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  lineHeight: 1.25,
 };
 
 const topRight: CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: "0.5rem",
+  gap: "6px",
 };
 
 const dot = (color: string): CSSProperties => ({
@@ -302,39 +337,43 @@ const dot = (color: string): CSSProperties => ({
 });
 
 const statusText: CSSProperties = {
-  color: "#8c99a8",
-  fontSize: "0.85rem",
+  color: "var(--text-secondary)",
+  fontSize: "11px",
+  lineHeight: 1.25,
 };
 
 const separator: CSSProperties = {
-  color: "#3a4558",
-  fontSize: "0.85rem",
+  color: "var(--text-secondary)",
+  fontSize: "11px",
 };
 
 const content: CSSProperties = {
-  padding: "1rem 1.5rem 2rem",
+  padding: "6px 8px",
 };
 
 const btnBase: CSSProperties = {
-  padding: "0.4rem 0.85rem",
-  borderRadius: 6,
+  padding: "1px 8px",
+  borderRadius: 0,
   border: "1px solid transparent",
-  fontSize: "0.88rem",
-  fontWeight: 500,
+  fontSize: "11px",
+  fontWeight: 600,
   cursor: "pointer",
+  lineHeight: 1.25,
+  fontFamily:
+    'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
 };
 
 const btnPrimary: CSSProperties = {
   ...btnBase,
-  background: "#3a6ae4",
-  color: "#fff",
-  borderColor: "#3a6ae4",
+  background: "var(--bg-base)",
+  color: "var(--color-accent)",
+  borderColor: "var(--chrome-border)",
 };
 
 const btnGhost: CSSProperties = {
   ...btnBase,
-  background: "transparent",
-  color: "#c7d0dc",
-  borderColor: "#384454",
-  padding: "0.35rem 0.55rem",
+  background: "var(--bg-base)",
+  color: "var(--text-secondary)",
+  borderColor: "var(--chrome-border)",
+  padding: "1px 6px",
 };

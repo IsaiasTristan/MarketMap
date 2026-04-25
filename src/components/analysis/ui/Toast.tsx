@@ -3,10 +3,10 @@ import { useEffect } from "react";
 import { useAnalysisStore } from "@/store/analysis";
 
 const SEVERITY_STYLES = {
-  info: { bg: "rgba(56,189,248,0.12)", border: "#38bdf8", icon: "ℹ" },
-  success: { bg: "rgba(34,197,94,0.12)", border: "#22c55e", icon: "✓" },
-  warning: { bg: "rgba(245,158,11,0.12)", border: "#f59e0b", icon: "⚠" },
-  error: { bg: "rgba(239,68,68,0.12)", border: "#ef4444", icon: "✕" },
+  info: { bg: "var(--bb-chrome)", border: "var(--chrome-border)", text: "#fff", icon: "ℹ" },
+  success: { bg: "var(--bb-green)", border: "var(--bb-green)", text: "#000", icon: "✓" },
+  warning: { bg: "var(--bb-amber-bg)", border: "var(--bb-amber-bg)", text: "#000", icon: "⚠" },
+  error: { bg: "var(--bb-red)", border: "var(--bb-red)", text: "#fff", icon: "✕" },
 };
 
 function ToastItem({ toast }: { toast: { id: string; message: string; severity: "info" | "success" | "warning" | "error" } }) {
@@ -26,15 +26,15 @@ function ToastItem({ toast }: { toast: { id: string; message: string; severity: 
         gap: 10,
         background: style.bg,
         border: `1px solid ${style.border}`,
-        borderRadius: 8,
-        padding: "10px 14px",
+        borderRadius: 0,
+        padding: "8px 12px",
         minWidth: 280,
         maxWidth: 380,
-        boxShadow: "0 4px 20px rgba(0,0,0,0.4)",
+        boxShadow: "none",
       }}
     >
-      <span style={{ fontSize: 14, marginTop: 1 }}>{style.icon}</span>
-      <span style={{ fontSize: 13, color: "var(--text-primary)", flex: 1 }}>
+      <span style={{ fontSize: 14, marginTop: 1, color: style.text }}>{style.icon}</span>
+      <span style={{ fontSize: 12, color: style.text, flex: 1 }}>
         {toast.message}
       </span>
       <button
@@ -42,7 +42,8 @@ function ToastItem({ toast }: { toast: { id: string; message: string; severity: 
         style={{
           background: "none",
           border: "none",
-          color: "var(--text-muted)",
+          color: style.text,
+          opacity: 0.7,
           cursor: "pointer",
           fontSize: 14,
           padding: 0,

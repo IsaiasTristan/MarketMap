@@ -12,7 +12,7 @@ export function Skeleton({ width = "100%", height = 16, style }: SkeletonProps) 
       style={{
         width,
         height,
-        borderRadius: 4,
+        borderRadius: 0,
         background:
           "linear-gradient(90deg, var(--bg-elevated) 25%, var(--bg-border) 50%, var(--bg-elevated) 75%)",
         backgroundSize: "200% 100%",
@@ -35,8 +35,8 @@ export function SkeletonCard({
       style={{
         background: "var(--bg-surface)",
         border: "1px solid var(--bg-border)",
-        borderRadius: 12,
-        padding: 16,
+        borderRadius: 0,
+        padding: 12,
         height,
         display: "flex",
         flexDirection: "column",

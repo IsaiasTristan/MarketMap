@@ -16,7 +16,7 @@ function DriverBar({ entry, maxAbs }: { entry: FactorDriverEntry; maxAbs: number
   const positive = entry.contribution >= 0;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
-      <div style={{ width: 80, fontSize: 11, color: "var(--text-secondary)", truncate: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+      <div style={{ width: 80, fontSize: 11, color: "var(--text-secondary)", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
         {entry.label}
       </div>
       <div style={{ flex: 1, height: 8, background: "var(--bg-elevated)", borderRadius: 4, overflow: "hidden" }}>
@@ -24,8 +24,8 @@ function DriverBar({ entry, maxAbs }: { entry: FactorDriverEntry; maxAbs: number
           style={{
             height: "100%",
             width: `${pct}%`,
-            background: positive ? "#6366f1" : "#ef4444",
-            borderRadius: 4,
+            background: positive ? "var(--chart-1)" : "var(--color-negative)",
+            borderRadius: 2,
           }}
         />
       </div>
@@ -33,7 +33,7 @@ function DriverBar({ entry, maxAbs }: { entry: FactorDriverEntry; maxAbs: number
         style={{
           width: 52,
           fontSize: 10,
-          fontFamily: "var(--font-jetbrains-mono, monospace)",
+          fontFamily: "var(--font-mono, monospace)",
           color: positive ? "var(--color-positive)" : "var(--color-negative)",
           textAlign: "right",
         }}
@@ -97,7 +97,7 @@ export function DriversPanel({ drivers, groupBy, onGroupByChange }: DriversPanel
                 style={{
                   background: "var(--bg-elevated)",
                   border: `1px solid ${def.color}30`,
-                  borderRadius: 10,
+                  borderRadius: 2,
                   padding: "12px 14px",
                 }}
               >

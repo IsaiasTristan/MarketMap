@@ -7,8 +7,9 @@
  *   - The "Exposure Over Time" chart (history API)
  *   - Drift alert detection (alerts service)
  */
+import type { Prisma } from "@prisma/client";
 import { prisma as db } from "@/infrastructure/db/client";
-import type { FactorEngineResult, FactorCode } from "@/types/factors";
+import type { FactorEngineResult } from "@/types/factors";
 
 interface SnapshotJson {
   betas: Record<string, number>;
@@ -65,14 +66,15 @@ export async function persistFactorSnapshot(
     select: { id: true },
   });
 
+  const json = factorsJson as unknown as Prisma.InputJsonValue;
   if (existing) {
     await db.factorExposureSnapshot.update({
       where: { id: existing.id },
-      data: { factorsJson },
+      data: { factorsJson: json },
     });
   } else {
     await db.factorExposureSnapshot.create({
-      data: { portfolioId, asOfDate: dateObj, modelName: model, factorsJson },
+      data: { portfolioId, asOfDate: dateObj, modelName: model, factorsJson: json },
     });
   }
 }
@@ -104,7 +106,7 @@ export async function getExposureHistory(
 
   for (const row of rows) {
     dates.push(row.asOfDate.toISOString().slice(0, 10));
-    const json = row.factorsJson as SnapshotJson;
+    const json = row.factorsJson as unknown as SnapshotJson;
     alphas.push(json.alpha ?? 0);
     rSquareds.push(json.rSquared ?? 0);
     for (const [code, beta] of Object.entries(json.betas ?? {})) {
@@ -146,14 +148,14 @@ export async function detectFactorDrift(
   // Use last row as "current", rest as history
   const current = rows[rows.length - 1]!;
   const history = rows.slice(0, -1);
-  const currentJson = current.factorsJson as SnapshotJson;
+  const currentJson = current.factorsJson as unknown as SnapshotJson;
   const currentBetas = currentJson.betas ?? {};
 
   const events: DriftEvent[] = [];
 
   for (const [code, currentBeta] of Object.entries(currentBetas)) {
     const historicalBetas = history
-      .map((r) => ((r.factorsJson as SnapshotJson).betas ?? {})[code] ?? null)
+      .map((r) => ((r.factorsJson as unknown as SnapshotJson).betas ?? {})[code] ?? null)
       .filter((v): v is number => v !== null);
 
     if (historicalBetas.length < 5) continue;

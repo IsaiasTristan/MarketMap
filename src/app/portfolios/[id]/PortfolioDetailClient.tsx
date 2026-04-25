@@ -1,5 +1,3 @@
-<<<<<<< Current (Your changes)
-=======
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -449,4 +447,3 @@ const btnDanger: React.CSSProperties = {
   border: "1px solid #9b2c2c",
   background: "#9b2c2c",
 };
->>>>>>> Incoming (Background Agent changes)

@@ -1,4 +1,5 @@
 "use client";
+import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import {
   PieChart,
   Pie,
@@ -25,10 +26,10 @@ const CHART_COLORS = [
 
 // recharts needs resolved colors — we use explicit hex fallbacks
 const CHART_COLORS_HEX = [
-  "#6366f1",
+  "var(--chart-1)",
   "#22c55e",
   "#f59e0b",
-  "#38bdf8",
+  "var(--chart-4)",
   "#e879f9",
   "#fb923c",
 ];
@@ -81,7 +82,7 @@ export function Donut({
             fill="var(--text-primary)"
             fontSize={18}
             fontWeight={700}
-            fontFamily="var(--font-jetbrains-mono, monospace)"
+            fontFamily="var(--font-mono, monospace)"
           >
             {centerLabel}
           </text>
@@ -100,13 +101,8 @@ export function Donut({
         )}
         <Tooltip
           formatter={formatter}
-          contentStyle={{
-            background: "var(--bg-elevated)",
-            border: "1px solid var(--bg-border)",
-            borderRadius: 8,
-            fontSize: 13,
-          }}
-          labelStyle={{ color: "var(--text-primary)" }}
+          contentStyle={{ ...bbTooltipStyle, fontSize: 13 }}
+          labelStyle={{ color: "#fff" }}
           itemStyle={{ color: "var(--text-secondary)" }}
         />
         <Legend

@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
+import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import { useAnalysisStore } from "@/store/analysis";
 import type { ScenarioDefinition, ScenarioResult, SensitivityEntry } from "@/types/factors";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer, Cell } from "recharts";
@@ -141,7 +142,7 @@ export function ScenariosPanel() {
                     style={{
                       fontSize: 32,
                       fontWeight: 700,
-                      fontFamily: "var(--font-jetbrains-mono, monospace)",
+                      fontFamily: "var(--font-mono, monospace)",
                       color: pnl >= 0 ? "var(--color-positive)" : "var(--color-negative)",
                     }}
                   >
@@ -174,8 +175,8 @@ export function ScenariosPanel() {
                         />
                         <ReferenceLine x={0} stroke="var(--bg-border)" />
                         <Tooltip
-                          contentStyle={{ background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", borderRadius: 8, fontSize: 11 }}
-                          formatter={(v: number) => [`${v.toFixed(3)}%`, "Impact"]}
+                          contentStyle={bbTooltipStyle}
+                          formatter={(v) => [`${Number(v ?? 0).toFixed(3)}%`, "Impact"]}
                         />
                         <Bar dataKey="impact" radius={[0, 3, 3, 0]}>
                           {factorImpacts.map((entry, i) => (
@@ -218,7 +219,7 @@ export function ScenariosPanel() {
                       {s.label}
                     </td>
                     {[s.beta, s.shock1Sig, s.impactNeg1Sig, s.impact1Sig, s.impactNeg2Sig, s.impact2Sig].map((v, i) => (
-                      <td key={i} style={{ padding: "7px 10px", textAlign: "right", fontFamily: "var(--font-jetbrains-mono, monospace)", borderBottom: "1px solid rgba(255,255,255,0.03)", color: i >= 2 ? (v >= 0 ? "var(--color-positive)" : "var(--color-negative)") : "var(--text-secondary)" }}>
+                      <td key={i} style={{ padding: "7px 10px", textAlign: "right", fontFamily: "var(--font-mono, monospace)", borderBottom: "1px solid rgba(255,255,255,0.03)", color: i >= 2 ? (v >= 0 ? "var(--color-positive)" : "var(--color-negative)") : "var(--text-secondary)" }}>
                         {i === 1 ? `${(v * 100).toFixed(1)}%` : i >= 2 ? `${(v * 100).toFixed(2)}%` : v.toFixed(3)}
                       </td>
                     ))}

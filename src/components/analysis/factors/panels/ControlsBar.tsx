@@ -28,7 +28,7 @@ export function ControlsBar({
         padding: "12px 16px",
         background: "var(--bg-surface)",
         border: "1px solid var(--bg-border)",
-        borderRadius: 10,
+        borderRadius: 2,
         flexWrap: "wrap",
       }}
     >

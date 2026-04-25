@@ -4,6 +4,7 @@ import { useAnalysisStore } from "@/store/analysis";
 import { ChartCard, ProvenanceBadge } from "@/components/analysis/ui/ChartCard";
 import { DataTable, type Column } from "@/components/analysis/ui/DataTable";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
+import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import { Card } from "@/components/analysis/ui/Card";
 import {
   AreaChart,
@@ -18,7 +19,7 @@ import {
   ReferenceLine,
   Legend,
 } from "recharts";
-import type { AttributionResult } from "@/server/services/attribution.service";
+import type { AttributionResult, PeriodAttributionSummary } from "@/types/factors";
 import type { TradeStats } from "@/domain/calculations/attribution";
 
 const FACTOR_LABELS: Record<string, string> = {
@@ -32,10 +33,10 @@ const FACTOR_LABELS: Record<string, string> = {
 };
 
 const FACTOR_COLORS: Record<string, string> = {
-  cumulative_MKT_RF: "#6366f1",
+  cumulative_MKT_RF: "var(--chart-1)",
   cumulative_SMB: "#22c55e",
   cumulative_HML: "#f59e0b",
-  cumulative_MOM: "#38bdf8",
+  cumulative_MOM: "var(--chart-4)",
   cumulative_RMW: "#e879f9",
   cumulative_CMA: "#fb923c",
   cumulativeAlpha: "#ef4444",
@@ -78,26 +79,37 @@ export function AttributionClient() {
     ? Object.keys(attribution.cumulative[0]).filter((k) => k !== "date")
     : [];
 
-  // Period summary table
-  const periodRows = attribution?.periodSummary
-    ? (["MTD", "QTD", "YTD"] as const).map((period) => {
-        const sums = attribution.periodSummary[period];
-        return { period, ...sums };
-      })
-    : [];
+  // Period summary table (MTD / QTD / YTD from engine `periods`)
+  const periodRows: Array<Record<string, string | number>> = (() => {
+    if (!attribution?.periods?.length) return [];
+    const codes = ["MKT_RF", "SMB", "HML", "MOM", "RMW", "CMA"] as const;
+    return (["MTD", "QTD", "YTD"] as const)
+      .map((label) => attribution.periods.find((p) => p.label === label))
+      .filter((p): p is PeriodAttributionSummary => p != null)
+      .map((p) => {
+        const row: Record<string, string | number> = {
+          period: p.label,
+          alpha: p.alpha,
+        };
+        for (const code of codes) {
+          row[code] = p.byFactor.find((b) => b.code === code)?.contribution ?? 0;
+        }
+        return row;
+      });
+  })();
 
-  const periodCols: Column<typeof periodRows[0]>[] = [
+  const periodCols: Column<Record<string, string | number>>[] = [
     { key: "period", label: "Period" },
     ...["alpha", "MKT_RF", "SMB", "HML", "MOM", "RMW", "CMA"].map((f) => ({
       key: f,
       label: FACTOR_LABELS[f] ?? f,
       align: "right" as const,
-      render: (r: typeof periodRows[0]) => {
+      render: (r: Record<string, string | number>) => {
         const v = (r as Record<string, unknown>)[f] as number | undefined;
         if (v == null) return "—";
         const color = v >= 0 ? "var(--color-positive)" : "var(--color-negative)";
         return (
-          <span style={{ color, fontFamily: "var(--font-jetbrains-mono, monospace)" }}>
+          <span style={{ color, fontFamily: "var(--font-mono, monospace)" }}>
             {v >= 0 ? "+" : ""}
             {(v * 100).toFixed(2)}%
           </span>
@@ -141,7 +153,7 @@ export function AttributionClient() {
               />
               <ReferenceLine y={0} stroke="var(--bg-border)" strokeDasharray="3 3" />
               <Tooltip
-                contentStyle={{ background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", borderRadius: 8, fontSize: 12 }}
+                contentStyle={bbTooltipStyle}
                 formatter={(v, name) => {
                   const n = v as number;
                   const key = (name as string).replace("cumulative_", "");
@@ -160,8 +172,8 @@ export function AttributionClient() {
                   type="monotone"
                   dataKey={key}
                   stackId="1"
-                  stroke={FACTOR_COLORS[key] ?? "#6366f1"}
-                  fill={FACTOR_COLORS[key] ?? "#6366f1"}
+                  stroke={FACTOR_COLORS[key] ?? "var(--chart-1)"}
+                  fill={FACTOR_COLORS[key] ?? "var(--chart-1)"}
                   fillOpacity={0.7}
                   dot={false}
                   name={key}
@@ -184,7 +196,7 @@ export function AttributionClient() {
           <DataTable
             columns={periodCols}
             rows={periodRows}
-            getRowKey={(r) => r.period}
+            getRowKey={(r) => String(r.period)}
             searchable={false}
             exportFilename="period-attribution.csv"
           />
@@ -206,7 +218,7 @@ export function AttributionClient() {
                 { label: "Avg Loss", value: `${(tradeStats.avgLoss * 100).toFixed(1)}%`, good: false },
                 { label: "Payoff Ratio", value: tradeStats.payoffRatio.toFixed(2), good: tradeStats.payoffRatio > 1 },
               ].map((m) => (
-                <div key={m.label} style={{ background: "var(--bg-elevated)", borderRadius: 8, padding: 12 }}>
+                <div key={m.label} style={{ background: "var(--bg-elevated)", borderRadius: 2, padding: 12 }}>
                   <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
                     {m.label}
                   </div>
@@ -214,7 +226,7 @@ export function AttributionClient() {
                     style={{
                       fontSize: 22,
                       fontWeight: 700,
-                      fontFamily: "var(--font-jetbrains-mono, monospace)",
+                      fontFamily: "var(--font-mono, monospace)",
                       color: m.good ? "var(--color-positive)" : "var(--color-negative)",
                       marginTop: 4,
                     }}

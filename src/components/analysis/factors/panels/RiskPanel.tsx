@@ -1,5 +1,6 @@
 "use client";
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
+import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import { MethodologyTooltip } from "../shared/MethodologyTooltip";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
 import type { RiskDecomposition, FactorCode } from "@/types/factors";
@@ -16,7 +17,7 @@ export function RiskPanel({ risk }: RiskPanelProps) {
     { name: "Systematic", value: risk.systematicShare * 100 },
     { name: "Idiosyncratic", value: risk.idiosyncraticShare * 100 },
   ];
-  const PIE_COLORS = ["#6366f1", "#38bdf8"];
+  const PIE_COLORS = ["var(--chart-1)", "var(--chart-4)"];
 
   const factorRows = risk.factors.filter((f) => Math.abs(f.pctVarianceContrib) > 0.001);
 
@@ -46,7 +47,7 @@ export function RiskPanel({ risk }: RiskPanelProps) {
             style={{
               background: "var(--bg-surface)",
               border: "1px solid var(--bg-border)",
-              borderRadius: 10,
+              borderRadius: 0,
               padding: "14px 16px",
             }}
           >
@@ -57,7 +58,7 @@ export function RiskPanel({ risk }: RiskPanelProps) {
               style={{
                 fontSize: 26,
                 fontWeight: 700,
-                fontFamily: "var(--font-jetbrains-mono, monospace)",
+                fontFamily: "var(--font-mono, monospace)",
                 color: "var(--text-primary)",
               }}
             >
@@ -79,8 +80,8 @@ export function RiskPanel({ risk }: RiskPanelProps) {
                 ))}
               </Pie>
               <Tooltip
-                contentStyle={{ background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", borderRadius: 8, fontSize: 12 }}
-                formatter={(v: number) => [`${v.toFixed(1)}%`]}
+                contentStyle={bbTooltipStyle}
+                formatter={(v) => [`${Number(v ?? 0).toFixed(1)}%`]}
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />
             </PieChart>
@@ -131,7 +132,7 @@ export function RiskPanel({ risk }: RiskPanelProps) {
                           style={{
                             padding: "7px 10px",
                             textAlign: "right",
-                            fontFamily: "var(--font-jetbrains-mono, monospace)",
+                            fontFamily: "var(--font-mono, monospace)",
                             borderBottom: "1px solid rgba(255,255,255,0.03)",
                             fontSize: 12,
                             color:

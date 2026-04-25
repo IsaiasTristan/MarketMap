@@ -100,7 +100,7 @@ export function MarketContextPanel() {
                             borderBottom: "1px solid rgba(255,255,255,0.03)",
                             background: heatColor(v),
                             borderRadius: 4,
-                            fontFamily: "var(--font-jetbrains-mono, monospace)",
+                            fontFamily: "var(--font-mono, monospace)",
                             fontSize: 11,
                             color: v === null ? "var(--text-muted)" : v >= 0 ? "#86efac" : "#fca5a5",
                           }}
@@ -109,10 +109,10 @@ export function MarketContextPanel() {
                         </td>
                       );
                     })}
-                    <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "var(--font-jetbrains-mono, monospace)", fontSize: 11, color: "var(--text-secondary)", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+                    <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "var(--font-mono, monospace)", fontSize: 11, color: "var(--text-secondary)", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
                       {stat.annualizedVol !== null ? `${(stat.annualizedVol * 100).toFixed(1)}%` : "—"}
                     </td>
-                    <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "var(--font-jetbrains-mono, monospace)", fontSize: 11, borderBottom: "1px solid rgba(255,255,255,0.03)", color: stat.sharpeRatio !== null && stat.sharpeRatio > 0 ? "var(--color-positive)" : "var(--color-negative)" }}>
+                    <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "var(--font-mono, monospace)", fontSize: 11, borderBottom: "1px solid rgba(255,255,255,0.03)", color: stat.sharpeRatio !== null && stat.sharpeRatio > 0 ? "var(--color-positive)" : "var(--color-negative)" }}>
                       {stat.sharpeRatio !== null ? stat.sharpeRatio.toFixed(2) : "—"}
                     </td>
                   </tr>
@@ -156,7 +156,7 @@ export function MarketContextPanel() {
                           textAlign: "center",
                           background: corrColor(v),
                           borderRadius: 4,
-                          fontFamily: "var(--font-jetbrains-mono, monospace)",
+                          fontFamily: "var(--font-mono, monospace)",
                           color: v === 1 ? "var(--color-accent)" : "var(--text-secondary)",
                           fontWeight: v === 1 ? 700 : 400,
                         }}

@@ -7,6 +7,7 @@ import { ChartCard } from "@/components/analysis/ui/ChartCard";
 import { DataTable, type Column } from "@/components/analysis/ui/DataTable";
 import { Heatmap } from "@/components/analysis/ui/Heatmap";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
+import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import {
   AreaChart,
   Area,
@@ -220,11 +221,11 @@ export function RiskClient() {
           alignItems: "center",
           gap: 10,
           padding: "8px 14px",
-          borderRadius: 8,
+          borderRadius: 2,
           background: syncError ? "rgba(239,68,68,0.08)" : "rgba(99,102,241,0.08)",
           border: `1px solid ${syncError ? "rgba(239,68,68,0.2)" : "rgba(99,102,241,0.2)"}`,
           fontSize: 12,
-          color: syncError ? "var(--color-negative, #ef4444)" : "var(--color-accent, #6366f1)",
+          color: syncError ? "var(--color-negative)" : "var(--color-accent)",
         }}>
           {syncing && (
             <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", border: "2px solid currentColor", borderTopColor: "transparent", animation: "spin 0.8s linear infinite" }} />
@@ -315,7 +316,7 @@ export function RiskClient() {
       <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
         <span style={{ fontSize: 12, color: "var(--text-muted)", marginRight: 4 }}>VaR Method:</span>
         {(["parametric", "historical"] as const).map((m) => (
-          <button key={m} onClick={() => setVarMethod(m)} style={{ padding: "3px 8px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 11, background: varMethod === m ? "var(--color-accent)" : "var(--bg-elevated)", color: varMethod === m ? "#fff" : "var(--text-secondary)" }}>
+          <button key={m} onClick={() => setVarMethod(m)} style={{ padding: "3px 8px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 11, background: varMethod === m ? "var(--color-accent)" : "var(--bg-elevated)", color: varMethod === m ? "var(--bg-base)" : "var(--text-secondary)" }}>
             {m.charAt(0).toUpperCase() + m.slice(1)}
           </button>
         ))}
@@ -351,7 +352,7 @@ export function RiskClient() {
                 <YAxis tickFormatter={(v) => `${(v as number).toFixed(0)}%`} tick={{ fontSize: 10, fill: "var(--text-secondary)" }} axisLine={false} tickLine={false} />
                 <ReferenceLine y={0} stroke="var(--bg-border)" />
                 <Tooltip
-                  contentStyle={{ background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", borderRadius: 8, fontSize: 12 }}
+                  contentStyle={bbTooltipStyle}
                   formatter={(v) => [`${(v as number).toFixed(2)}%`, "Drawdown"]}
                 />
                 <Area type="monotone" dataKey="drawdown" stroke="#ef4444" fill="url(#ddgrad)" strokeWidth={1.5} dot={false} connectNulls={false} />
@@ -365,17 +366,17 @@ export function RiskClient() {
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
               <PieChart width={180} height={180}>
                 <Pie data={volDecompData} cx={90} cy={90} innerRadius={50} outerRadius={80} dataKey="value">
-                  <Cell fill="#6366f1" />
+                  <Cell fill="var(--chart-1)" />
                   <Cell fill="#22c55e" />
                 </Pie>
                 <Tooltip
                   formatter={(v) => [`${(v as number).toFixed(1)}%`]}
-                  contentStyle={{ background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", borderRadius: 8, fontSize: 12 }}
+                  contentStyle={bbTooltipStyle}
                 />
               </PieChart>
               {volDecompData.map((d, i) => (
                 <div key={d.name} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)" }}>
-                  <div style={{ width: 10, height: 10, borderRadius: 2, background: i === 0 ? "#6366f1" : "#22c55e" }} />
+                  <div style={{ width: 10, height: 10, borderRadius: 2, background: i === 0 ? "var(--chart-1)" : "#22c55e" }} />
                   {d.name}: {d.value.toFixed(1)}%
                 </div>
               ))}
@@ -405,7 +406,7 @@ export function RiskClient() {
               <XAxis dataKey="date" tick={{ fontSize: 10, fill: "var(--text-secondary)" }} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
               <YAxis tickFormatter={(v) => `${(v as number).toFixed(0)}%`} tick={{ fontSize: 10, fill: "var(--text-secondary)" }} axisLine={false} tickLine={false} />
               <ReferenceLine y={16} stroke="var(--bg-border)" strokeDasharray="3 3" label={{ value: "Market ~16%", fontSize: 10, fill: "var(--text-muted)" }} />
-              <Tooltip contentStyle={{ background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", borderRadius: 8, fontSize: 12 }} formatter={(v) => [`${(v as number).toFixed(2)}%`, "Annualized Vol"]} />
+              <Tooltip contentStyle={bbTooltipStyle} formatter={(v) => [`${(v as number).toFixed(2)}%`, "Annualized Vol"]} />
               <Line type="monotone" dataKey="vol" stroke="#f59e0b" strokeWidth={1.5} dot={false} connectNulls={false} />
             </LineChart>
           </ResponsiveContainer>

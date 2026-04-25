@@ -6,7 +6,7 @@ interface AlertsPanelProps {
 }
 
 const SEVERITY_COLORS: Record<string, { bg: string; border: string; text: string }> = {
-  INFO: { bg: "rgba(56,189,248,0.06)", border: "rgba(56,189,248,0.25)", text: "#38bdf8" },
+  INFO: { bg: "rgba(56,189,248,0.06)", border: "rgba(56,189,248,0.25)", text: "var(--chart-4)" },
   WARNING: { bg: "rgba(245,158,11,0.06)", border: "rgba(245,158,11,0.25)", text: "#f59e0b" },
   CRITICAL: { bg: "rgba(239,68,68,0.06)", border: "rgba(239,68,68,0.25)", text: "#ef4444" },
 };
@@ -28,7 +28,7 @@ export function AlertsPanel({ alerts }: AlertsPanelProps) {
           padding: "20px 16px",
           background: "var(--bg-surface)",
           border: "1px solid var(--bg-border)",
-          borderRadius: 10,
+          borderRadius: 2,
           display: "flex",
           alignItems: "center",
           gap: 10,
@@ -53,7 +53,7 @@ export function AlertsPanel({ alerts }: AlertsPanelProps) {
               padding: "12px 16px",
               background: colors.bg,
               border: `1px solid ${colors.border}`,
-              borderRadius: 10,
+              borderRadius: 2,
               display: "flex",
               gap: 12,
               alignItems: "flex-start",

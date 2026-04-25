@@ -1,5 +1,6 @@
 "use client";
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
+import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
 import type { FactorCode, AttributionResult } from "@/types/factors";
 import {
@@ -28,10 +29,10 @@ interface TimeSeriesPanelProps {
 }
 
 const FACTOR_COLORS: Record<string, string> = {
-  MKT_RF: "#6366f1",
+  MKT_RF: "var(--chart-1)",
   SMB: "#22c55e",
   HML: "#f59e0b",
-  RMW: "#38bdf8",
+  RMW: "var(--chart-4)",
   CMA: "#e879f9",
   MOM: "#fb923c",
 };
@@ -93,13 +94,8 @@ export function TimeSeriesPanel({ history, attribution }: TimeSeriesPanelProps) 
               <ReferenceLine y={0} stroke="var(--bg-border)" strokeDasharray="2 2" />
               <ReferenceLine y={1} stroke="rgba(99,102,241,0.3)" strokeDasharray="3 3" />
               <Tooltip
-                contentStyle={{
-                  background: "var(--bg-elevated)",
-                  border: "1px solid var(--bg-border)",
-                  borderRadius: 8,
-                  fontSize: 12,
-                }}
-                formatter={(v: number, name: string) => [v.toFixed(3), name]}
+                contentStyle={bbTooltipStyle}
+                formatter={(v, name) => [Number(v ?? 0).toFixed(3), String(name ?? "")]}
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               {seriesKeys.map((code) => (
@@ -148,13 +144,8 @@ export function TimeSeriesPanel({ history, attribution }: TimeSeriesPanelProps) 
               />
               <ReferenceLine y={0} stroke="var(--bg-border)" />
               <Tooltip
-                contentStyle={{
-                  background: "var(--bg-elevated)",
-                  border: "1px solid var(--bg-border)",
-                  borderRadius: 8,
-                  fontSize: 12,
-                }}
-                formatter={(v: number, name: string) => [`${v.toFixed(2)}%`, name]}
+                contentStyle={bbTooltipStyle}
+                formatter={(v, name) => [`${Number(v ?? 0).toFixed(2)}%`, String(name ?? "")]}
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               {cumulKeys.map((code) => (

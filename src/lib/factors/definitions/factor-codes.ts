@@ -14,7 +14,7 @@ export const FACTOR_DEFS: Record<FactorCode, FactorDef> = {
     whyItMatters:
       "The single largest driver of equity portfolio risk. High market beta amplifies both gains and losses in bull/bear cycles.",
     units: "beta",
-    color: "#6366f1",
+    color: "var(--chart-1)",
   },
   SMB: {
     code: "SMB",
@@ -47,7 +47,7 @@ export const FACTOR_DEFS: Record<FactorCode, FactorDef> = {
     whyItMatters:
       "Profitability is a quality indicator. High-RMW portfolios tend to hold up better in downturns and deliver more consistent returns.",
     units: "beta",
-    color: "#38bdf8",
+    color: "var(--chart-4)",
   },
   CMA: {
     code: "CMA",

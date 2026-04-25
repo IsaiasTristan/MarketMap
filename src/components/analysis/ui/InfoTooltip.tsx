@@ -97,7 +97,7 @@ export function InfoTooltip({
             width: TOOLTIP_WIDTH,
             background: "var(--bg-elevated)",
             border: "1px solid var(--bg-border)",
-            borderRadius: 8,
+            borderRadius: 2,
             padding: 14,
             zIndex: 100,
             boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
@@ -138,7 +138,7 @@ export function InfoTooltip({
               <div
                 style={{
                   fontSize: 11,
-                  fontFamily: "var(--font-jetbrains-mono, monospace)",
+                  fontFamily: "var(--font-mono, monospace)",
                   color: "var(--color-info)",
                   background: "var(--bg-base)",
                   padding: "4px 8px",
@@ -167,7 +167,7 @@ export function InfoTooltip({
                       : passing === false
                         ? "var(--color-negative)"
                         : "var(--text-primary)",
-                  fontFamily: "var(--font-jetbrains-mono, monospace)",
+                  fontFamily: "var(--font-mono, monospace)",
                 }}
               >
                 {currentValue}

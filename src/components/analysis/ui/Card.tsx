@@ -13,8 +13,8 @@ export function Card({ children, style, className }: CardProps) {
       style={{
         background: "var(--bg-surface)",
         border: "1px solid var(--bg-border)",
-        borderRadius: 12,
-        padding: 16,
+        borderRadius: 0,
+        padding: "6px 8px",
         ...style,
       }}
     >
@@ -27,12 +27,12 @@ export function CardLabel({ children }: { children: ReactNode }) {
   return (
     <div
       style={{
-        fontSize: 12,
-        fontWeight: 500,
-        color: "var(--text-secondary)",
+        fontSize: 11,
+        fontWeight: 700,
+        color: "var(--text-label)",
         textTransform: "uppercase",
-        letterSpacing: "0.06em",
-        marginBottom: 8,
+        letterSpacing: "0.3px",
+        marginBottom: 6,
       }}
     >
       {children}
@@ -44,12 +44,12 @@ export function SectionHeading({ children }: { children: ReactNode }) {
   return (
     <h2
       style={{
-        fontSize: 15,
-        fontWeight: 600,
+        fontSize: 13,
+        fontWeight: 700,
         color: "var(--text-primary)",
         textTransform: "uppercase",
-        letterSpacing: "0.05em",
-        margin: "0 0 16px",
+        letterSpacing: "0.3px",
+        margin: "0 0 12px",
       }}
     >
       {children}
