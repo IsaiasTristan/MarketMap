@@ -123,8 +123,11 @@ async function loadFactorReturns(
   for (const row of rows) {
     const d = row.tradeDate.toISOString().slice(0, 10);
     if (row.factorCode === "RF") {
-      // RF from FactorReturnDaily is the annual rate — convert to daily
-      rfMap.set(d, Number(row.value) / 252);
+      // RF in FactorReturnDaily is stored as a daily simple decimal — same
+      // convention as every other code in this table (KF's native CSV is
+      // percent-per-day; the FRED DGS1MO back-fill is calibrated to that
+      // daily level). Use directly without per-read division.
+      rfMap.set(d, Number(row.value));
     } else {
       if (!factorMap.has(d)) factorMap.set(d, {});
       factorMap.get(d)![row.factorCode] = Number(row.value);
@@ -352,7 +355,7 @@ export async function getAllFactorReturnSeries(
 
   for (const d of dates) {
     const day = raw.get(d) ?? new Map<string, number>();
-    rfSeries.push((day.get("RF") ?? 0) / 252);
+    rfSeries.push(day.get("RF") ?? 0);
     for (const [code, val] of day.entries()) {
       if (code === "RF") continue;
       if (!byFactor.has(code)) byFactor.set(code, []);

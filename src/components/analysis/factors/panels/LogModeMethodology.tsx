@@ -101,7 +101,12 @@ export function LogModeMethodology({
     `does NOT sum to the geometric total; only the inner Σ exponentiates cleanly.`;
 
   return (
-    <span title={tip} aria-label="Log attribution methodology" style={badgeStyle}>
+    <span
+      title={tip}
+      aria-label="Log attribution methodology"
+      role="img"
+      style={badgeStyle}
+    >
       i
     </span>
   );

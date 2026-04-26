@@ -99,9 +99,10 @@ export function RiskPanel({ risk }: RiskPanelProps) {
                       key={h}
                       style={{
                         padding: "6px 10px",
-                        fontSize: 10,
-                        fontWeight: 600,
-                        color: "var(--text-muted)",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: "var(--text-primary)",
+                        background: "var(--bg-surface)",
                         textTransform: "uppercase",
                         letterSpacing: "0.06em",
                         borderBottom: "1px solid var(--bg-border)",

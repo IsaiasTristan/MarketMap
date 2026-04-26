@@ -79,7 +79,8 @@ export async function getFactorDrivers(
   }
   for (const r of rfRows) {
     const d = r.tradeDate.toISOString().slice(0, 10);
-    rfByDate.set(d, Number(r.value) / 252);
+    // Stored as daily simple decimal (KF native convention); no /252.
+    rfByDate.set(d, Number(r.value));
   }
 
   // Common dates across all securities + factor data

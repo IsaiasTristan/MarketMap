@@ -161,7 +161,7 @@ export function DataTable<T>({
           <thead>
             <tr
               style={{
-                background: "var(--bg-elevated)",
+                background: "var(--bg-surface)",
                 position: "sticky",
                 top: 0,
               }}
@@ -173,11 +173,11 @@ export function DataTable<T>({
                   style={{
                     padding: "7px 8px",
                     textAlign: col.align ?? "left",
-                    fontSize: 11,
+                    fontSize: 12,
                     fontWeight: 700,
-                    color: "var(--color-accent)",
+                    color: "var(--text-primary)",
                     textTransform: "uppercase",
-                    letterSpacing: "0.3px",
+                    letterSpacing: "0.06em",
                     cursor: col.sortValue ? "pointer" : "default",
                     whiteSpace: "nowrap",
                     borderBottom: "1px solid var(--bg-border)",

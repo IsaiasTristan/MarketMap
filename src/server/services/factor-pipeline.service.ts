@@ -6,7 +6,7 @@
  *   Layer 2: ETF proxies via Yahoo for gap period
  *
  * ETF proxy mapping (per spec):
- *   Mkt-RF: SPY return − (RF/252)
+ *   Mkt-RF: SPY return − RF (RF stored as daily simple decimal)
  *   SMB:    IWM − SPY
  *   HML:    IVE − IVW
  *   MOM:    MTUM (mean-adjusted)
@@ -17,10 +17,12 @@
 import { prisma as db } from "@/infrastructure/db/client";
 import { fetchFf5Factors, fetchMomFactor } from "@/infrastructure/providers/ken-french.provider";
 import { fetchYahooChartDaily } from "@/infrastructure/providers/yahoo-chart-http";
+import { fetchDgs1moRfDaily, type FredObservation } from "@/infrastructure/providers/fred.provider";
 import {
   detectGap,
   normalizeProxyToFf,
   buildFactorSeries,
+  calibrateRfShift,
   type FactorSeries,
 } from "@/domain/calculations/factor-pipeline";
 import { dailyReturnsFromAdjustedCloses } from "@/domain/calculations/returns";
@@ -28,6 +30,66 @@ import { writeAuditLog } from "./audit.service";
 
 // Proxy ETFs per spec
 const PROXY_ETFS = ["SPY", "IWM", "IVE", "IVW", "MTUM", "QUAL", "SPHQ", "SPGP"];
+
+/**
+ * Walk Mon-Fri trading dates strictly after `afterIso` up to and including
+ * today (UTC midnight), returning ISO YYYY-MM-DD strings ascending.
+ *
+ * Mirrors the convention used by `detectGap` and `detectFactorStaleness`:
+ * no US-holiday calendar (acceptable when paired with forward-fill of the
+ * FRED source over the resulting ~7-12 holiday days/year).
+ */
+/**
+ * Walks Mon-Fri ISO dates strictly after `afterIso` up to (and including)
+ * today's UTC date.
+ *
+ * Implementation note (2026-04-26): the previous version mixed `getDay()`
+ * (local-time day-of-week) with `toISOString().slice(0, 10)` (UTC date).
+ * On any machine running in a timezone west of UTC, that combination
+ * silently writes phantom Saturday rows and skips real Mondays — the
+ * Date constructed from `"2026-02-27"` is UTC midnight, which is Feb 26
+ * 19:00 EST, so `getDay()` returns Thursday but `toISOString()` returns
+ * "2026-02-27" (Friday UTC). After one `setDate()` increment the local
+ * day becomes Friday but the UTC date becomes Saturday. To avoid the
+ * skew entirely, walk dates using UTC-aware methods only.
+ */
+function tradingDatesAfter(afterIso: string): string[] {
+  const out: string[] = [];
+  if (!afterIso) return out;
+  const cur = new Date(`${afterIso}T00:00:00.000Z`);
+  const today = new Date();
+  const todayUtc = new Date(
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
+  );
+  cur.setUTCDate(cur.getUTCDate() + 1);
+  while (cur <= todayUtc) {
+    const day = cur.getUTCDay();
+    if (day !== 0 && day !== 6) out.push(cur.toISOString().slice(0, 10));
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return out;
+}
+
+/**
+ * For each ISO target date, look up the latest FRED observation on or
+ * before that date (forward-fill across bond-market holidays / null
+ * prints). Returns NaN if `target` precedes every observation.
+ *
+ * Observations must be sorted ascending by date (FRED CSV is by default).
+ */
+function fredForwardFill(observations: FredObservation[], targets: string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  let i = 0;
+  let lastValue: number | null = null;
+  for (const t of targets) {
+    while (i < observations.length && observations[i].date <= t) {
+      lastValue = observations[i].value;
+      i++;
+    }
+    if (lastValue !== null) out.set(t, lastValue);
+  }
+  return out;
+}
 
 async function fetchEtfDailyReturns(
   ticker: string,
@@ -74,6 +136,7 @@ export async function refreshFactorPipeline(): Promise<{
   backfilled: boolean;
   newFrenchDate: string | null;
   gapTradingDays: number;
+  rfRowsBackfilled: number;
 }> {
   // 1. Get existing pipeline status
   const status = await db.factorPipelineStatus.findFirst();
@@ -120,6 +183,67 @@ export async function refreshFactorPipeline(): Promise<{
     });
   }
 
+  // 3b. Back-fill RF from FRED DGS1MO for every Mon-Fri date strictly
+  //     after the last KF print, up to today. This keeps `rfByDate` in
+  //     `factor-engine` / `factor-per-stock(-timeseries)` populated for
+  //     the post-KF tail so excess returns aren't silently inflated by
+  //     the `rfByDate.get(d) ?? 0` fallback. Stored as PROXY in the
+  //     same daily-simple-decimal convention as KF's RF column (every
+  //     code in `FactorReturnDaily` is a daily simple return).
+  let rfFromFred = new Map<string, number>(); // date -> daily simple decimal
+  let rfRowsBackfilled = 0;
+  let rfCalibrationShift = 0;
+  let rfCalibrationOverlap = 0;
+  try {
+    const targetRfDates = tradingDatesAfter(newLastFrenchDate);
+    if (targetRfDates.length > 0) {
+      // Pull a comfortable 90-day-pre-cutoff window so the calibration
+      // overlap step has plenty of business-day matches.
+      const fredStart = ff5Rows[Math.max(0, ff5Rows.length - 90)]?.date ?? newLastFrenchDate;
+      const dgs1moAnnual = await fetchDgs1moRfDaily(fredStart);
+
+      // Convert FRED's annualized decimal to daily simple decimal so the
+      // calibration operates on commensurate units with KF (also daily).
+      // Linear /252 matches KF Ibbotson's effective convention closely
+      // enough that the residual shift below is just the persistent
+      // 1-3 bp from 360 vs 365 day count + Ibbotson construction.
+      const dgs1moDaily = dgs1moAnnual.map((r) => ({ date: r.date, value: r.value / 252 }));
+
+      // Mean-shift daily-FRED to daily-KF over the trailing 63d overlap
+      // so the splice on `newLastFrenchDate + 1` doesn't introduce a
+      // discrete jump.
+      const ffRfSeries = ff5Rows.map((r) => ({ date: r.date, value: r.rf }));
+      const cal = calibrateRfShift(ffRfSeries, dgs1moDaily, newLastFrenchDate);
+      rfCalibrationShift = cal.shift;
+      rfCalibrationOverlap = cal.overlapDays;
+
+      const dgs1moCalibrated = dgs1moDaily.map((r) => ({
+        date: r.date,
+        value: r.value + rfCalibrationShift,
+      }));
+      rfFromFred = fredForwardFill(dgs1moCalibrated, targetRfDates);
+      for (const [d, v] of rfFromFred) {
+        await db.factorReturnDaily.upsert({
+          where: {
+            tradeDate_factorCode: { tradeDate: new Date(d), factorCode: "RF" },
+          },
+          create: {
+            tradeDate: new Date(d),
+            factorCode: "RF",
+            value: v,
+            source: "PROXY",
+          },
+          update: { value: v, source: "PROXY" },
+        });
+        rfRowsBackfilled++;
+      }
+    }
+  } catch (err) {
+    // FRED outage shouldn't fail the whole pipeline; the existing
+    // staleness banner will continue to surface the missing RF tail.
+    console.error("[factor-pipeline] FRED DGS1MO back-fill failed:", err);
+  }
+
   // 4. If gap exists, fetch proxy ETFs and write normalized gap rows
   if (gapTradingDays > 0) {
     const gapStart = newLastFrenchDate;
@@ -131,10 +255,14 @@ export async function refreshFactorPipeline(): Promise<{
       ),
     );
 
-    // RF daily from last known FF rate (approximate)
+    // SPY-RF proxy input: per-date FRED RF where available, else last
+    // KF level. Both sides are daily simple decimal so the subtraction
+    // SPY_daily − rfDaily is unit-correct. `normalizeProxyToFf`
+    // re-centres on the FF tail anyway so any small residual offset is
+    // absorbed.
     const latestRf = ff5Rows[ff5Rows.length - 1].rf;
     const rfDaily = new Map<string, number>();
-    for (const d of spyRet.keys()) rfDaily.set(d, latestRf);
+    for (const d of spyRet.keys()) rfDaily.set(d, rfFromFred.get(d) ?? latestRf);
 
     // Build proxy factor maps
     const proxyMktRf = computeProxyFactor(spyRet, undefined, rfDaily, "A_minus_rf");
@@ -181,19 +309,23 @@ export async function refreshFactorPipeline(): Promise<{
   }
 
   // 5. Update pipeline status
+  const activeProxies =
+    gapTradingDays > 0 || rfRowsBackfilled > 0
+      ? { etfs: PROXY_ETFS, rf: rfRowsBackfilled > 0 ? "FRED:DGS1MO" : undefined }
+      : {};
   await db.factorPipelineStatus.upsert({
     where: { id: status?.id ?? "singleton" },
     create: {
       id: "singleton",
       lastFrenchDate: new Date(newLastFrenchDate),
       gapTradingDays,
-      activeProxiesJson: gapTradingDays > 0 ? { etfs: PROXY_ETFS } : {},
+      activeProxiesJson: activeProxies,
       lastRefreshAt: new Date(),
     },
     update: {
       lastFrenchDate: new Date(newLastFrenchDate),
       gapTradingDays,
-      activeProxiesJson: gapTradingDays > 0 ? { etfs: PROXY_ETFS } : {},
+      activeProxiesJson: activeProxies,
       lastRefreshAt: new Date(),
     },
   });
@@ -202,9 +334,12 @@ export async function refreshFactorPipeline(): Promise<{
     newLastFrenchDate,
     gapTradingDays,
     backfilled,
+    rfRowsBackfilled,
+    rfCalibrationShift,
+    rfCalibrationOverlap,
   });
 
-  return { backfilled, newFrenchDate: newLastFrenchDate, gapTradingDays };
+  return { backfilled, newFrenchDate: newLastFrenchDate, gapTradingDays, rfRowsBackfilled };
 }
 
 export async function getPipelineStatus() {

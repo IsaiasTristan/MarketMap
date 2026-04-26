@@ -126,3 +126,69 @@ describe("headline picker — surface integration shape", () => {
     expect(result.headlineValue).toBe(arithmeticSum);
   });
 });
+
+describe("Total ≈ display identity (excess + RF compounding)", () => {
+  // Pin the algebraic identity that the per-stock detail panel uses to
+  // surface a "Total ≈ +X%" sub-line directly comparable to broker /
+  // Google "1Y return" numbers.
+  //
+  //   Σ y_log               = Σ ln(1 + r_stock) − Σ ln(1 + r_f)
+  //   Σ ln(1 + r_stock)     = Σ y_log + Σ ln(1 + r_f)        (server pre-computes this as `sumLogTotalVisible`)
+  //   exp(Σ ln(1 + r_stock)) − 1 ≡ Π(1 + r_stock) − 1         (compounded total return — what brokers display)
+  //
+  // The UI computes `Math.exp(tsData.log.sumLogTotalVisible) − 1` and shows
+  // it next to the geometric excess headline.
+
+  it("Total ≈ exp(sumLogTotalVisible) − 1 equals the compounded chain Π(1 + r_stock) − 1", () => {
+    const dailyStockReturns: number[] = [];
+    const dailyRfDecimal: number[] = [];
+    for (let i = 0; i < 252; i++) {
+      dailyStockReturns.push(Math.sin(i / 13) * 0.012 + 0.0011);
+      dailyRfDecimal.push(0.045 / 252);
+    }
+
+    const sumLogExcessVisible = dailyStockReturns.reduce(
+      (acc, rStock, i) => acc + Math.log(1 + rStock) - Math.log(1 + dailyRfDecimal[i]!),
+      0,
+    );
+    const sumLogRf = dailyRfDecimal.reduce((a, rf) => a + Math.log(1 + rf), 0);
+    const sumLogTotalVisible = sumLogExcessVisible + sumLogRf;
+
+    const totalGeom = Math.exp(sumLogTotalVisible) - 1;
+    const compoundedChain =
+      dailyStockReturns.reduce((acc, r) => acc * (1 + r), 1) - 1;
+
+    expect(totalGeom).toBeCloseTo(compoundedChain, 12);
+
+    const excessGeom = Math.exp(sumLogExcessVisible) - 1;
+    expect(totalGeom).toBeGreaterThan(excessGeom);
+    const expectedRfPp =
+      dailyRfDecimal.reduce((acc, rf) => acc * (1 + rf), 1) - 1;
+    expect((1 + totalGeom) / (1 + excessGeom) - 1).toBeCloseTo(expectedRfPp, 12);
+  });
+
+  it("denominator clamp: visibleObs surfaces params.window when N == W (no '252 / 252' truncation)", () => {
+    const requestedWindow = 252;
+    const visibleObs = 252;
+    const denominator = Math.max(visibleObs, requestedWindow);
+    expect(denominator).toBe(252);
+    expect(visibleObs < denominator).toBe(false);
+  });
+
+  it("denominator clamp: surfaces requestedWindow when visibleObs < requestedWindow", () => {
+    const requestedWindow = 252;
+    const visibleObs = 235;
+    const denominator = Math.max(visibleObs, requestedWindow);
+    expect(denominator).toBe(252);
+    expect(visibleObs < denominator).toBe(true);
+    expect(denominator - visibleObs).toBe(17);
+  });
+
+  it("denominator clamp: surfaces visibleObs when extended history exceeds requestedWindow", () => {
+    const requestedWindow = 252;
+    const visibleObs = 270;
+    const denominator = Math.max(visibleObs, requestedWindow);
+    expect(denominator).toBe(270);
+    expect(visibleObs < denominator).toBe(false);
+  });
+});

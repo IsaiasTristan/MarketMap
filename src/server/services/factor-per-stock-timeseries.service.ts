@@ -274,6 +274,18 @@ export interface PerStockLogTimeseries {
   sumLogDecomposedVisible: number;
   /** `exp(sumLogExcessVisible) - 1`. Compounded geometric realised excess. */
   geometricExcessVisible: number;
+  /**
+   * `Σ ln(1 + r_stock_i)` over `[displayStartIndex, n)`. Computing
+   * `exp(sumLogTotalVisible) − 1` recovers the compounded geometric
+   * TOTAL (not excess) return — the figure broker / Google "1Y return"
+   * displays. Identity: `sumLogTotalVisible = sumLogExcessVisible +
+   * Σ ln(1 + r_f_i)`.
+   *
+   * Surfaced so the per-stock detail panel can show a "Total ≈ +X%"
+   * sub-line under the excess headline without needing a per-day RF
+   * array on the wire (2026-04-26 INTC reconciliation).
+   */
+  sumLogTotalVisible: number;
 }
 
 interface LoadedFactorMatrix {
@@ -299,7 +311,8 @@ async function loadFactorMatrix(factorCodes: FactorCode[]): Promise<LoadedFactor
     const d = row.tradeDate.toISOString().slice(0, 10);
     allDatesSet.add(d);
     if (row.factorCode === "RF") {
-      rfByDate.set(d, Number(row.value) / 252);
+      // Stored as daily simple decimal (KF native convention); no /252.
+      rfByDate.set(d, Number(row.value));
       continue;
     }
     if (!factorByDate.has(d)) factorByDate.set(d, {});
@@ -380,6 +393,22 @@ export async function runPerStockTimeseries(
   if (priceMap.size < MIN_PRICE_HISTORY) return null;
 
   // STRICT DROP-ROW (Phase 3 Q3 lock): never zero-fill missing factor cells.
+  //
+  // Note (2026-04-26): `extendedWindowDates` is `allDates.slice(-N)` where
+  // `allDates` is the union of every loaded factor's publish dates. That
+  // union can include "phantom" dates the equity market was closed on
+  // (e.g. AQR's BAB / QMJ publish on a global calendar that includes US
+  // equity holidays; the FRED RF back-fill can also write rows on dates
+  // outside the equity calendar). For those phantoms `priceMap.get(d)` is
+  // undefined — the date is correctly skipped via the `cur == null` guard.
+  // BUT the NEXT real trading day's `dPrev` would point at the phantom,
+  // which has no priceMap entry, so prev would also be undefined and we'd
+  // silently drop the next real trading day too. Fix: when `priceMap.get(
+  // dPrev)` is undefined, fall back to the same backward date-arithmetic
+  // search the i=0 case uses so the chain always finds the closest real
+  // prior trading-day price within 7 calendar days. This makes the
+  // strict-drop policy robust to any source of phantom rows in the factor
+  // matrix without relaxing the policy itself.
   const aligned: { date: string; factorRow: number[]; excessReturn: number }[] = [];
   const droppedDates: { date: string; factor: FactorCode }[] = [];
   for (let i = 0; i < extendedWindowDates.length; i++) {
@@ -389,7 +418,8 @@ export async function runPerStockTimeseries(
     let prev: number | undefined;
     if (dPrev != null) {
       prev = priceMap.get(dPrev);
-    } else {
+    }
+    if (prev === undefined) {
       const check = new Date(d);
       for (let lag = 1; lag <= 7 && prev === undefined; lag++) {
         check.setUTCDate(check.getUTCDate() - 1);
@@ -666,6 +696,8 @@ export async function runPerStockTimeseries(
     }
     let sumLogExcessVisible = 0;
     let sumLogDecomposedVisible = 0;
+    let sumLogTotalVisible = 0;
+    let sumLogTotalValid = true;
     for (let i = displayStartIndex; i < n; i++) {
       const yL = yLog[i] ?? 0;
       sumLogExcessVisible += yL;
@@ -679,6 +711,19 @@ export async function runPerStockTimeseries(
         if (c != null) parts += c;
       }
       sumLogDecomposedVisible += parts;
+
+      // Total log return = excess log + ln(1 + r_f). Recover r_stock from
+      // the excess + RF reconstruction we already used to build yLog above.
+      // If 1 + r_stock ≤ 0 (extremely rare for a public equity), fall back
+      // to leaving the total sum at 0 and surfacing it as identity-equal
+      // to the excess sum (so the UI Total ≈ line just shows the excess).
+      const rfDaily = rfByDate.get(dates[i]!) ?? 0;
+      const rStock = (y[i] ?? 0) + rfDaily;
+      if (1 + rStock <= 0) {
+        sumLogTotalValid = false;
+      } else {
+        sumLogTotalVisible += Math.log(1 + rStock);
+      }
     }
     logBlock = {
       excessLogReturn: yLog,
@@ -692,6 +737,7 @@ export async function runPerStockTimeseries(
       sumLogExcessVisible,
       sumLogDecomposedVisible,
       geometricExcessVisible: expSumMinus1(sumLogExcessVisible),
+      sumLogTotalVisible: sumLogTotalValid ? sumLogTotalVisible : sumLogExcessVisible,
     };
   }
 

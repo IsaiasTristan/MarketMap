@@ -102,6 +102,12 @@ export interface PerStockRow {
   rSquared: number;
   alphaAnnualized: number;
   alphaTStat: number;
+  /** Standard error of the daily intercept α from the snapshot OLS. */
+  alphaStdError: number;
+  /** Standard error of α annualised: alphaStdError × 252 (same scaling as α). */
+  alphaStdErrorAnnualized: number;
+  /** Half-width of the annualised 95 % CI: 1.96 × alphaStdErrorAnnualized. */
+  alphaCi95Half: number;
   /** Σ_t α (daily intercept × n) over the regression-aligned dates. */
   alphaWindowSum: number;
   /** Σ_t ε_t over the regression-aligned dates (≈ 0 by OLS normal eqs). */
@@ -296,7 +302,8 @@ async function loadFactorMatrix(factorCodes: FactorCode[]) {
     const d = row.tradeDate.toISOString().slice(0, 10);
     allDatesSet.add(d);
     if (row.factorCode === "RF") {
-      rfByDate.set(d, Number(row.value) / TRADING_DAYS);
+      // Stored as daily simple decimal (KF native convention); no /252.
+      rfByDate.set(d, Number(row.value));
       continue;
     }
     if (!factorByDate.has(d)) factorByDate.set(d, {});
@@ -691,6 +698,9 @@ export async function runPerStockFactors(
       rSquared: fit.rSquared,
       alphaAnnualized: fit.alpha * TRADING_DAYS,
       alphaTStat: fit.alphaTStat,
+      alphaStdError: fit.alphaStdError,
+      alphaStdErrorAnnualized: fit.alphaStdError * TRADING_DAYS,
+      alphaCi95Half: 1.96 * fit.alphaStdError * TRADING_DAYS,
       alphaWindowSum,
       residualWindowSum,
       observations: fit.n,

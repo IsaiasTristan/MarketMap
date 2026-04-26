@@ -15,6 +15,8 @@ const PRESETS: { value: FactorWindow; label: string; tradingDays: number }[] = [
   { value: 63, label: "90 day", tradingDays: 63 },
   { value: 126, label: "180 day", tradingDays: 126 },
   { value: 252, label: "365 day", tradingDays: 252 },
+  { value: 378, label: "1.5 year", tradingDays: 378 },
+  { value: 504, label: "2 year", tradingDays: 504 },
   { value: 1260, label: "5 year", tradingDays: 1260 },
 ];
 

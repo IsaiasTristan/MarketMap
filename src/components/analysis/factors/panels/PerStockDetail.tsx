@@ -41,6 +41,7 @@ import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
 import { pickHeadlineValue } from "@/lib/factors/attribution/headline-picker";
 import type { FactorCode } from "@/types/factors";
 import { Waterfall, type WaterfallSegment } from "../shared/Waterfall";
+import { FactorInfoIcon } from "../shared/FactorInfoIcon";
 import {
   PerStockTimeSeries,
   isPerStockTimeSeriesPayload,
@@ -52,7 +53,6 @@ import { LogModeMethodology } from "./LogModeMethodology";
 interface PerStockDetailProps {
   data: PerStockResult;
   selectedTicker: string | null;
-  onClose?: () => void;
 }
 
 const sectionTitleStyle: React.CSSProperties = {
@@ -117,7 +117,7 @@ function VarGapBadge({ varGapPct }: { varGapPct: number }) {
   );
 }
 
-export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetailProps) {
+export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
   const [tsMetric, setTsMetric] = useState<"return" | "risk" | "beta">("return");
   const factorTsRollingWindow = useAnalysisStore((s) => s.factorTsRollingWindow);
   const setFactorTsRollingWindow = useAnalysisStore((s) => s.setFactorTsRollingWindow);
@@ -160,10 +160,13 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
     windowAlpha,
     sumLogInner,
     geometricTotalReturn,
+    geometricTotalReturnIncRf,
     arithmeticTotalReturn,
     identitySumGap,
     postBurnObs,
     rollingAlphaToTotalRatio,
+    windowStartDate,
+    windowEndDate,
   } = useMemo(() => {
     if (!tsData) {
       return {
@@ -171,10 +174,13 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
         windowAlpha: 0,
         sumLogInner: 0,
         geometricTotalReturn: 0,
+        geometricTotalReturnIncRf: null as number | null,
         arithmeticTotalReturn: 0,
         identitySumGap: 0,
         postBurnObs: 0,
         rollingAlphaToTotalRatio: 0,
+        windowStartDate: "",
+        windowEndDate: "",
       };
     }
     const startIdx = tsData.displayStartIndex ?? 0;
@@ -244,15 +250,28 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
       logSum: useLog ? innerSum : null,
     });
 
+    // Geometric TOTAL return (excess + RF compounded) — directly comparable
+    // to broker / Google "1Y return" figures. Only computed in log mode
+    // (where the server populated `sumLogTotalVisible` over the same
+    // [displayStartIndex, n) window we sum here). Null in fallback Path A
+    // where mixing arithmetic excess with RF would not be a valid identity.
+    const geomTotalIncRf =
+      useLog && tsData.log != null && Number.isFinite(tsData.log.sumLogTotalVisible)
+        ? Math.exp(tsData.log.sumLogTotalVisible) - 1
+        : null;
+
     return {
       returnSegments: [...segs, idioSeg],
       windowAlpha: alphaSum,
       sumLogInner: innerSum,
       geometricTotalReturn: headline.useLog ? headline.geometric! : headline.arithmetic,
+      geometricTotalReturnIncRf: geomTotalIncRf,
       arithmeticTotalReturn: simpleSum,
       identitySumGap: innerSum - (factorContribTotal + alphaSum + idioSum),
       postBurnObs: obs,
       rollingAlphaToTotalRatio: ratio,
+      windowStartDate: tsData.dates[startIdx] ?? "",
+      windowEndDate: tsData.dates[n - 1] ?? "",
     };
   }, [tsData, factors, useLog]);
 
@@ -318,53 +337,24 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
 
   // Reconciliation strip values (single line, monospace) — Q13 + Q4 lock.
   const reconLine =
-    `Realised ${(row.realizedAnnualizedVol * 100).toFixed(1)}%  ·  ` +
-    `model ${(row.modelImpliedAnnualizedVol * 100).toFixed(1)}%  ` +
+    `Realized vol ${(row.realizedAnnualizedVol * 100).toFixed(1)}%  ·  ` +
+    `model vol ${(row.modelImpliedAnnualizedVol * 100).toFixed(1)}%  ` +
     `(Δ ${row.varGapPct >= 0 ? "+" : ""}${(row.varGapPct * 100).toFixed(1)}%)  ·  ` +
     `R² ${(row.rSquared * 100).toFixed(0)}%  ·  ` +
-    `Euler ${(row.systematicShareEulerAligned * 100).toFixed(0)}%  ·  ` +
-    `α ${row.alphaAnnualized >= 0 ? "+" : ""}${(row.alphaAnnualized * 100).toFixed(1)}%`;
+    `sys. var. ${(row.systematicShareEulerAligned * 100).toFixed(0)}%  ·  ` +
+    `α ${row.alphaAnnualized >= 0 ? "+" : ""}${(row.alphaAnnualized * 100).toFixed(1)}% ` +
+    `± ${(row.alphaCi95Half * 100).toFixed(1)}% (95%)`;
 
   return (
     <div
       style={{
         background: "var(--bg-surface)",
-        border: "1px solid var(--bg-border)",
         height: "100%",
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
       }}
     >
-      <div
-        style={{
-          background: "var(--bb-chrome)",
-          color: "#fff",
-          padding: "6px 12px",
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-        }}
-      >
-        <div style={{ flex: 1, fontWeight: 700, letterSpacing: "0.05em" }}>{row.ticker}</div>
-        {onClose && (
-          <button
-            onClick={onClose}
-            style={{
-              background: "transparent",
-              border: "none",
-              color: "#fff",
-              fontSize: 14,
-              cursor: "pointer",
-              padding: 0,
-              lineHeight: 1,
-            }}
-            title="Close"
-          >
-            ✕
-          </button>
-        )}
-      </div>
       <div style={{ padding: "10px 14px 4px", borderBottom: "1px solid var(--bg-border)" }}>
         <div style={{ fontSize: 12, color: "var(--text-primary)", fontWeight: 500 }}>{row.name}</div>
         <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
@@ -380,15 +370,19 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
           borderBottom: "1px solid var(--bg-border)",
         }}
       >
-        {/* Primary: Realised σ (annualised) */}
+        {/* Primary: Realized volatility (annualized) — sample σ of daily excess returns. */}
         <div
           style={{
             padding: "12px 14px",
             borderRight: "1px solid rgba(255,255,255,0.04)",
           }}
           title={
-            `Sample √Var(y) × √252 over the regression-aligned dates.\n` +
-            `PRIMARY headline volatility per Phase 2/3 lock-in (anchor to realised, model-implied for reconciliation).`
+            `Realized volatility (annualized).\n` +
+            `Annualized sample standard deviation of DAILY EXCESS RETURNS over the regression-aligned dates ` +
+            `(σ̂ × √252, where σ̂ = √Var(y) and y = r_stock − r_f).\n\n` +
+            `This is HISTORICAL / SAMPLE volatility of excess returns — NOT a portfolio "total risk" budget ` +
+            `and NOT the sum of the variance decomposition below. The decomposition card uses MODEL-IMPLIED ` +
+            `variance (β'Σβ + σ²_idio); the Variance gap chip on the right reports model − realized.`
           }
         >
           <div
@@ -397,9 +391,20 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
               color: "var(--text-muted)",
               textTransform: "uppercase",
               letterSpacing: "0.08em",
+              display: "flex",
+              alignItems: "center",
             }}
           >
-            Realised σ (ann.)
+            Realized vol (ann.)
+            <FactorInfoIcon
+              tip={
+                `Annualized sample standard deviation of daily EXCESS returns (stock − RF) ` +
+                `over the regression-aligned window:  σ̂_y × √252.\n\n` +
+                `Distinct from the variance decomposition below, which is MODEL-implied ` +
+                `(β'Σβ + σ²_idio) and decomposes ex-ante variance into systematic + idiosyncratic shares.`
+              }
+              ariaLabel="Realized volatility methodology"
+            />
           </div>
           <div
             style={{
@@ -414,7 +419,7 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
             {(row.realizedAnnualizedVol * 100).toFixed(1)}%
           </div>
           <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
-            Model-implied {(row.modelImpliedAnnualizedVol * 100).toFixed(1)}%
+            Model-implied vol {(row.modelImpliedAnnualizedVol * 100).toFixed(1)}%
             <VarGapBadge varGapPct={row.varGapPct} />
           </div>
         </div>
@@ -445,7 +450,7 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
                 letterSpacing: "0.06em",
               }}
             >
-              R² (in-sample) · Euler share
+              R² (in-sample) · Sys. var. share
             </div>
             <div
               style={{
@@ -481,7 +486,7 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
                 letterSpacing: "0.06em",
               }}
             >
-              Variance gap (vs realised)
+              Variance gap (model vs realized)
             </div>
             <div
               style={{
@@ -502,6 +507,9 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
             title={
               `Daily intercept × 252 from the snapshot OLS. t = ${row.alphaTStat.toFixed(2)}.\n` +
               `STATIC (whole-window) — distinct from Σ rolling α_t shown in the return waterfall residual.\n\n` +
+              `95 % CI = α ± 1.96 × SE(α) × 252 = ` +
+              `${(row.alphaAnnualized * 100).toFixed(2)}% ± ${(row.alphaCi95Half * 100).toFixed(2)}%.\n` +
+              `Factor z-scoring does not affect this band — α and SE(α) are in y-units (excess return), and the studentised statistic is invariant to factor reparameterisation. With our typical DOF (≈ 250–365) the exact t-critical ≈ 1.97, so z = 1.96 is essentially equivalent.\n\n` +
               `LARGE α may reflect model misspecification rather than skill — check residual scatter for systematic patterns.`
             }
           >
@@ -526,7 +534,7 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
             >
               {row.alphaAnnualized >= 0 ? "+" : ""}{(row.alphaAnnualized * 100).toFixed(2)}%
               <span style={{ color: "var(--text-muted)", marginLeft: 6, fontSize: 10 }}>
-                t = {row.alphaTStat.toFixed(2)}
+                ± {(row.alphaCi95Half * 100).toFixed(2)}% (95%) · t = {row.alphaTStat.toFixed(2)}
               </span>
             </div>
           </div>
@@ -548,8 +556,9 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
           whiteSpace: "nowrap",
         }}
         title={
-          `Reconciliation strip — primary anchor is realised σ; everything else is reported relative to it.\n` +
-          `R² is in-sample fit; Euler is covariance-implied systematic share. They are different concepts (Q1 lock).`
+          `Reconciliation strip — primary anchor is realized vol; everything else is reported relative to it.\n` +
+          `R² is in-sample fit; "sys. var." is the covariance-implied systematic variance share (Euler ` +
+          `decomposition β'Σβ / (β'Σβ + σ²_idio)). They are different concepts (Q1 lock).`
         }
       >
         {reconLine}
@@ -676,14 +685,38 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
               </div>
             )}
             <Waterfall
-              title={`Total Return Decomposition · ${postBurnObs} obs (post burn-in)`}
-              subtitle={
-                useLog
-                  ? "Bars are log contributions Σ(β·ln(1+f)) + Σα + Σε; headline shows compounded realised exp(Σ) − 1"
-                  : "Σ (rolling β × daily factor return) + Σ α + Σ ε = total excess return (arithmetic, NOT compounded)"
+              title={
+                <>
+                  Excess return attribution
+                  <FactorInfoIcon
+                    tip={
+                      `Window: ${postBurnObs} / ${data.regressionWindow} trading days (post burn-in).\n\n` +
+                      (postBurnObs < data.regressionWindow
+                        ? `${data.regressionWindow - postBurnObs} day(s) dropped from the requested ${data.regressionWindow}-day display window. ` +
+                          `Strict drop-row policy: dates with any missing factor cell are removed (run scripts/factor-window-coverage.ts ${row.ticker} to inspect).\n\n`
+                        : ``) +
+                      `The first observations of the chart are reserved as a burn-in prefix so the ` +
+                      `rolling regression and factor normalization have a full history before the ` +
+                      `attribution series begins. The chart and this decomposition use the same cut, ` +
+                      `so the bars sum to the value displayed for the visible date range below.\n\n` +
+                      (useLog
+                        ? `Headline = exp(Σ y_log) − 1 = compounded geometric excess return over ` +
+                          `the window. The per-factor bars are additive in log space only — ` +
+                          `exp(component) − 1 of an individual factor does NOT sum to the geometric total.`
+                        : `Headline = Σ y_simple — arithmetic sum of daily simple excess returns. ` +
+                          `Identity holds daily but the multi-period sum is NOT a compounded total.`)
+                    }
+                    ariaLabel="Attribution window methodology"
+                  />
+                </>
+              }
+              titleSub={
+                windowStartDate && windowEndDate
+                  ? `${windowStartDate} — ${windowEndDate}`
+                  : undefined
               }
               total={sumLogInner}
-              totalLabel="Total Excess Return"
+              totalLabel="Cumulative excess (geom.)"
               segments={returnSegments}
               residual={{
                 key: "alpha",
@@ -700,8 +733,51 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
               }
               totalAnnotation={
                 useLog ? (
-                  <span style={{ display: "inline-flex", alignItems: "center" }}>
-                    exp(Σ y_log) − 1
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "flex-end",
+                      gap: 2,
+                    }}
+                  >
+                    {geometricTotalReturnIncRf != null && (
+                      <div
+                        title={
+                          `Total return ≈ exp(Σ ln(1 + r_stock)) − 1 over the visible ` +
+                          `${postBurnObs}-day window.\n\n` +
+                          `Identity: Σ ln(1 + r_stock) = Σ y_log + Σ ln(1 + r_f).\n` +
+                          `So this number compounds the per-day RF back onto the ` +
+                          `excess headline above, giving a figure directly comparable ` +
+                          `to a broker / Google "1Y return" (which quotes total, not excess).\n\n` +
+                          `Excess (geom.) = ${(geometricTotalReturn * 100).toFixed(2)}%\n` +
+                          `Total  (geom.) = ${(geometricTotalReturnIncRf * 100).toFixed(2)}%\n` +
+                          `Δ from RF      = ${((geometricTotalReturnIncRf - geometricTotalReturn) * 100).toFixed(2)} pp`
+                        }
+                        style={{
+                          fontSize: 10,
+                          color: "var(--text-secondary)",
+                          fontFamily: "var(--font-mono, monospace)",
+                          fontVariantNumeric: "tabular-nums",
+                          cursor: "help",
+                          letterSpacing: "0.02em",
+                        }}
+                      >
+                        Total ≈{" "}
+                        <span
+                          style={{
+                            color:
+                              geometricTotalReturnIncRf >= 0
+                                ? "var(--color-positive)"
+                                : "var(--color-negative)",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {geometricTotalReturnIncRf >= 0 ? "+" : ""}
+                          {(geometricTotalReturnIncRf * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                    )}
                     <LogModeMethodology
                       sumLog={sumLogInner}
                       geometric={geometricTotalReturn}
@@ -709,12 +785,13 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
                       identityGap={identitySumGap}
                       obsCount={postBurnObs}
                     />
-                  </span>
+                  </div>
                 ) : undefined
               }
             />
-            {/* Reconciliation sub-line — log mode shows the inner Σ → exp() chain
-                with a green ✓ tick; simple-fallback shows the arithmetic identity. */}
+            {/* Reconciliation sub-line — single-line identity-passes tick.
+                Full formula and residual gap live in the hover so the
+                visible row stays clean and Bloomberg-like. */}
             <div
               style={{
                 padding: "6px 4px 0",
@@ -722,75 +799,73 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
                 color: "var(--text-muted)",
                 fontFamily: "var(--font-mono, monospace)",
                 fontVariantNumeric: "tabular-nums",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
               }}
               title={
                 useLog
-                  ? `Log-space identity:\n` +
-                    `Σ y_log − [Σ(β·x_log) + Σα + Σε] = ${(identitySumGap * 100).toFixed(4)}%.\n` +
-                    `Should be ≤ 1e-6 (numerical noise). Headline reconciles to compounded realised: ` +
-                    `exp(Σ y_log) − 1 = ${(geometricTotalReturn * 100).toFixed(2)}%.`
+                  ? `Log-space daily identity:\n` +
+                    `  Σ y_log − [Σ(β·x_log) + Σα + Σε] = ${(identitySumGap * 100).toFixed(4)}%\n` +
+                    `Should be ≤ 1e-6 (numerical noise).\n\n` +
+                    `Headline reconciliation:\n` +
+                    `  Σ y_log = ${(sumLogInner * 100).toFixed(2)}%\n` +
+                    `  exp(Σ y_log) − 1 = ${(geometricTotalReturn * 100).toFixed(2)}% (compounded realized excess)\n\n` +
+                    `Bars are additive in log space only; exp(component) − 1 of an ` +
+                    `individual factor does NOT sum to the geometric headline.`
                   : `Arithmetic identity (fallback path):\n` +
-                    `Σy − [Σ(β·r) + Σα + Σε] = ${(identitySumGap * 100).toFixed(4)}%.\n` +
-                    `Should be ≤ 1e-6 (numerical noise). Larger gap indicates a bug or burn-in misalignment.`
+                    `  Σy − [Σ(β·r) + Σα + Σε] = ${(identitySumGap * 100).toFixed(4)}%\n` +
+                    `Should be ≤ 1e-6 (numerical noise). Larger gap indicates a bug or ` +
+                    `burn-in misalignment.`
               }
             >
-              {useLog ? (
-                <>
-                  Σ log contribs = {(sumLogInner * 100).toFixed(2)}%{"  →  "}
-                  exp(Σ) − 1 ={" "}
-                  <span
-                    style={{
-                      color:
-                        geometricTotalReturn >= 0
-                          ? "var(--color-positive)"
-                          : "var(--color-negative)",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {geometricTotalReturn >= 0 ? "+" : ""}
-                    {(geometricTotalReturn * 100).toFixed(2)}%
-                  </span>{" "}
-                  <span
-                    style={{
-                      color:
-                        Math.abs(identitySumGap) < 1e-6
-                          ? "var(--color-positive)"
-                          : "#f59e0b",
-                    }}
-                  >
-                    {Math.abs(identitySumGap) < 1e-6 ? "✓" : "⚠"}
-                  </span>
-                </>
-              ) : (
-                `Identity: Σy = Σ(β·r) + Σα + Σε  →  residual = ${(identitySumGap * 100).toFixed(4)}%`
-              )}
-            </div>
-            {useLog && (
-              <div
+              <span
                 style={{
-                  padding: "3px 4px 0",
-                  fontSize: 9,
-                  fontFamily: "var(--font-mono, monospace)",
-                  color: "var(--text-muted)",
-                  fontStyle: "italic",
+                  color:
+                    Math.abs(identitySumGap) < 1e-6
+                      ? "var(--color-positive)"
+                      : "#f59e0b",
+                  fontWeight: 600,
                 }}
               >
-                Bars are additive in log space only; exp(component) − 1 for an individual factor does NOT sum to the geometric total.
-              </div>
-            )}
+                {Math.abs(identitySumGap) < 1e-6 ? "✓" : "⚠"}
+              </span>
+              <span>
+                Daily identity {Math.abs(identitySumGap) < 1e-6 ? "closes" : "open"}
+                {" "}
+                {useLog
+                  ? `(log space; bars sum to inner Σ y_log)`
+                  : `(arithmetic; residual ${(identitySumGap * 100).toFixed(4)}%)`}
+              </span>
+            </div>
           </div>
         )}
 
         <div style={{ padding: "8px 14px 4px" }}>
           <Waterfall
-            title="Total Risk Decomposition"
-            subtitle="Components are share of MODEL-IMPLIED total variance (β'Σβ + σ²_idio); Σ recomputed on regression-aligned sample"
+            title={
+              <>
+                Variance decomposition (model)
+                <FactorInfoIcon
+                  tip={
+                    `Each component is its share of MODEL-IMPLIED total variance ` +
+                    `(β'Σβ + σ²_idio), where Σ is the factor covariance matrix recomputed ` +
+                    `on the regression-aligned sample. Bars sum to 100% by construction.\n\n` +
+                    `Distinct from the realized vol number at the top of the panel, which is ` +
+                    `the sample standard deviation of daily excess returns (historical, ` +
+                    `not model-implied). The Variance gap chip in the headline reports ` +
+                    `(model − realized) / realized.`
+                  }
+                  ariaLabel="Variance decomposition methodology"
+                />
+              </>
+            }
             total={1}
             totalLabel="100% of model variance"
             formatValue={(v) => `${(v * 100).toFixed(1)}%`}
             totalAnnotation={
-              `Realised σ ${(row.realizedAnnualizedVol * 100).toFixed(1)}% · ` +
-              `model σ ${(row.modelImpliedAnnualizedVol * 100).toFixed(1)}% · ` +
+              `Realized vol ${(row.realizedAnnualizedVol * 100).toFixed(1)}% · ` +
+              `model vol ${(row.modelImpliedAnnualizedVol * 100).toFixed(1)}% · ` +
               `systematic ${(row.systematicShareEulerAligned * 100).toFixed(0)}% / idio ${(row.idiosyncraticShare * 100).toFixed(0)}%`
             }
             segments={riskSegments}

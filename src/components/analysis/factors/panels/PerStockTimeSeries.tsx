@@ -85,6 +85,14 @@ export interface PerStockTimeSeriesPayload {
     sumLogExcessVisible: number;
     sumLogDecomposedVisible: number;
     geometricExcessVisible: number;
+    /**
+     * `Σ ln(1 + r_stock_i)` over `[displayStartIndex, n)`. UI consumers
+     * compute `exp(sumLogTotalVisible) − 1` to display a compounded
+     * geometric TOTAL return that's directly comparable to broker /
+     * Google "1Y return" figures (excess + RF compounded). Falls back
+     * to the excess sum if any visible day has `1 + r_stock ≤ 0`.
+     */
+    sumLogTotalVisible: number;
   } | null;
 }
 
@@ -301,6 +309,17 @@ export function PerStockTimeSeries({
   const burnInDate = burnInVisible ? data!.dates[data!.burnInIndex]! : null;
   const burnInStartDate = burnInVisible ? data!.dates[data!.displayStartIndex]! : null;
   const visibleObs = data ? Math.max(0, data.windowUsed - data.displayStartIndex) : 0;
+  // Denominator the user requested. Clamps to `visibleObs` when the
+  // visible region is fully populated (so we don't show "252 / 252d"
+  // truncated to e.g. "240 / 252" when the slack is just the burn-in
+  // overlap with the display window).
+  const visibleDenominator = Math.max(visibleObs, snapshotWindow);
+  const visibleShort = visibleObs < visibleDenominator;
+  const visibleHover = visibleShort
+    ? `${visibleDenominator - visibleObs} trading day(s) dropped from the requested ${visibleDenominator}-day display window. ` +
+      "Strict drop-row policy: dates with any missing factor cell are removed " +
+      "(see scripts/factor-window-coverage.ts)."
+    : `Full ${visibleDenominator}-day display window populated.`;
 
   return (
     <div
@@ -324,7 +343,15 @@ export function PerStockTimeSeries({
           {data && (
             <span style={{ marginLeft: 8, color: "var(--text-secondary)", fontWeight: 500 }}>
               · rolling W = {data.rollingWindow}d · display W = {snapshotWindow}d · visible{" "}
-              {visibleObs}d
+              <span
+                title={visibleHover}
+                style={{
+                  cursor: "help",
+                  color: visibleShort ? "var(--accent-amber, #f0b65d)" : "inherit",
+                }}
+              >
+                {visibleObs} / {visibleDenominator}d
+              </span>
             </span>
           )}
         </div>

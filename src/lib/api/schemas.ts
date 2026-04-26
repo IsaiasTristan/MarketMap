@@ -11,7 +11,8 @@ import { z } from "zod";
  * `lib/factors/definitions/model-presets.ts`).
  */
 export const MODEL_PRESET_NAMES = ["CAPM", "FF3", "CARHART4", "FF5", "EXTENDED", "MACRO14"] as const;
-export const FACTOR_WINDOW_VALUES = [30, 60, 90, 180, 365, 1260] as const;
+/** Approximate calendar-day labels mapping to the trading-day presets in `FACTOR_WINDOW_TRADING_DAYS`. */
+export const FACTOR_WINDOW_VALUES = [30, 60, 90, 180, 365, 548, 730, 1260] as const;
 
 /** Window in trading days for each preset. Calendar-day labels in the UI map to these. */
 export const FACTOR_WINDOW_TRADING_DAYS = {
@@ -20,6 +21,8 @@ export const FACTOR_WINDOW_TRADING_DAYS = {
   D90: 63,
   D180: 126,
   D365: 252,
+  Y1_5: 378, // ~1.5 calendar years
+  Y2: 504,
   Y5: 1260,
 } as const;
 
@@ -29,7 +32,7 @@ export const factorQueryParams = z.object({
   window: z
     .string()
     .optional()
-    .transform((v) => (v ? Math.max(20, Math.min(2520, Number(v))) : 252))
+    .transform((v) => (v ? Math.max(20, Math.min(2520, Number(v))) : 378))
     .pipe(z.number().int().min(20).max(2520)),
   ew: z
     .string()
@@ -47,7 +50,7 @@ export const factorPerStockQuery = z.object({
   window: z
     .string()
     .optional()
-    .transform((v) => (v ? Math.max(20, Math.min(2520, Number(v))) : 252))
+    .transform((v) => (v ? Math.max(20, Math.min(2520, Number(v))) : 378))
     .pipe(z.number().int().min(20).max(2520)),
   sector: z.string().optional(),
   subTheme: z.string().optional(),
@@ -65,7 +68,7 @@ export const factorDriversQuery = factorQueryParams.extend({
 export const factorScenarioRunBody = z.object({
   portfolioId: z.string().min(1),
   model: z.enum(MODEL_PRESET_NAMES).optional().default("MACRO14"),
-  window: z.number().int().min(20).max(2520).optional().default(252),
+  window: z.number().int().min(20).max(2520).optional().default(378),
   scenarioKey: z.string().optional(),
   customShocks: z
     .array(z.object({ code: z.string().min(1), shockValue: z.number() }))

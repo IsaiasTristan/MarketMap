@@ -23,6 +23,15 @@ import {
   Customized,
 } from "recharts";
 import { heatSignedBloomberg } from "@/domain/calculations/heatmap";
+import {
+  BB_GRID_FONT_SIZE,
+  BB_GRID_FONT_STACK,
+  BB_GRID_HEADER_BG,
+  BB_GRID_HEADER_COLOR,
+  BB_GRID_HEADER_FONT_WEIGHT,
+  BB_GRID_HEADER_LETTER_SPACING,
+  pickTextColor,
+} from "@/components/analysis/factors/shared/bloomberg-grid";
 import type { PerformanceMetrics } from "@/server/services/performance.service";
 
 const BENCHMARKS = ["SP500", "NASDAQ", "DOW"] as const;
@@ -48,18 +57,36 @@ function MonthlyHeatmap({ calendar }: { calendar: Record<string, number> }) {
   const entries = Object.entries(calendar).sort();
   const years = [...new Set(entries.map(([k]) => k.slice(0, 4)))];
 
+  const headerCellStyle: React.CSSProperties = {
+    padding: "4px 8px",
+    background: BB_GRID_HEADER_BG,
+    color: BB_GRID_HEADER_COLOR,
+    fontWeight: BB_GRID_HEADER_FONT_WEIGHT,
+    letterSpacing: BB_GRID_HEADER_LETTER_SPACING,
+    textTransform: "uppercase",
+    textAlign: "center",
+    borderBottom: "1px solid var(--bg-border)",
+  };
+
   return (
     <div style={{ overflowX: "auto" }}>
-      <table style={{ borderCollapse: "collapse", fontSize: 11 }}>
+      <table
+        style={{
+          borderCollapse: "collapse",
+          fontSize: BB_GRID_FONT_SIZE,
+          fontFamily: BB_GRID_FONT_STACK,
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
         <thead>
           <tr>
-            <th style={{ padding: "4px 8px", color: "var(--text-muted)", textAlign: "left", fontWeight: 500 }}>Year</th>
+            <th style={{ ...headerCellStyle, textAlign: "left" }}>Year</th>
             {months.map((m) => (
-              <th key={m} style={{ padding: "4px 8px", color: "var(--text-secondary)", fontWeight: 500, textAlign: "center" }}>
+              <th key={m} style={headerCellStyle}>
                 {m}
               </th>
             ))}
-            <th style={{ padding: "4px 8px", color: "var(--text-secondary)", fontWeight: 500 }}>Total</th>
+            <th style={headerCellStyle}>Total</th>
           </tr>
         </thead>
         <tbody>
@@ -70,22 +97,22 @@ function MonthlyHeatmap({ calendar }: { calendar: Record<string, number> }) {
 
             return (
               <tr key={year}>
-                <td style={{ padding: "4px 8px", color: "var(--text-secondary)", fontFamily: "var(--font-mono, monospace)" }}>
+                <td style={{ padding: "4px 8px", color: "var(--text-secondary)" }}>
                   {year}
                 </td>
                 {months.map((_, mi) => {
                   const key = `${year}-${String(mi + 1).padStart(2, "0")}`;
                   const v = calendar[key];
+                  const cellBg = v != null ? monthColor(v) : "transparent";
                   return (
                     <td
                       key={mi}
                       style={{
                         padding: "4px 6px",
-                        background: v != null ? monthColor(v) : "transparent",
+                        background: cellBg,
                         textAlign: "center",
                         borderRadius: 0,
-                        color: v != null ? "#fff" : "var(--text-muted)",
-                        fontFamily: "var(--font-mono, monospace)",
+                        color: v != null ? pickTextColor(cellBg) : "var(--text-muted)",
                       }}
                     >
                       {v != null ? `${(v * 100).toFixed(1)}%` : "—"}
@@ -98,8 +125,10 @@ function MonthlyHeatmap({ calendar }: { calendar: Record<string, number> }) {
                     background: yearTotal !== 0 ? monthColor(yearTotal) : "transparent",
                     textAlign: "right",
                     fontWeight: 600,
-                    fontFamily: "var(--font-mono, monospace)",
-                    color: yearTotal !== 0 ? "#fff" : "var(--text-muted)",
+                    color:
+                      yearTotal !== 0
+                        ? pickTextColor(monthColor(yearTotal))
+                        : "var(--text-muted)",
                   }}
                 >
                   {`${(yearTotal * 100).toFixed(1)}%`}

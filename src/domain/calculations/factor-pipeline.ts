@@ -110,6 +110,49 @@ export function buildFactorSeries(
 }
 
 /**
+ * Calibrate a level series (e.g. DGS1MO RF) to a Ken French level series
+ * by an additive shift fitted on the trailing 63-day overlap.
+ *
+ * For RF we deliberately use mean-shift instead of the
+ * `normalizeProxyToFf` z-score approach used for return series:
+ *   • RF is a level (annualized rate), not a return — its variance is
+ *     near-zero on most days, so dividing by the proxy standard
+ *     deviation produces unstable ratios.
+ *   • DGS1MO and KF's RF differ by a small persistent level (~1-3 bp
+ *     from 360 vs 365 day count + Ibbotson construction). A single
+ *     additive shift captures that without re-scaling the term
+ *     structure.
+ *
+ * Returns the shift (additive offset to add to FRED values) and the
+ * count of overlapping observations actually used. If fewer than
+ * `minOverlap` overlapping days are available, returns shift = 0 so
+ * the caller still passes through raw FRED values.
+ */
+export function calibrateRfShift(
+  ffRf: FactorSeries[],
+  fredRf: FactorSeries[],
+  lastFfDate: string,
+  windowDays = CALIBRATION_WINDOW,
+  minOverlap = 20,
+): { shift: number; overlapDays: number } {
+  if (!lastFfDate || !ffRf.length || !fredRf.length) {
+    return { shift: 0, overlapDays: 0 };
+  }
+  const ffTail = ffRf.slice(-windowDays);
+  const ffByDate = new Map<string, number>(ffTail.map((r) => [r.date, r.value]));
+  const overlap: { ff: number; fred: number }[] = [];
+  for (const r of fredRf) {
+    const ff = ffByDate.get(r.date);
+    if (ff === undefined) continue;
+    if (r.date > lastFfDate) continue;
+    overlap.push({ ff, fred: r.value });
+  }
+  if (overlap.length < minOverlap) return { shift: 0, overlapDays: overlap.length };
+  const shift = mean(overlap.map((o) => o.ff - o.fred));
+  return { shift, overlapDays: overlap.length };
+}
+
+/**
  * When FF publishes new data, replace proxy rows for those dates
  * with official FF values, then re-normalize the remaining gap.
  */

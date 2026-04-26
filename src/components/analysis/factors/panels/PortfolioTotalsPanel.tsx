@@ -108,12 +108,12 @@ export function PortfolioTotalsPanel({
     const sign = varGapPct >= 0 ? "+" : "";
     const annotation =
       realisedVol > 0
-        ? `Realised ${(realisedVol * 100).toFixed(1)}% σ · model ${(totalVol * 100).toFixed(1)}%${
+        ? `Realized vol ${(realisedVol * 100).toFixed(1)}% · model vol ${(totalVol * 100).toFixed(1)}%${
             showGap
               ? ` (Δσ² ${sign}${(varGapPct * 100).toFixed(1)}%${isAmberGap ? " ⚠" : ""})`
               : ""
           } · systematic ${(sysShare * 100).toFixed(0)}% / idio ${(idioShare * 100).toFixed(0)}%`
-        : `${(totalVol * 100).toFixed(1)}% σ · systematic ${(sysShare * 100).toFixed(0)}% / idio ${(idioShare * 100).toFixed(0)}%`;
+        : `Model vol ${(totalVol * 100).toFixed(1)}% · systematic ${(sysShare * 100).toFixed(0)}% / idio ${(idioShare * 100).toFixed(0)}%`;
 
     const fromRisk = risk?.factors ?? [];
     const factorShares =
@@ -174,8 +174,8 @@ export function PortfolioTotalsPanel({
       )}
       {riskWaterfall && (
         <Waterfall
-          title="Total Risk Decomposition"
-          subtitle="Components are share of MODEL-IMPLIED total variance (β'Σβ + σ²_idio); realised σ shown above for reconciliation"
+          title="Variance decomposition (model)"
+          subtitle="Components are share of MODEL-IMPLIED total variance (β'Σβ + σ²_idio); realized vol shown above for reconciliation"
           total={riskWaterfall.total}
           totalLabel={riskWaterfall.totalLabel}
           formatValue={(v) => `${(v * 100).toFixed(1)}%`}

@@ -9,7 +9,7 @@
  * Query params:
  *   - ticker         required          (case-insensitive; lookup is uppercase)
  *   - model          ModelPresetName   (default MACRO14)
- *   - window         trading days      (default 252) — chart display window
+ *   - window         trading days      (default 378) — chart display window
  *   - rollingWindow  trading days      (optional)    — rolling-OLS lookback;
  *                                                     defaults to min(60, window)
  *
@@ -40,7 +40,7 @@ const querySchema = z.object({
   window: z
     .string()
     .optional()
-    .transform((v) => (v ? Math.max(20, Math.min(2520, Number(v))) : 252))
+    .transform((v) => (v ? Math.max(20, Math.min(2520, Number(v))) : 378))
     .pipe(z.number().int().min(20).max(2520)),
   rollingWindow: z
     .string()

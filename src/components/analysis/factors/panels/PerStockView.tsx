@@ -1,14 +1,15 @@
 "use client";
 /**
  * PerStockView — composes the per-stock grid with its sector/sub-theme
- * filter, metric toggle, and the right-side detail panel. Lives behind the
- * "Per-stock" tab in `FactorsClient`.
+ * filter and metric toggle. Clicking a row opens a floating, draggable
+ * `FloatingPerStockDetail` panel (up to 3 simultaneously). Lives behind
+ * the "Per-stock" tab in `FactorsClient`.
  */
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAnalysisStore } from "@/store/analysis";
 import { PerStockGrid } from "./PerStockGrid";
-import { PerStockDetail } from "./PerStockDetail";
+import { FloatingPerStockDetail } from "./FloatingPerStockDetail";
 import { SectorSubThemeFilter } from "../shared/SectorSubThemeFilter";
 import { MetricToggle } from "../shared/MetricToggle";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
@@ -19,14 +20,20 @@ export function PerStockView() {
     factorModel,
     factorWindow,
     factorGridMetric,
-    factorGridSelectedTicker,
+    openFactorDetailPanels,
     factorGridSectorFilter,
     factorGridSubThemeFilter,
     setFactorGridMetric,
-    setFactorGridSelectedTicker,
+    openFactorDetailPanel,
+    closeFactorDetailPanel,
     setFactorGridSectorFilter,
     setFactorGridSubThemeFilter,
   } = useAnalysisStore();
+
+  const openTickers = useMemo(
+    () => openFactorDetailPanels.map((p) => p.ticker),
+    [openFactorDetailPanels],
+  );
 
   // Fetch the full universe-wide grid (server returns all rows; we filter on
   // the client too so the dropdown options always reflect the full universe).
@@ -143,29 +150,17 @@ export function PerStockView() {
         </div>
       )}
 
-      {/* Grid + detail panel */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: factorGridSelectedTicker ? "1fr 480px" : "1fr",
-          gap: 12,
-          alignItems: "stretch",
-        }}
-      >
-        <PerStockGrid
-          data={filtered}
-          metric={factorGridMetric}
-          selectedTicker={factorGridSelectedTicker}
-          onSelectTicker={setFactorGridSelectedTicker}
-        />
-        {factorGridSelectedTicker && (
-          <PerStockDetail
-            data={filtered}
-            selectedTicker={factorGridSelectedTicker}
-            onClose={() => setFactorGridSelectedTicker(null)}
-          />
-        )}
-      </div>
+      {/* Grid (full width). Detail panels float over the page. */}
+      <PerStockGrid
+        data={filtered}
+        metric={factorGridMetric}
+        openTickers={openTickers}
+        onOpenTicker={openFactorDetailPanel}
+        onCloseTicker={closeFactorDetailPanel}
+      />
+      {openFactorDetailPanels.map((panel) => (
+        <FloatingPerStockDetail key={panel.ticker} panel={panel} data={filtered} />
+      ))}
 
       {/* Footer summary */}
       <div

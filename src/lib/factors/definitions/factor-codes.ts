@@ -28,7 +28,7 @@ import type { FactorCode, FactorDef, FactorInputType } from "@/types/factors";
  *   RMW          Robust-minus-Weak (long-short)           Ken French daily
  *   CMA          Conservative-minus-Aggressive (LS)       Ken French daily
  *   MOM          12m-1m momentum (long-short)             Ken French daily
- *   RF           Risk-free 1-month T-bill (raw level/252) Ken French daily
+ *   RF           Risk-free 1-month T-bill (daily simple decimal) Ken French daily
  *   EQ           ACWI excess of RF                        Yahoo (ACWI)
  *   LOCAL_EQ     SPY − ACWI (cross-sectional spread, RF-neutral) Yahoo
  *   RATES        IEF excess of RF                         Yahoo (IEF)
@@ -47,9 +47,10 @@ import type { FactorCode, FactorDef, FactorInputType } from "@/types/factors";
  *     comparable to MKT_RF/EQ on the regression's RHS without further excess
  *     transformation.
  *   • All ETF-based factors are converted from total return to excess return
- *     by subtracting the same RF (Ken French daily T-bill / 252) used for the
- *     dependent variable on the LHS, so signs are interpretable as risk
- *     premia.
+ *     by subtracting the same RF (stored as daily simple decimal — KF native
+ *     convention; FRED DGS1MO back-fill is calibrated to that daily level)
+ *     used for the dependent variable on the LHS, so signs are interpretable
+ *     as risk premia.
  *   • USMV-SPY and QUAL-SPY proxy splices for the AQR publish gap are written
  *     as the same factor row (BAB / QMJ respectively), normalised through
  *     `normalizeProxyToFf` so units stay consistent (see

@@ -1,5 +1,4 @@
 /**
-/**
  * GET /api/analysis/factors/per-stock
  *
  * Per-stock factor decomposition for every active universe constituent.
@@ -8,7 +7,7 @@
  *
  * Query params:
  *   - model      ModelPresetName  (default MACRO14)
- *   - window     trading days     (default 252)
+ *   - window     trading days     (default 378, ~1.5y)
  *   - sector     optional         (case-insensitive exact match)
  *   - subTheme   optional         (case-insensitive exact match)
  *

@@ -23,6 +23,12 @@ import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
 import { MODEL_PRESETS } from "@/lib/factors/definitions/model-presets";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
 import { heatSignedBloomberg } from "@/domain/calculations/heatmap";
+import {
+  BB_GRID_FONT_SIZE,
+  BB_GRID_FONT_STACK,
+  BB_GRID_HEADER_FONT_WEIGHT,
+  pickTextColor,
+} from "../shared/bloomberg-grid";
 import type { FactorMarketContext, FactorCode } from "@/types/factors";
 
 /**
@@ -93,9 +99,9 @@ export function CorrelationsView() {
             borderCollapse: "separate",
             borderSpacing: 1,
             background: "#000",
-            fontFamily: "var(--font-mono, monospace)",
+            fontFamily: BB_GRID_FONT_STACK,
             fontVariantNumeric: "tabular-nums",
-            fontSize: 11,
+            fontSize: BB_GRID_FONT_SIZE,
             width: "100%",
             tableLayout: "fixed",
           }}
@@ -129,8 +135,8 @@ export function CorrelationsView() {
                     style={{
                       background: "var(--bg-base)",
                       color: "var(--color-accent)",
-                      fontSize: 10,
-                      fontWeight: 700,
+                      fontSize: BB_GRID_FONT_SIZE,
+                      fontWeight: BB_GRID_HEADER_FONT_WEIGHT,
                       letterSpacing: "0.08em",
                       textTransform: "uppercase",
                       whiteSpace: "nowrap",
@@ -163,7 +169,7 @@ export function CorrelationsView() {
                       zIndex: 1,
                       background: "var(--bg-base)",
                       color: "var(--color-accent)",
-                      fontSize: 11,
+                      fontSize: BB_GRID_FONT_SIZE,
                       fontWeight: 600,
                       letterSpacing: "0.04em",
                       textTransform: "uppercase",
@@ -200,25 +206,22 @@ export function CorrelationsView() {
                     const v = data.correlationMatrix[r]?.[c] ?? 0;
                     const colDef = getFactorDef(colCode);
                     const isDiag = r === c;
-                    // White text once the heat has saturated enough, dim gray
-                    // before that so weak correlations don't shout.
-                    const textColor = isDiag
-                      ? "#000"
-                      : Math.abs(v) >= 0.4
-                        ? "#ffffff"
-                        : "#9aa0a6";
-                    const fontWeight = isDiag ? 700 : Math.abs(v) >= 0.4 ? 600 : 400;
+                    const bg = isDiag ? "var(--bb-amber-bg)" : cellBackground(v);
+                    // Diagonal stays black on amber; off-diagonal uses YIQ to
+                    // pick black or white against whatever heat ramp produced.
+                    const textColor = isDiag ? "#000" : pickTextColor(bg);
+                    const fontWeight = isDiag ? 700 : Math.abs(v) >= 0.4 ? 600 : 500;
                     return (
                       <td
                         key={colCode}
                         title={`${rowDef.label} × ${colDef.label} = ${v.toFixed(3)}`}
                         style={{
-                          background: isDiag ? "var(--bb-amber-bg)" : cellBackground(v),
+                          background: bg,
                           color: textColor,
                           fontWeight,
                           textAlign: "center",
                           padding: "0 4px",
-                          fontSize: 11,
+                          fontSize: BB_GRID_FONT_SIZE,
                           fontVariantNumeric: "tabular-nums",
                           whiteSpace: "nowrap",
                         }}

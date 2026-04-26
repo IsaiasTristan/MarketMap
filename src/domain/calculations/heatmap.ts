@@ -40,6 +40,41 @@ export function heatSignedBloomberg(value: number, span: number): string {
   return lerpRgb(HEAT_NEUTRAL, HEAT_POS_END, t);
 }
 
+/**
+ * Sequential heat: non-negative `value` in [0, span] ramps from neutral gray
+ * to a saturated red or green endpoint. Use for one-sided metrics like
+ * realised vol (red = high) or R² (green = high fit).
+ */
+export function heatSequentialBloomberg(
+  value: number,
+  span: number,
+  hue: "red" | "green",
+): string {
+  const s = Math.max(span, 1e-12);
+  const t = Math.max(0, Math.min(1, value / s));
+  return lerpRgb(HEAT_NEUTRAL, hue === "red" ? HEAT_NEG_END : HEAT_POS_END, t);
+}
+
+/**
+ * Heat for a regression t-statistic, keyed on |t| (sign-agnostic — t = +x
+ * and t = -x produce the same colour because significance is about magnitude,
+ * not direction).
+ *   |t| = 0      → darkest red       (clearly not significant)
+ *   |t| ≈ 1.25   → neutral gray
+ *   |t| = 2      → ~60 % green       (around the 95 % threshold)
+ *   |t| ≥ 3      → darkest green     (highly significant)
+ * Uses the project's standard red/neutral/green endpoints via
+ * `heatSignedBloomberg`, so the swatch matches every other heat cell.
+ */
+export function heatTStatBloomberg(t: number): string {
+  if (!Number.isFinite(t)) return lerpRgb(HEAT_NEUTRAL, HEAT_NEUTRAL, 0);
+  const a = Math.min(Math.abs(t), 3);
+  // Piecewise remap of |t| to a [-1, +1] multiplier so the existing signed
+  // ramp draws darkest red at 0, visibly green at 2, darkest green at 3+.
+  const m = a <= 2 ? -1 + 0.8 * a : 0.6 + 0.4 * (a - 2);
+  return heatSignedBloomberg(m, 1);
+}
+
 /** Signed heat with value clamped to column symmetric span (correlation grids). */
 export function divergingHeatColor(value: number, colMin: number, colMax: number): string {
   const span = Math.max(Math.abs(colMax), Math.abs(colMin), 1e-9);

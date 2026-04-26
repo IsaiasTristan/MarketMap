@@ -1,6 +1,10 @@
 "use client";
 import { useMemo, useState } from "react";
-import { heatSignedBloomberg } from "@/domain/calculations/heatmap";
+import {
+  heatSequentialBloomberg,
+  heatSignedBloomberg,
+  heatTStatBloomberg,
+} from "@/domain/calculations/heatmap";
 import type { FactorGridMetric } from "@/store/analysis";
 import type {
   PerStockResult,
@@ -9,15 +13,34 @@ import type {
 } from "@/server/services/factor-per-stock.service";
 import type { FactorCode } from "@/types/factors";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
+import {
+  BB_GRID_BORDER,
+  BB_GRID_FONT_SIZE,
+  BB_GRID_FONT_STACK,
+  BB_GRID_HEADER_BG,
+  BB_GRID_HEADER_COLOR,
+  BB_GRID_HEADER_FONT_SIZE,
+  BB_GRID_HEADER_FONT_WEIGHT,
+  BB_GRID_HEADER_LETTER_SPACING,
+  pickTextColor,
+} from "../shared/bloomberg-grid";
 
 interface PerStockGridProps {
   data: PerStockResult;
   metric: FactorGridMetric;
-  selectedTicker: string | null;
-  onSelectTicker: (t: string | null) => void;
+  /** Tickers that currently have a floating detail panel open. */
+  openTickers: ReadonlyArray<string>;
+  onOpenTicker: (ticker: string) => void;
+  onCloseTicker: (ticker: string) => void;
 }
 
-type SummarySortKey = "alpha" | "residual" | "realizedVol" | "rSquared";
+type SummarySortKey =
+  | "alpha"
+  | "alphaT"
+  | "alphaCi"
+  | "residual"
+  | "realizedVol"
+  | "rSquared";
 export type PerStockGridSortKey =
   | "ticker"
   | "sector"
@@ -46,6 +69,8 @@ const ROW_HEIGHT = 30;
 
 const SUMMARY_KEYS: readonly SummarySortKey[] = [
   "alpha",
+  "alphaT",
+  "alphaCi",
   "residual",
   "realizedVol",
   "rSquared",
@@ -53,13 +78,17 @@ const SUMMARY_KEYS: readonly SummarySortKey[] = [
 
 const SUMMARY_LABELS: Record<SummarySortKey, string> = {
   alpha: "Alpha",
+  alphaT: "T",
+  alphaCi: "CI",
   residual: "Unexplained",
-  realizedVol: "Realised σ",
+  realizedVol: "Vol",
   rSquared: "R²",
 };
 
 function summaryValue(row: PerStockRow, key: SummarySortKey): number | null {
   if (key === "alpha") return row.rollingAlphaPostBurnSum;
+  if (key === "alphaT") return row.alphaTStat;
+  if (key === "alphaCi") return row.alphaCi95Half;
   if (key === "residual") return row.rollingResidualPostBurnSum;
   if (key === "realizedVol") return row.realizedAnnualizedVol;
   return row.rSquared;
@@ -67,6 +96,9 @@ function summaryValue(row: PerStockRow, key: SummarySortKey): number | null {
 
 function formatSummaryValue(v: number | null, key: SummarySortKey): string {
   if (v === null || !Number.isFinite(v)) return "—";
+  if (key === "alphaT") return v.toFixed(2);
+  // SE = 0 ⇒ failed regression / single-obs case. Don't show fake-precise 0.
+  if (key === "alphaCi") return v > 0 ? `±${(v * 100).toFixed(1)}%` : "—";
   if (key === "rSquared") return `${(v * 100).toFixed(0)}%`;
   if (key === "realizedVol") return `${(v * 100).toFixed(1)}%`;
   const sign = v >= 0 ? "+" : "";
@@ -76,14 +108,15 @@ function formatSummaryValue(v: number | null, key: SummarySortKey): string {
 const headerCellStyle: React.CSSProperties = {
   position: "sticky",
   top: 0,
-  background: "var(--bb-chrome)",
-  color: "#fff",
-  fontSize: 10,
-  fontWeight: 700,
-  letterSpacing: "0.06em",
+  background: BB_GRID_HEADER_BG,
+  color: BB_GRID_HEADER_COLOR,
+  fontSize: BB_GRID_HEADER_FONT_SIZE,
+  fontWeight: BB_GRID_HEADER_FONT_WEIGHT,
+  letterSpacing: BB_GRID_HEADER_LETTER_SPACING,
   textTransform: "uppercase",
-  padding: "5px 6px",
-  borderRight: "1px solid var(--bg-border)",
+  padding: "2px 6px",
+  borderRight: BB_GRID_BORDER,
+  borderBottom: BB_GRID_BORDER,
   textAlign: "center",
   whiteSpace: "nowrap",
   zIndex: 2,
@@ -93,7 +126,7 @@ const stickyLeftStyle: React.CSSProperties = {
   position: "sticky",
   left: 0,
   background: "var(--bg-surface)",
-  borderRight: "1px solid var(--bg-border)",
+  borderRight: BB_GRID_BORDER,
   zIndex: 1,
 };
 
@@ -140,7 +173,14 @@ function SortCaret({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
   );
 }
 
-export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: PerStockGridProps) {
+export function PerStockGrid({
+  data,
+  metric,
+  openTickers,
+  onOpenTicker,
+  onCloseTicker,
+}: PerStockGridProps) {
+  const openTickerSet = useMemo(() => new Set(openTickers), [openTickers]);
   const factors = data.usableFactors;
 
   const [sortBy, setSortBy] = useState<{
@@ -179,11 +219,16 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
   const summarySpans = useMemo(() => {
     const m: Record<SummarySortKey, number> = {
       alpha: 1e-6,
+      // alphaT uses heatTStatBloomberg(t) with a fixed |t| ramp — no span needed,
+      // but the key stays in the record so Record<SummarySortKey, number> is satisfied.
+      alphaT: 1,
+      alphaCi: 1e-6,
       residual: 1e-6,
       realizedVol: 1e-6,
       rSquared: 1e-6,
     };
     for (const k of SUMMARY_KEYS) {
+      if (k === "alphaT") continue; // no per-column span; ramp is fixed
       let max = 0;
       for (const r of data.rows) {
         const v = summaryValue(r, k);
@@ -233,8 +278,9 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
           borderCollapse: "separate",
           borderSpacing: 0,
           minWidth: "100%",
-          fontSize: 11,
-          fontFamily: "var(--font-mono, monospace)",
+          fontSize: BB_GRID_FONT_SIZE,
+          fontFamily: BB_GRID_FONT_STACK,
+          fontVariantNumeric: "tabular-nums",
         }}
       >
         <thead>
@@ -246,10 +292,10 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
                 left: 0,
                 width: TICKER_COL_WIDTH,
                 minWidth: TICKER_COL_WIDTH,
-                color: "#fff",
+                color: BB_GRID_HEADER_COLOR,
                 textAlign: "left",
                 paddingLeft: 0,
-                background: "var(--bb-chrome)",
+                background: BB_GRID_HEADER_BG,
                 zIndex: 3,
               }}
               role="columnheader"
@@ -278,9 +324,9 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
                 left: TICKER_COL_WIDTH,
                 width: META_COL_WIDTH,
                 minWidth: META_COL_WIDTH,
-                color: "#fff",
+                color: BB_GRID_HEADER_COLOR,
                 textAlign: "left",
-                background: "var(--bb-chrome)",
+                background: BB_GRID_HEADER_BG,
                 zIndex: 3,
                 padding: 0,
               }}
@@ -305,19 +351,50 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
             </th>
             {SUMMARY_KEYS.map((k, idx) => {
               const active = sortBy?.key === k;
-              const tooltip =
-                k === "alpha"
-                  ? `Σ rolling α_t over the regression-aligned post-burn-in sample using a fixed ${data.gridRollingWindow}d rolling OLS.\n\n` +
+              const tooltip = ((): string => {
+                if (k === "alpha") {
+                  return (
+                    `Σ rolling α_t over the regression-aligned post-burn-in sample using a fixed ${data.gridRollingWindow}d rolling OLS.\n\n` +
                     `Matches the "Σ rolling α_t" residual in the per-stock detail waterfall when the chart's rolling W = ${data.gridRollingWindow}d (default).\n\n` +
                     `Note: per-factor return columns in this row use snapshot β × Σr_t — row totals therefore do not match the realised return.`
-                  : k === "residual"
-                    ? `Σ ε_t = Σ (y_t − predicted_t) over post burn-in from the same ${data.gridRollingWindow}d rolling OLS.\n\n` +
-                      `Matches the "Unexplained Residual" segment in the per-stock detail waterfall when the chart's rolling W = ${data.gridRollingWindow}d.`
-                    : k === "realizedVol"
-                      ? `Realised σ × √252 of the stock's daily excess return over the regression-aligned sample.\n\n` +
-                        `Anchor headline volatility (Phase 2 lock-in).`
-                      : `In-sample R² from the snapshot multivariate OLS over the regression window.\n\n` +
-                        `Tinted muted when < 30 % to flag low-fit rows.`;
+                  );
+                }
+                if (k === "alphaT") {
+                  return (
+                    `T = α / SE(α) from the snapshot OLS (intercept t-stat).\n\n` +
+                    `Heat is keyed on |T| (sign-agnostic — significance is about magnitude, not direction):\n` +
+                    `  |T| = 0       → darkest red (clearly not significant)\n` +
+                    `  |T| ≈ 1.25    → neutral gray\n` +
+                    `  |T| = 2       → ~60 % green (around the 95 % CI threshold)\n` +
+                    `  |T| ≥ 3       → darkest green (highly significant)\n\n` +
+                    `T = +2 and T = -2 produce the same colour; the sign is in the displayed value. ` +
+                    `Sort still uses the signed t-stat so you can rank "most positive" vs "most negative".\n\n` +
+                    `Factor z-scoring does not affect this number — α and SE(α) are in y-units.`
+                  );
+                }
+                if (k === "alphaCi") {
+                  return (
+                    `Annualised 95 % confidence half-width for the STATIC alpha:  1.96 × SE(α) × 252.\n\n` +
+                    `Reads as ±X.X% — pair with the ALPHA column (also annualised) to read the full band.`
+                  );
+                }
+                if (k === "residual") {
+                  return (
+                    `Σ ε_t = Σ (y_t − predicted_t) over post burn-in from the same ${data.gridRollingWindow}d rolling OLS.\n\n` +
+                    `Matches the "Unexplained Residual" segment in the per-stock detail waterfall when the chart's rolling W = ${data.gridRollingWindow}d.`
+                  );
+                }
+                if (k === "realizedVol") {
+                  return (
+                    `Annualised realised volatility (σ × √252) of the stock's daily excess return over the regression-aligned sample.\n\n` +
+                    `Anchor headline volatility (Phase 2 lock-in). Cells shaded red — darker red = higher vol.`
+                  );
+                }
+                return (
+                  `In-sample R² from the snapshot multivariate OLS over the regression window.\n\n` +
+                  `Cells shaded green — darker green = better fit. Text tinted muted when R² < 30 % to flag low-fit rows.`
+                );
+              })();
               const isLastSummary = idx === SUMMARY_KEYS.length - 1;
               return (
                 <th
@@ -327,11 +404,11 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
                     ...headerCellStyle,
                     width: SUMMARY_COL_WIDTH,
                     minWidth: SUMMARY_COL_WIDTH,
-                    color: "#fff",
+                    color: BB_GRID_HEADER_COLOR,
                     padding: 0,
                     borderRight: isLastSummary
                       ? "2px solid var(--bg-border)"
-                      : "1px solid var(--bg-border)",
+                      : BB_GRID_BORDER,
                   }}
                   role="columnheader"
                   aria-sort={
@@ -374,7 +451,7 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
                     ...headerCellStyle,
                     width: FACTOR_COL_WIDTH,
                     minWidth: FACTOR_COL_WIDTH,
-                    color: status === "OK" ? "#fff" : "var(--color-warning, #f59e0b)",
+                    color: status === "OK" ? BB_GRID_HEADER_COLOR : "var(--color-warning, #f59e0b)",
                     padding: 0,
                   }}
                   role="columnheader"
@@ -406,11 +483,13 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
         </thead>
         <tbody>
           {sortedRows.map((row) => {
-            const isSelected = row.ticker === selectedTicker;
+            const isSelected = openTickerSet.has(row.ticker);
             return (
               <tr
                 key={row.ticker}
-                onClick={() => onSelectTicker(isSelected ? null : row.ticker)}
+                onClick={() =>
+                  isSelected ? onCloseTicker(row.ticker) : onOpenTicker(row.ticker)
+                }
                 style={{
                   height: ROW_HEIGHT,
                   cursor: "pointer",
@@ -425,8 +504,9 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
                     width: TICKER_COL_WIDTH,
                     minWidth: TICKER_COL_WIDTH,
                     padding: "0 10px",
-                    fontWeight: 600,
-                    color: isSelected ? "var(--color-accent, #f0b65d)" : "var(--text-primary)",
+                    fontWeight: 700,
+                    letterSpacing: "0.04em",
+                    color: "var(--color-accent)",
                     borderBottom: "1px solid rgba(255,255,255,0.04)",
                     background: isSelected ? "rgba(240,182,93,0.06)" : "var(--bg-surface)",
                   }}
@@ -440,7 +520,7 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
                     width: META_COL_WIDTH,
                     minWidth: META_COL_WIDTH,
                     padding: "0 10px",
-                    fontSize: 10,
+                    fontSize: 11,
                     color: "var(--text-secondary)",
                     borderBottom: "1px solid rgba(255,255,255,0.04)",
                     background: isSelected ? "rgba(240,182,93,0.06)" : "var(--bg-surface)",
@@ -452,6 +532,10 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
                 >
                   <div
                     style={{
+                      color: "#d0d0d0",
+                      fontWeight: 600,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.04em",
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
@@ -461,8 +545,9 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
                   </div>
                   <div
                     style={{
-                      fontSize: 9,
+                      fontSize: 10,
                       color: "var(--text-muted)",
+                      letterSpacing: "0.005em",
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
@@ -473,14 +558,25 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
                 </td>
                 {SUMMARY_KEYS.map((k, idx) => {
                   const v = summaryValue(row, k);
-                  const isHeat = k === "alpha" || k === "residual";
                   const isLastSummary = idx === SUMMARY_KEYS.length - 1;
-                  const bg =
-                    isHeat && v !== null && Number.isFinite(v)
-                      ? heatSignedBloomberg(v, summarySpans[k])
-                      : v === null
-                        ? "rgba(255,255,255,0.02)"
-                        : "transparent";
+                  const bg = ((): string => {
+                    if (v === null || !Number.isFinite(v)) return "rgba(255,255,255,0.02)";
+                    if (k === "alpha" || k === "residual") {
+                      return heatSignedBloomberg(v, summarySpans[k]);
+                    }
+                    if (k === "alphaT") {
+                      // |t|-keyed ramp (sign-agnostic): 0 → red, 2 → ~60% green, 3+ → dark green.
+                      return heatTStatBloomberg(v);
+                    }
+                    if (k === "realizedVol") {
+                      return heatSequentialBloomberg(v, summarySpans.realizedVol, "red");
+                    }
+                    if (k === "rSquared") {
+                      return heatSequentialBloomberg(v, 1, "green");
+                    }
+                    // alphaCi: no heat (signal already in T column).
+                    return "transparent";
+                  })();
                   const lowFit =
                     k === "rSquared" && v !== null && Number.isFinite(v) && v < 0.3;
                   const color =
@@ -488,14 +584,24 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
                       ? "var(--text-muted)"
                       : lowFit
                         ? "var(--text-muted)"
-                        : "#e8eef7";
-                  const titleSuffix =
-                    (k === "alpha" || k === "residual") &&
-                    row.rollingObservationsPostBurn > 0
-                      ? `\nValid rolling-fit days summed: ${row.rollingObservationsPostBurn}`
-                      : (k === "alpha" || k === "residual")
-                        ? `\nNo rolling fits available (sample too short for ${data.gridRollingWindow}d window).`
-                        : "";
+                        : k === "alphaCi"
+                          ? "var(--text-primary)"
+                          : pickTextColor(bg);
+                  const titleSuffix = ((): string => {
+                    if ((k === "alpha" || k === "residual") && row.rollingObservationsPostBurn > 0) {
+                      return `\nValid rolling-fit days summed: ${row.rollingObservationsPostBurn}`;
+                    }
+                    if (k === "alpha" || k === "residual") {
+                      return `\nNo rolling fits available (sample too short for ${data.gridRollingWindow}d window).`;
+                    }
+                    if (k === "alphaT") {
+                      return `\n|T| ≥ 1.96 ⇒ 95 % CI excludes 0.`;
+                    }
+                    if (k === "alphaCi") {
+                      return `\n95 % half-width = 1.96 × SE(α) × 252.`;
+                    }
+                    return "";
+                  })();
                   return (
                     <td
                       key={`summary-${k}`}
@@ -503,12 +609,12 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
                       style={{
                         width: SUMMARY_COL_WIDTH,
                         minWidth: SUMMARY_COL_WIDTH,
-                        padding: 0,
+                        padding: "0 6px",
                         background: isSelected
                           ? "rgba(240,182,93,0.06)"
                           : bg,
                         textAlign: "center",
-                        fontSize: 10,
+                        fontSize: BB_GRID_FONT_SIZE,
                         color,
                         borderBottom: "1px solid rgba(0,0,0,0.6)",
                         borderRight: isLastSummary
@@ -534,11 +640,11 @@ export function PerStockGrid({ data, metric, selectedTicker, onSelectTicker }: P
                       style={{
                         width: FACTOR_COL_WIDTH,
                         minWidth: FACTOR_COL_WIDTH,
-                        padding: 0,
-                        background: bg,
+                        padding: "0 6px",
+                        background: isSelected ? "rgba(240,182,93,0.06)" : bg,
                         textAlign: "center",
-                        fontSize: 10,
-                        color: value !== null ? "#e8eef7" : "var(--text-muted)",
+                        fontSize: BB_GRID_FONT_SIZE,
+                        color: value !== null ? pickTextColor(bg) : "var(--text-muted)",
                         borderBottom: "1px solid rgba(0,0,0,0.6)",
                         borderRight: "1px solid rgba(0,0,0,0.4)",
                       }}

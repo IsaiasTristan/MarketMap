@@ -25,10 +25,20 @@ export interface WaterfallSegment {
 }
 
 interface WaterfallProps {
-  /** Section title (e.g. "Total Return Decomposition"). */
-  title: string;
+  /**
+   * Section title. Accepts a `ReactNode` so callers can compose a short
+   * title with adornments (info icon, secondary line) in the same headline
+   * cell — e.g. `"Excess return attribution" + <InfoIcon/>`.
+   */
+  title: ReactNode;
+  /**
+   * Optional secondary line rendered below the title in the same headline
+   * cell (e.g. a date range like `2019-10-10 — 2025-10-10`). Bloomberg-like
+   * convention: keep the title short and surface the window in this slot.
+   */
+  titleSub?: ReactNode;
   /** Optional subtitle line (e.g. window/methodology note). */
-  subtitle?: string;
+  subtitle?: ReactNode;
   /** Headline total value, in the same decimal units as segment values. */
   total: number;
   /**
@@ -76,6 +86,7 @@ const fmtPct = (v: number): string =>
 
 export function Waterfall({
   title,
+  titleSub,
   subtitle,
   total,
   totalLabel,
@@ -128,10 +139,30 @@ export function Waterfall({
               textTransform: "uppercase",
               letterSpacing: "0.08em",
               fontWeight: 600,
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              flexWrap: "wrap",
             }}
           >
             {title}
           </div>
+          {titleSub && (
+            <div
+              style={{
+                fontSize: 10,
+                color: "var(--text-muted)",
+                fontFamily: "var(--font-mono, monospace)",
+                fontVariantNumeric: "tabular-nums",
+                marginTop: 2,
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              {titleSub}
+            </div>
+          )}
           {subtitle && (
             <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
               {subtitle}

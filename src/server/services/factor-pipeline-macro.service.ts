@@ -130,7 +130,7 @@ function diffSeries(
   return out;
 }
 
-/** Subtract a constant daily RF (annual / 252) from each value in a series. */
+/** Subtract a constant daily RF (already daily simple decimal) from each value in a series. */
 function excessOfRf(
   a: Map<string, number>,
   rfDaily: number,
@@ -184,15 +184,16 @@ export async function refreshMacroFactorPipeline(opts?: {
   ]);
 
   // 2) Pull a recent risk-free rate from FactorReturnDaily so we can compute
-  //    excess returns. We use the most recent FF RF as the daily rate (fine
-  //    for the gap window — when FF lags, this is one ~2-month-old constant).
+  //    excess returns. The stored RF value is already a daily simple decimal
+  //    (KF native convention; FRED DGS1MO back-fill is calibrated to that
+  //    daily level), so we consume it directly. The fallback ~ 4.5 % p.a.
+  //    converted to daily.
   const lastRfRow = await db.factorReturnDaily.findFirst({
     where: { factorCode: "RF" },
     orderBy: { tradeDate: "desc" },
     select: { value: true },
   });
-  const annualRf = lastRfRow ? Number(lastRfRow.value) : 0.045;
-  const dailyRf = annualRf / 252;
+  const dailyRf = lastRfRow ? Number(lastRfRow.value) : 0.045 / 252;
 
   // 3) Compose factor series.
   //    Series that depend on a Yahoo ticker we failed to fetch are skipped.

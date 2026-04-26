@@ -88,11 +88,12 @@ export function ExposurePanel({ exposure, attribution, selectedPeriod }: Exposur
   const periodData = attribution?.periods?.find((p) => p.label === selectedPeriod);
 
   const colStyle: React.CSSProperties = {
-    fontSize: 11,
-    fontWeight: 600,
-    color: "var(--text-muted)",
+    fontSize: 12,
+    fontWeight: 700,
+    color: "var(--text-primary)",
+    background: "var(--bg-surface)",
     textTransform: "uppercase",
-    letterSpacing: "0.07em",
+    letterSpacing: "0.06em",
     padding: "8px 12px",
     borderBottom: "1px solid var(--bg-border)",
     whiteSpace: "nowrap",
