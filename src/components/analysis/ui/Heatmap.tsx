@@ -118,8 +118,7 @@ export function Heatmap({
             style={{
               flex: 1,
               height: 8,
-              background:
-                "linear-gradient(90deg, #8B0000, #330000, #000000, #003300, #006400)",
+              background: "linear-gradient(90deg, rgb(180,30,30), rgb(70,70,70), rgb(30,150,30))",
               borderRadius: 0,
               maxWidth: Math.min(200, xLabels.length * cellSize),
             }}

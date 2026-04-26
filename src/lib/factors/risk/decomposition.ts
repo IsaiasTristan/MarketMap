@@ -16,6 +16,29 @@
  *
  * Percent contribution to total variance:
  *   PCR_f = β_f × (Σβ)_f / σ²_p
+ *
+ * ---------------------------------------------------------------------------
+ * Annualisation audit (Phase 2, 2026-04-25)
+ * ---------------------------------------------------------------------------
+ * Every quantity that escapes this module is annualised exactly once. Below
+ * is the canonical accounting for every input/output unit conversion the
+ * factor analytics pipeline performs.
+ *
+ *   Quantity                     Daily form                     Annualised
+ *   ---------------------------- ------------------------------ ----------------
+ *   Σ (factor covariance)        Cov(r_t, r_t) on daily series  × 252 (in `factorCovarianceMatrix`)
+ *   σ²_idio (residual variance)  Σ ε_t² / dof (daily)           × 252 (HERE; `idiosyncraticDailyVar * 252`)
+ *   β'Σβ (systematic var)        sum_{a,b} β_a Σ_{a,b} β_b      already annualised because Σ is
+ *   σ_p (total volatility)       —                              √(annualised variance)
+ *   α (alpha)                    daily intercept from OLS       × 252  (in services that consume α)
+ *   Realised σ                   √(Var(y) daily) × √252         (in `factor-per-stock.service`)
+ *   RC_f, MCR_f                  derived from annualised Σ      already annualised
+ *
+ * Correctness invariant: NEVER annualise a quantity twice. If a number is
+ * passed across this boundary it is implicit that the caller is responsible
+ * for one (and only one) annualisation step. The per-stock and per-portfolio
+ * services pass DAILY idiosyncratic variance (`σ²_idio_daily = SS_res / dof`)
+ * to this function, which then performs the single × 252 multiplication.
  */
 import type { RiskDecomposition, FactorRiskEntry } from "@/types/factors";
 import type { FactorCode } from "@/types/factors";

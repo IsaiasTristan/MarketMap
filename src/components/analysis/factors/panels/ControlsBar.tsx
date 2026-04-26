@@ -3,21 +3,25 @@ import { useAnalysisStore } from "@/store/analysis";
 import { ModelSelect } from "../shared/ModelSelect";
 import { WindowSelect } from "../shared/WindowSelect";
 import { PeriodSelect } from "../shared/PeriodSelect";
-import type { FactorModelPreset, FactorWindow, FactorPeriod } from "@/store/analysis";
+import { MODEL_PRESETS } from "@/lib/factors/definitions/model-presets";
 
 interface ControlsBarProps {
   showPipeline?: boolean;
   onRefreshPipeline?: () => void;
   pipelineLoading?: boolean;
+  /** Hide the attribution-period selector when not relevant (e.g. per-stock view). */
+  hidePeriod?: boolean;
 }
 
 export function ControlsBar({
   showPipeline,
   onRefreshPipeline,
   pipelineLoading,
+  hidePeriod,
 }: ControlsBarProps) {
   const { factorModel, factorWindow, factorPeriod, setFactorModel, setFactorWindow, setFactorPeriod } =
     useAnalysisStore();
+  const factorCount = MODEL_PRESETS[factorModel]?.factors.length ?? 0;
 
   return (
     <div
@@ -33,23 +37,26 @@ export function ControlsBar({
       }}
     >
       <ModelSelect value={factorModel} onChange={setFactorModel} />
-      <WindowSelect value={factorWindow} onChange={setFactorWindow} />
+      <WindowSelect value={factorWindow} onChange={setFactorWindow} factorCount={factorCount} />
 
-      <div style={{ flex: 1, minWidth: 240 }}>
-        <div
-          style={{
-            fontSize: 10,
-            fontWeight: 600,
-            color: "var(--text-muted)",
-            textTransform: "uppercase",
-            letterSpacing: "0.08em",
-            marginBottom: 4,
-          }}
-        >
-          Attribution Period
+      {!hidePeriod && (
+        <div style={{ flex: 1, minWidth: 240 }}>
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              color: "var(--text-muted)",
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              marginBottom: 4,
+            }}
+          >
+            Attribution Period
+          </div>
+          <PeriodSelect value={factorPeriod} onChange={setFactorPeriod} />
         </div>
-        <PeriodSelect value={factorPeriod} onChange={setFactorPeriod} />
-      </div>
+      )}
+      {hidePeriod && <div style={{ flex: 1 }} />}
 
       {showPipeline && (
         <button

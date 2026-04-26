@@ -4,11 +4,65 @@
  */
 import type { FactorCode, FactorDef } from "@/types/factors";
 
+/**
+ * Naming convention (Apr 2026): each factor uses its full academic name.
+ * - `label` is the long, fully-spelled academic name. Where the factor has a
+ *   commonly-cited code in the literature (MKT-RF, SMB, HML, RMW, CMA, BAB,
+ *   QMJ) we append it in parentheses; otherwise the label is just the name.
+ * - `shortLabel` is the same academic name in a compact form for use in
+ *   dense column headers / chart legends. We never use bare ticker-style
+ *   codes ("EQ", "BAB", "QMJ") in the UI.
+ *
+ * ---------------------------------------------------------------------------
+ * Excess vs raw factor definitions  (Phase 2 audit, 2026-04-25)
+ * ---------------------------------------------------------------------------
+ * The regression engine assumes every factor return is in EXCESS-OF-RF units
+ * unless explicitly marked otherwise. Source mapping below is the canonical
+ * definition the ingest pipeline writes to `FactorReturnDaily`.
+ *
+ *   Factor       Definition (raw vs excess)               Source
+ *   ----------   ----------------------------------------- --------------------
+ *   MKT_RF       Market excess return (excess of RF)      Ken French daily
+ *   SMB          Small-minus-Big (long-short, RF-neutral) Ken French daily
+ *   HML          High-minus-Low (long-short, RF-neutral)  Ken French daily
+ *   RMW          Robust-minus-Weak (long-short)           Ken French daily
+ *   CMA          Conservative-minus-Aggressive (LS)       Ken French daily
+ *   MOM          12m-1m momentum (long-short)             Ken French daily
+ *   RF           Risk-free 1-month T-bill (raw level/252) Ken French daily
+ *   EQ           ACWI excess of RF                        Yahoo (ACWI)
+ *   LOCAL_EQ     SPY − ACWI (cross-sectional spread, RF-neutral) Yahoo
+ *   RATES        IEF excess of RF                         Yahoo (IEF)
+ *   COMM         DBC excess of RF                         Yahoo (DBC)
+ *   EM           EEM − SPY (spread, RF-neutral)           Yahoo
+ *   FX           UUP excess of RF                         Yahoo (UUP)
+ *   INFL         TIP − IEF (breakeven inflation spread)   Yahoo
+ *   SHORT_VOL    SVXY excess of RF                        Yahoo (SVXY)
+ *   TREND        DBMF excess of RF                        Yahoo (DBMF)
+ *   BAB          Betting-Against-Beta (LS, RF-neutral)    AQR daily XLSX
+ *   QMJ          Quality-Minus-Junk (LS, RF-neutral)      AQR daily XLSX
+ *   CROWD        GVIP − SPY (spread, RF-neutral)          Yahoo
+ *
+ * Notes:
+ *   • All long-short / spread factors are inherently RF-neutral and therefore
+ *     comparable to MKT_RF/EQ on the regression's RHS without further excess
+ *     transformation.
+ *   • All ETF-based factors are converted from total return to excess return
+ *     by subtracting the same RF (Ken French daily T-bill / 252) used for the
+ *     dependent variable on the LHS, so signs are interpretable as risk
+ *     premia.
+ *   • USMV-SPY and QUAL-SPY proxy splices for the AQR publish gap are written
+ *     as the same factor row (BAB / QMJ respectively), normalised through
+ *     `normalizeProxyToFf` so units stay consistent (see
+ *     `factor-pipeline-macro.service.ts`).
+ */
 export const FACTOR_DEFS: Record<FactorCode, FactorDef> = {
+  // -------------------------------------------------------------------------
+  // Fama-French / Carhart factors (legacy presets)
+  // -------------------------------------------------------------------------
   MKT_RF: {
     code: "MKT_RF",
-    label: "Market Beta",
-    shortLabel: "Mkt β",
+    label: "Market Beta (MKT-RF)",
+    shortLabel: "Market Beta",
     description:
       "Sensitivity of the portfolio to broad market movements, measured as excess return of the market over the risk-free rate. A beta of 1.2 means the portfolio tends to move 1.2× the market.",
     whyItMatters:
@@ -41,7 +95,7 @@ export const FACTOR_DEFS: Record<FactorCode, FactorDef> = {
   RMW: {
     code: "RMW",
     label: "Profitability (RMW)",
-    shortLabel: "Profit",
+    shortLabel: "Profitability",
     description:
       "Exposure to the robust-minus-weak profitability factor. Positive loading means the portfolio leans toward companies with strong operating profitability.",
     whyItMatters:
@@ -52,7 +106,7 @@ export const FACTOR_DEFS: Record<FactorCode, FactorDef> = {
   CMA: {
     code: "CMA",
     label: "Investment (CMA)",
-    shortLabel: "Invest",
+    shortLabel: "Investment",
     description:
       "Exposure to the conservative-minus-aggressive investment factor. Positive loading means the portfolio favors companies with conservative (low) asset growth.",
     whyItMatters:
@@ -62,8 +116,8 @@ export const FACTOR_DEFS: Record<FactorCode, FactorDef> = {
   },
   MOM: {
     code: "MOM",
-    label: "Momentum (MOM)",
-    shortLabel: "Mom",
+    label: "Momentum",
+    shortLabel: "Momentum",
     description:
       "Exposure to the momentum factor (winners minus losers over the past 12 months, skipping the most recent month). Positive loading means the portfolio tilts toward recent outperformers.",
     whyItMatters:
@@ -74,13 +128,153 @@ export const FACTOR_DEFS: Record<FactorCode, FactorDef> = {
   RF: {
     code: "RF",
     label: "Risk-Free Rate",
-    shortLabel: "RF",
+    shortLabel: "Risk-Free Rate",
     description:
       "The daily risk-free rate (3-month T-bill annualized, divided by 252). Used to convert total returns to excess returns for regression.",
     whyItMatters:
       "Return above the risk-free rate represents the compensation investors receive for taking equity risk.",
     units: "pct",
     color: "#94a3b8",
+  },
+
+  // -------------------------------------------------------------------------
+  // Macro asset-class factors (MACRO14)
+  // -------------------------------------------------------------------------
+  EQ: {
+    code: "EQ",
+    label: "Global Equity",
+    shortLabel: "Global Equity",
+    description:
+      "Exposure to broad global equity beta (ACWI excess of risk-free rate). Captures the global equity risk premium across developed and emerging markets.",
+    whyItMatters:
+      "Global equity beta is the dominant macro risk in any equity portfolio. Sensitivity to ACWI tracks systemic 'risk-on / risk-off' regime changes.",
+    units: "beta",
+    color: "#60a5fa",
+  },
+  LOCAL_EQ: {
+    code: "LOCAL_EQ",
+    label: "Local Equity (US − Global)",
+    shortLabel: "Local Equity",
+    description:
+      "US equity premium over global equity (SPY − ACWI). Isolates the US-specific equity risk after controlling for global beta.",
+    whyItMatters:
+      "Captures home-bias and US-versus-rest-of-world performance dispersion. Often elevated during US tech outperformance.",
+    units: "beta",
+    color: "#3b82f6",
+  },
+  RATES: {
+    code: "RATES",
+    label: "Interest-Rate Duration",
+    shortLabel: "Duration",
+    description:
+      "Duration premium from intermediate-term Treasuries (IEF excess of risk-free rate). Positive beta means the position behaves like long-duration bonds.",
+    whyItMatters:
+      "Long-duration tilts amplify gains in falling-rate regimes and amplify losses when rates rise (e.g. 2022). Negative loading suggests rate-sensitive shorts.",
+    units: "beta",
+    color: "#a78bfa",
+  },
+  COMM: {
+    code: "COMM",
+    label: "Commodities",
+    shortLabel: "Commodities",
+    description:
+      "Exposure to broad commodity prices (DBC excess of risk-free rate). Captures energy, metals, and agricultural complex.",
+    whyItMatters:
+      "Commodity beta is a partial inflation hedge and often spikes during supply shocks or geopolitical stress.",
+    units: "beta",
+    color: "#facc15",
+  },
+  EM: {
+    code: "EM",
+    label: "Emerging Markets",
+    shortLabel: "Emerging Markets",
+    description:
+      "Emerging-market equity premium over US equity (EEM − SPY). Isolates the EM-specific risk after controlling for US beta.",
+    whyItMatters:
+      "EM exposure adds beta to global growth, EM currency moves, and commodity demand. Sensitive to USD strength and risk appetite.",
+    units: "beta",
+    color: "#f472b6",
+  },
+  FX: {
+    code: "FX",
+    label: "US Dollar",
+    shortLabel: "US Dollar",
+    description:
+      "USD strength vs basket of major currencies (UUP excess of risk-free rate). Positive loading means the position benefits from a stronger dollar.",
+    whyItMatters:
+      "USD strength compresses USD returns of international assets, weighs on commodities, and tightens global financial conditions.",
+    units: "beta",
+    color: "#34d399",
+  },
+  INFL: {
+    code: "INFL",
+    label: "Inflation Breakeven",
+    shortLabel: "Inflation",
+    description:
+      "Breakeven inflation expectations from TIPS minus nominal Treasuries (TIP − IEF). Positive beta means the position benefits when inflation expectations rise.",
+    whyItMatters:
+      "Inflation regime shifts re-price discount rates and reshape sector leadership (energy, financials benefit; long-duration tech suffers).",
+    units: "beta",
+    color: "#fb7185",
+  },
+
+  // -------------------------------------------------------------------------
+  // Style / cross-sectional risk premia (MACRO14)
+  // -------------------------------------------------------------------------
+  SHORT_VOL: {
+    code: "SHORT_VOL",
+    label: "Short Volatility",
+    shortLabel: "Short Volatility",
+    description:
+      "Daily excess return of SVXY (ProShares Short VIX Short-Term Futures ETF) over the risk-free rate. SVXY is short the front-month VIX futures roll — positive loading harvests futures roll-down in contango but suffers tail losses in vol spikes. NOTE: ProShares cut SVXY's effective leverage from −1.0x to −0.5x on 2018-02-27 after the XIV blow-up, so pre- and post-2018 series are structurally different short-vol exposures; β interpretation should account for the regime break.",
+    whyItMatters:
+      "Short-vol exposure carries steady carry in calm regimes but suffers severe drawdowns in events like Feb 2018, COVID-19, or any sharp VIX spike. The 2018 leverage cut roughly halved SVXY's daily move magnitude, so a single regression β masks the regime change.",
+    units: "beta",
+    color: "#f87171",
+  },
+  TREND: {
+    code: "TREND",
+    label: "Trend Following",
+    shortLabel: "Trend Following",
+    description:
+      "Diversified CTA-style trend premium (DBMF managed futures, excess of risk-free rate). Captures systematic trend-following across asset classes.",
+    whyItMatters:
+      "Trend-following is one of the best historical equity-bear-market hedges (positive in 2008, 2022). Tends to lose in sharp reversals.",
+    units: "beta",
+    color: "#10b981",
+  },
+  BAB: {
+    code: "BAB",
+    label: "Betting-Against-Beta (BAB)",
+    shortLabel: "Betting-Against-Beta",
+    description:
+      "Betting-Against-Beta factor (long leveraged low-beta, short high-beta). From AQR's published US daily series.",
+    whyItMatters:
+      "Low-beta stocks have historically outperformed on a risk-adjusted basis. Positive Betting-Against-Beta loading indicates a defensive, low-vol tilt.",
+    units: "beta",
+    color: "#84cc16",
+  },
+  QMJ: {
+    code: "QMJ",
+    label: "Quality-Minus-Junk (QMJ)",
+    shortLabel: "Quality",
+    description:
+      "Quality-Minus-Junk factor (long high-quality, short low-quality). From AQR's published US daily series.",
+    whyItMatters:
+      "Quality companies (profitable, stable, well-managed) are more defensive and tend to compound steadily through cycles.",
+    units: "beta",
+    color: "#06b6d4",
+  },
+  CROWD: {
+    code: "CROWD",
+    label: "Hedge-Fund Crowding",
+    shortLabel: "Crowding",
+    description:
+      "Hedge-fund crowding via the Goldman Sachs Hedge Fund VIP basket (GVIP − SPY). Positive loading means the position overlaps with hedge fund consensus longs.",
+    whyItMatters:
+      "Crowded positions are vulnerable to fast deleveraging events when hedge funds unwind together (e.g. Jan 2021, Feb 2024 momentum unwinds).",
+    units: "beta",
+    color: "#c084fc",
   },
 };
 
@@ -92,6 +286,24 @@ export const FACTOR_DISPLAY_ORDER: FactorCode[] = [
   "RMW",
   "CMA",
   "MOM",
+];
+
+/** Display order for the MACRO14 model — matches the user-supplied factor list. */
+export const MACRO14_DISPLAY_ORDER: FactorCode[] = [
+  "EQ",
+  "RATES",
+  "COMM",
+  "EM",
+  "FX",
+  "INFL",
+  "LOCAL_EQ",
+  "SHORT_VOL",
+  "TREND",
+  "BAB",
+  "MOM",
+  "QMJ",
+  "HML",
+  "CROWD",
 ];
 
 /** Look up a factor definition by code. */

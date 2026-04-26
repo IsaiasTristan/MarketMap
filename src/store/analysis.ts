@@ -3,9 +3,17 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type DateRange = "1M" | "3M" | "6M" | "1Y" | "3Y" | "ALL";
-export type FactorModelPreset = "CAPM" | "FF3" | "CARHART4" | "FF5" | "EXTENDED";
-export type FactorWindow = 20 | 60 | 120 | 252;
+export type FactorModelPreset = "CAPM" | "FF3" | "CARHART4" | "FF5" | "EXTENDED" | "MACRO14";
+/** Window in trading days. Presets map to ~calendar lookback windows. */
+export type FactorWindow = 21 | 42 | 63 | 126 | 252 | 1260 | number;
 export type FactorPeriod = "1D" | "5D" | "MTD" | "QTD" | "1M" | "3M" | "6M" | "YTD" | "1Y" | "ITD";
+export type FactorTsRollingWindow = 30 | 60 | 90 | 252 | "match";
+
+/** Top-level Factors-tab view (Portfolio aggregate vs per-stock grid vs correlations). */
+export type FactorView = "portfolio" | "per_stock" | "correlations";
+
+/** Active metric in the per-stock grid heatmap. */
+export type FactorGridMetric = "beta" | "return" | "risk";
 
 interface AnalysisState {
   activePortfolioId: string | null;
@@ -17,6 +25,12 @@ interface AnalysisState {
   factorWindow: FactorWindow;
   factorEwHalfLife: number | null;
   factorPeriod: FactorPeriod;
+  factorView: FactorView;
+  factorGridMetric: FactorGridMetric;
+  factorTsRollingWindow: FactorTsRollingWindow;
+  factorGridSelectedTicker: string | null;
+  factorGridSectorFilter: string | null;
+  factorGridSubThemeFilter: string | null;
   setActivePortfolio: (id: string | null) => void;
   setDateRange: (r: DateRange) => void;
   markOnboardingDone: () => void;
@@ -26,6 +40,12 @@ interface AnalysisState {
   setFactorWindow: (w: FactorWindow) => void;
   setFactorEwHalfLife: (hl: number | null) => void;
   setFactorPeriod: (p: FactorPeriod) => void;
+  setFactorView: (v: FactorView) => void;
+  setFactorGridMetric: (m: FactorGridMetric) => void;
+  setFactorTsRollingWindow: (w: FactorTsRollingWindow) => void;
+  setFactorGridSelectedTicker: (t: string | null) => void;
+  setFactorGridSectorFilter: (s: string | null) => void;
+  setFactorGridSubThemeFilter: (s: string | null) => void;
 }
 
 export interface Toast {
@@ -41,10 +61,16 @@ export const useAnalysisStore = create<AnalysisState>()(
       dateRange: "1Y",
       onboardingDone: false,
       toasts: [],
-      factorModel: "FF5",
+      factorModel: "MACRO14",
       factorWindow: 252,
       factorEwHalfLife: null,
       factorPeriod: "1Y",
+      factorView: "portfolio",
+      factorGridMetric: "beta",
+      factorTsRollingWindow: 60,
+      factorGridSelectedTicker: null,
+      factorGridSectorFilter: null,
+      factorGridSubThemeFilter: null,
       setActivePortfolio: (id) => set({ activePortfolioId: id }),
       setDateRange: (dateRange) => set({ dateRange }),
       markOnboardingDone: () => set({ onboardingDone: true }),
@@ -58,6 +84,15 @@ export const useAnalysisStore = create<AnalysisState>()(
       setFactorWindow: (factorWindow) => set({ factorWindow }),
       setFactorEwHalfLife: (factorEwHalfLife) => set({ factorEwHalfLife }),
       setFactorPeriod: (factorPeriod) => set({ factorPeriod }),
+      setFactorView: (factorView) => set({ factorView }),
+      setFactorGridMetric: (factorGridMetric) => set({ factorGridMetric }),
+      setFactorTsRollingWindow: (factorTsRollingWindow) => set({ factorTsRollingWindow }),
+      setFactorGridSelectedTicker: (factorGridSelectedTicker) =>
+        set({ factorGridSelectedTicker }),
+      setFactorGridSectorFilter: (factorGridSectorFilter) =>
+        set({ factorGridSectorFilter, factorGridSubThemeFilter: null }),
+      setFactorGridSubThemeFilter: (factorGridSubThemeFilter) =>
+        set({ factorGridSubThemeFilter }),
     }),
     {
       name: "analysis-store",
@@ -69,6 +104,9 @@ export const useAnalysisStore = create<AnalysisState>()(
         factorWindow: s.factorWindow,
         factorEwHalfLife: s.factorEwHalfLife,
         factorPeriod: s.factorPeriod,
+        factorView: s.factorView,
+        factorGridMetric: s.factorGridMetric,
+        factorTsRollingWindow: s.factorTsRollingWindow,
       }),
     },
   ),

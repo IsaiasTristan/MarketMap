@@ -4,6 +4,26 @@
  */
 import type { FactorCode, ModelPreset, ModelPresetName } from "@/types/factors";
 
+/** The 14 factors that make up the MACRO14 institutional macro + style model. */
+export const MACRO14_FACTORS: FactorCode[] = [
+  // Macro asset-class beta (7)
+  "EQ",
+  "LOCAL_EQ",
+  "RATES",
+  "COMM",
+  "EM",
+  "FX",
+  "INFL",
+  // Style risk premia (7)
+  "SHORT_VOL",
+  "TREND",
+  "BAB",
+  "MOM",
+  "QMJ",
+  "HML",
+  "CROWD",
+];
+
 export const MODEL_PRESETS: Record<ModelPresetName, ModelPreset> = {
   CAPM: {
     name: "CAPM",
@@ -37,14 +57,21 @@ export const MODEL_PRESETS: Record<ModelPresetName, ModelPreset> = {
     name: "EXTENDED",
     label: "Extended 6-Factor",
     description:
-      "Fama-French 5 factors plus Momentum. The most complete model using available data.",
+      "Fama-French 5 factors plus Momentum. The most complete academic preset.",
     factors: ["MKT_RF", "SMB", "HML", "RMW", "CMA", "MOM"],
+  },
+  MACRO14: {
+    name: "MACRO14",
+    label: "Institutional Macro + Style (14)",
+    description:
+      "Multi-asset macro factors (Equity, Rates, Commodities, EM, FX, Inflation, Local Equity) plus seven style risk premia (Short Vol, Trend, Low Risk, Momentum, Quality, Value, Crowding). Default model for the institutional Factors tab.",
+    factors: MACRO14_FACTORS,
   },
 };
 
-/** Resolve a model preset by name, defaulting to FF5. */
+/** Resolve a model preset by name, defaulting to MACRO14. */
 export function resolveModel(name: ModelPresetName | string): ModelPreset {
-  return MODEL_PRESETS[name as ModelPresetName] ?? MODEL_PRESETS.FF5;
+  return MODEL_PRESETS[name as ModelPresetName] ?? MODEL_PRESETS.MACRO14;
 }
 
 /** Minimum number of observations required for a regression with k factors.
@@ -53,13 +80,18 @@ export function minObservations(k: number): number {
   return 2 * k + 30;
 }
 
-/** All model preset names in display order. */
+/**
+ * Model presets shown in the UI. Trimmed to the institutional set per
+ * product decision (Apr 2026): the MACRO14 macro+style default plus the
+ * two academic Fama-French baselines. CAPM / Carhart4 / Extended remain
+ * defined in `MODEL_PRESETS` for backward compatibility with old persisted
+ * snapshots and saved settings, but are intentionally hidden from the
+ * Model dropdown.
+ */
 export const MODEL_PRESET_NAMES: ModelPresetName[] = [
-  "CAPM",
-  "FF3",
-  "CARHART4",
+  "MACRO14",
   "FF5",
-  "EXTENDED",
+  "FF3",
 ];
 
 /** Factor codes that contribute to return attribution (excludes RF). */

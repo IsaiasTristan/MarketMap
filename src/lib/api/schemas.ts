@@ -4,17 +4,33 @@ import { z } from "zod";
 // Factor analysis query params
 // ---------------------------------------------------------------------------
 
-export const MODEL_PRESET_NAMES = ["CAPM", "FF3", "CARHART4", "FF5", "EXTENDED"] as const;
-export const FACTOR_WINDOW_VALUES = [20, 60, 120, 252] as const;
+/**
+ * All model preset names accepted by the API. Includes legacy presets so old
+ * persisted snapshot reads and external callers do not break. The *visible*
+ * dropdown in the UI is a subset (see `MODEL_PRESET_NAMES` in
+ * `lib/factors/definitions/model-presets.ts`).
+ */
+export const MODEL_PRESET_NAMES = ["CAPM", "FF3", "CARHART4", "FF5", "EXTENDED", "MACRO14"] as const;
+export const FACTOR_WINDOW_VALUES = [30, 60, 90, 180, 365, 1260] as const;
+
+/** Window in trading days for each preset. Calendar-day labels in the UI map to these. */
+export const FACTOR_WINDOW_TRADING_DAYS = {
+  D30: 21, // ~30 calendar days
+  D60: 42,
+  D90: 63,
+  D180: 126,
+  D365: 252,
+  Y5: 1260,
+} as const;
 
 export const factorQueryParams = z.object({
   portfolioId: z.string().min(1),
-  model: z.enum(MODEL_PRESET_NAMES).optional().default("FF5"),
+  model: z.enum(MODEL_PRESET_NAMES).optional().default("MACRO14"),
   window: z
     .string()
     .optional()
-    .transform((v) => (v ? Math.max(20, Math.min(500, Number(v))) : 252))
-    .pipe(z.number().int().min(20).max(500)),
+    .transform((v) => (v ? Math.max(20, Math.min(2520, Number(v))) : 252))
+    .pipe(z.number().int().min(20).max(2520)),
   ew: z
     .string()
     .optional()
@@ -23,6 +39,18 @@ export const factorQueryParams = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
   benchmark: z.enum(["SP500", "NASDAQ", "DOW"]).optional(),
+});
+
+/** Per-stock grid query (no portfolioId — universe-driven). */
+export const factorPerStockQuery = z.object({
+  model: z.enum(MODEL_PRESET_NAMES).optional().default("MACRO14"),
+  window: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(20, Math.min(2520, Number(v))) : 252))
+    .pipe(z.number().int().min(20).max(2520)),
+  sector: z.string().optional(),
+  subTheme: z.string().optional(),
 });
 
 export const factorDriversQuery = factorQueryParams.extend({
@@ -36,8 +64,8 @@ export const factorDriversQuery = factorQueryParams.extend({
 
 export const factorScenarioRunBody = z.object({
   portfolioId: z.string().min(1),
-  model: z.enum(MODEL_PRESET_NAMES).optional().default("FF5"),
-  window: z.number().int().min(20).max(500).optional().default(252),
+  model: z.enum(MODEL_PRESET_NAMES).optional().default("MACRO14"),
+  window: z.number().int().min(20).max(2520).optional().default(252),
   scenarioKey: z.string().optional(),
   customShocks: z
     .array(z.object({ code: z.string().min(1), shockValue: z.number() }))
@@ -50,6 +78,7 @@ export const factorMarketQuery = z.object({
     .optional()
     .transform((v) => (v ? Math.max(60, Math.min(504, Number(v))) : 252))
     .pipe(z.number().int()),
+  model: z.enum(MODEL_PRESET_NAMES).optional(),
 });
 
 export const parseUniverseBody = z.object({

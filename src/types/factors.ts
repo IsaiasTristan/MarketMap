@@ -8,10 +8,29 @@
 // ---------------------------------------------------------------------------
 
 /** Factor codes that correspond to FactorCode enum in Prisma schema + any computed ones. */
-export type FactorCode = "MKT_RF" | "SMB" | "HML" | "RMW" | "CMA" | "MOM" | "RF";
+export type FactorCode =
+  // Fama-French / Carhart factors
+  | "MKT_RF" | "SMB" | "HML" | "RMW" | "CMA" | "MOM" | "RF"
+  // Macro asset-class factors (MACRO14)
+  | "EQ" | "LOCAL_EQ" | "RATES" | "COMM" | "EM" | "FX" | "INFL"
+  // Style / cross-sectional risk premia (MACRO14)
+  | "SHORT_VOL" | "TREND" | "BAB" | "QMJ" | "CROWD";
 
 /** Supported regression model presets. */
-export type ModelPresetName = "CAPM" | "FF3" | "CARHART4" | "FF5" | "EXTENDED";
+export type ModelPresetName = "CAPM" | "FF3" | "CARHART4" | "FF5" | "EXTENDED" | "MACRO14";
+
+/** Coverage status of a factor for a particular regression window. */
+export type FactorCoverageStatus =
+  | "OK"
+  | "INSUFFICIENT_HISTORY"
+  | "MISSING_DATA";
+
+export interface FactorCoverage {
+  code: FactorCode;
+  status: FactorCoverageStatus;
+  inceptionDate: string | null;
+  observationsAvailable: number;
+}
 
 export interface FactorDef {
   code: FactorCode;
@@ -60,6 +79,14 @@ export interface RegressionFit {
   k: number;
   /** True if Tikhonov ridge regularization was applied due to near-singularity. */
   regularized: boolean;
+  /**
+   * True when the regression fit could not be solved at all — either
+   * `n < k + 2` (insufficient degrees of freedom) or both the direct
+   * `(X'WX)⁻¹` invert AND the ridge fallback returned a singular pivot.
+   * Callers MUST treat this fit as garbage (do not include in cumulative
+   * sums or charts). Phase 3 lock-in: no silent degradation.
+   */
+  failed: boolean;
 }
 
 /** One entry in a rolling regression output series. */
@@ -106,6 +133,19 @@ export interface FactorExposureSnapshot {
   concentrationHHI: number;
   systematicShare: number;
   idiosyncraticShare: number;
+  /**
+   * Realised annualised σ of the portfolio's excess return over the
+   * regression-aligned sample. Phase 3 lock-in: the PRIMARY headline
+   * volatility (anchor to realised, model-implied for reconciliation).
+   * Optional for back-compat — old engines that don't compute this leave
+   * it undefined and the UI falls back to model-implied.
+   */
+  realizedAnnualizedVol?: number;
+  /**
+   * (model_var − realised_var) / realised_var. Var-gap badge thresholds
+   * (Q4 lock): |gap| < 2% → no badge, 2-5% → neutral, ≥ 5% → amber.
+   */
+  varGapPct?: number;
   model: ModelPresetName;
   window: number;
   n: number;
@@ -289,12 +329,25 @@ export interface FactorMarketStat {
   sharpeRatio: number | null;
 }
 
+export interface FactorMulticollinearity {
+  /** Variance Inflation Factor per factor (same order as stats). */
+  vif: number[];
+  /** Condition number κ = √(λmax / λmin) of the correlation matrix. */
+  conditionNumber: number;
+  /** Pairwise |ρ| ≥ flagThreshold (i, j refer to indices in stats[]). */
+  highPairs: { i: number; j: number; rho: number }[];
+  /** Threshold used for `highPairs` (default 0.7). */
+  flagThreshold: number;
+}
+
 export interface FactorMarketContext {
   stats: FactorMarketStat[];
   /** Correlation matrix — factors in same order as stats. */
   correlationMatrix: number[][];
   correlationWindow: number;
   asOfDate: string;
+  /** Multicollinearity diagnostics over the same window as the correlations. */
+  multicollinearity: FactorMulticollinearity;
 }
 
 // ---------------------------------------------------------------------------

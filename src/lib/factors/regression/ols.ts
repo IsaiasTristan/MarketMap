@@ -60,7 +60,7 @@ export function multivariateOls(
   }
 
   // Invert X'WX (with ridge fallback)
-  const { inv: XtWXinv, regularized } = invertWithRidge(XtWX);
+  const { inv: XtWXinv, regularized, failed } = invertWithRidge(XtWX);
 
   // β_hat = (X'WX)⁻¹ X'Wy
   const betaAll = matVec(XtWXinv, XtWy);
@@ -119,6 +119,7 @@ export function multivariateOls(
     n,
     k,
     regularized,
+    failed,
   };
 }
 
@@ -132,7 +133,11 @@ function buildWeights(n: number, weights?: number[]): number[] {
   return weights.map((w) => Math.max(0, w) / sum);
 }
 
-/** Return a zeroed-out fallback fit when insufficient data. */
+/**
+ * Return a zeroed-out fallback fit when insufficient data (n < k+2 or k < 1).
+ * `failed: true` is set so callers can detect this case and exclude it from
+ * cumulative sums (no silent zeroing of valid days, per Phase 3 lock-in).
+ */
 function fallbackFit(k: number, n: number): RegressionFit {
   return {
     betas: new Array<number>(k).fill(0),
@@ -147,5 +152,6 @@ function fallbackFit(k: number, n: number): RegressionFit {
     n,
     k,
     regularized: false,
+    failed: true,
   };
 }

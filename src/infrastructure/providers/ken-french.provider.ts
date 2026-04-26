@@ -67,7 +67,7 @@ async function downloadZipText(url: string): Promise<string> {
   const buf = await res.arrayBuffer();
   const zip = await JSZip.loadAsync(buf);
   const csvFile = Object.values(zip.files).find(
-    (f) => !f.dir && f.name.endsWith(".CSV"),
+    (f) => !f.dir && /\.csv$/i.test(f.name),
   );
   if (!csvFile) throw new Error("No CSV in FF zip");
   return csvFile.async("string");

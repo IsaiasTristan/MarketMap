@@ -38,17 +38,24 @@ const FACTOR_COLORS: Record<string, string> = {
 };
 
 export function TimeSeriesPanel({ history, attribution }: TimeSeriesPanelProps) {
+  // Defensive: any non-2xx API response (or stale shape) lands here as an
+  // error/null payload — guard before treating it as ExposureHistory.
+  const safeHistory =
+    history && typeof history === "object" && history.series && typeof history.series === "object"
+      ? history
+      : null;
+
   // Rolling betas chart
   const betaChartData =
-    history?.dates?.map((d, i) => {
+    safeHistory?.dates?.map((d, i) => {
       const point: Record<string, number | string> = { date: d.slice(0, 10) };
-      for (const [code, values] of Object.entries(history.series)) {
+      for (const [code, values] of Object.entries(safeHistory.series)) {
         point[code] = values[i] ?? 0;
       }
       return point;
     }) ?? [];
 
-  const seriesKeys = history ? Object.keys(history.series) : [];
+  const seriesKeys = safeHistory ? Object.keys(safeHistory.series) : [];
 
   // Cumulative attribution chart
   const cumulChartData =

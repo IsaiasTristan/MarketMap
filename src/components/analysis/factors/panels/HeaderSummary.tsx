@@ -1,6 +1,7 @@
 "use client";
 import { MetricCard } from "@/components/analysis/ui/MetricCard";
-import type { FactorExposureSnapshot } from "@/types/factors";
+import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
+import type { FactorExposureSnapshot, FactorCode } from "@/types/factors";
 import type { FactorPeriod } from "@/store/analysis";
 import type { AttributionResult } from "@/types/factors";
 
@@ -68,7 +69,11 @@ export function HeaderSummary({ exposure, attribution, selectedPeriod, loading }
 
       <MetricCard
         label="Top Factor Tilt"
-        value={topTilt ? `${topTilt.code.replace("_RF", "")} ${fmtBeta(topTilt.beta)}` : "—"}
+        value={
+          topTilt
+            ? `${getFactorDef(topTilt.code as FactorCode).shortLabel} ${fmtBeta(topTilt.beta)}`
+            : "—"
+        }
         subValue={topTilt ? topTilt.label : undefined}
         valueColor="neutral"
         tooltip={{

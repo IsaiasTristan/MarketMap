@@ -386,9 +386,9 @@ function PortfolioManager() {
                 <thead>
                   <tr style={{ background: "var(--bg-elevated)" }}>
                     {["Ticker", "Name", "Shares", "Entry Price", "Entry Date", "Sector", "", ""].map(
-                      (h) => (
+                      (h, i) => (
                         <th
-                          key={h}
+                          key={`${h}-${i}`}
                           style={{
                             padding: "9px 12px",
                             textAlign: h === "" ? "center" : "left",

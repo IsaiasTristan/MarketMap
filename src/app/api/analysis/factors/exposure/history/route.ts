@@ -5,10 +5,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getExposureHistory } from "@/server/services/factor-snapshot.service";
+import { MODEL_PRESET_NAMES } from "@/lib/api/schemas";
 
 const querySchema = z.object({
   portfolioId: z.string().min(1),
-  model: z.enum(["CAPM", "FF3", "CARHART4", "FF5", "EXTENDED"]).optional().default("FF5"),
+  model: z.enum(MODEL_PRESET_NAMES).optional().default("MACRO14"),
   limit: z
     .string()
     .optional()

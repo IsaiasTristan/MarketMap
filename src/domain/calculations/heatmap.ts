@@ -4,11 +4,16 @@ function clamp01(t: number): number {
   return Math.min(1, Math.max(0, t));
 }
 
-/** RGB endpoints — keep in sync with `analysis.css` --heat-* */
-const HEAT_POS_STRONG = { r: 0, g: 51, b: 0 };
-const HEAT_POS_BRIGHT = { r: 0, g: 100, b: 0 };
-const HEAT_NEG_STRONG = { r: 51, g: 0, b: 0 };
-const HEAT_NEG_BRIGHT = { r: 139, g: 0, b: 0 };
+/**
+ * Diverging heat ramp (Bloomberg-style): saturated red at most negative,
+ * neutral gray at zero, saturated green at most positive. Midpoint is always
+ * gray so "near zero" reads clearly (unlike red↔green through black).
+ *
+ * Keep endpoint RGBs in sync with comments in `analysis.css` --heat-*.
+ */
+const HEAT_NEUTRAL = { r: 70, g: 70, b: 70 };
+const HEAT_NEG_END = { r: 180, g: 30, b: 30 };
+const HEAT_POS_END = { r: 30, g: 150, b: 30 };
 
 function lerpChannel(a: number, b: number, t: number): number {
   return Math.round(a + (b - a) * t);
@@ -24,18 +29,18 @@ function lerpRgb(
 }
 
 /**
- * Bloomberg-style signed heat: interpolate from dark to saturated by magnitude.
- * `span` is the positive magnitude that maps to full intensity (e.g. column half-range or 0.1 for monthly returns).
+ * Signed heat: `value` in [-span, span] maps from red → gray → green.
+ * `span` is the positive magnitude that maps to full saturation.
  */
 export function heatSignedBloomberg(value: number, span: number): string {
   const s = Math.max(span, 1e-12);
-  if (value >= 0) {
-    return lerpRgb(HEAT_POS_STRONG, HEAT_POS_BRIGHT, value / s);
-  }
-  return lerpRgb(HEAT_NEG_STRONG, HEAT_NEG_BRIGHT, Math.abs(value) / s);
+  const t = Math.max(-1, Math.min(1, value / s));
+  if (t === 0) return lerpRgb(HEAT_NEUTRAL, HEAT_NEUTRAL, 0);
+  if (t < 0) return lerpRgb(HEAT_NEUTRAL, HEAT_NEG_END, Math.abs(t));
+  return lerpRgb(HEAT_NEUTRAL, HEAT_POS_END, t);
 }
 
-/** Signed heat with value clamped to column symmetric span (for correlation-style grids). */
+/** Signed heat with value clamped to column symmetric span (correlation grids). */
 export function divergingHeatColor(value: number, colMin: number, colMax: number): string {
   const span = Math.max(Math.abs(colMax), Math.abs(colMin), 1e-9);
   const clamped = Math.max(Math.min(value, span), -span);
@@ -44,7 +49,7 @@ export function divergingHeatColor(value: number, colMin: number, colMax: number
 
 /**
  * Map a numeric cell to RGB for heatmap backgrounds.
- * Return / excess / Sharpe: Bloomberg green (positive) vs crimson (negative).
+ * Return / excess / Sharpe: diverging red–gray–green.
  * Volatility: dark gray ramp (low → high) on black.
  */
 export function heatmapRgb(

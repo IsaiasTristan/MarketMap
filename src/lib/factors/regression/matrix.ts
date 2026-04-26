@@ -113,26 +113,30 @@ export function invert(A: Matrix): Matrix | null {
 /**
  * Invert A with Tikhonov ridge fallback.
  * If A is singular, adds λ = ridgeRatio × trace(A) / n to the diagonal.
- * Logs a diagnostic tag but does not throw.
+ * Returns `failed: true` only when both the direct invert AND the ridge
+ * invert fail (i.e. both pivots underflow). In that case the returned
+ * `inv` is the identity (so callers can continue computing without
+ * crashing) — the `failed` flag tells the caller the OLS coefficients
+ * are meaningless and the day should be dropped from cumulative sums
+ * (no silent degradation, per Phase 3 lock-in).
  */
 export function invertWithRidge(
   A: Matrix,
   ridgeRatio = 1e-8,
-): { inv: Matrix; regularized: boolean } {
+): { inv: Matrix; regularized: boolean; failed: boolean } {
   const inv = invert(A);
-  if (inv) return { inv, regularized: false };
+  if (inv) return { inv, regularized: false, failed: false };
 
   const n = A.length;
   const lambda = ridgeRatio * trace(A) / n;
   const Areg = addRidge(A, lambda);
   const invReg = invert(Areg);
   if (!invReg) {
-    // Extreme fallback: use identity-scaled inverse
     const identity = zeros(n, n);
     for (let i = 0; i < n; i++) identity[i]![i] = 1;
-    return { inv: identity, regularized: true };
+    return { inv: identity, regularized: true, failed: true };
   }
-  return { inv: invReg, regularized: true };
+  return { inv: invReg, regularized: true, failed: false };
 }
 
 /** Column means of a matrix (length = m). */

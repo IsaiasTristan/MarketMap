@@ -37,11 +37,12 @@
   --bb-highlight-text: #ffff00;
   --bb-highlight-bg: #3a3a00;
 
-  /* Signed heat endpoints (match domain heatmap.ts) */
-  --heat-pos-strong: #003300;
-  --heat-pos-bright: #006400;
-  --heat-neg-strong: #330000;
-  --heat-neg-bright: #8b0000;
+  /* Signed heat endpoints (match domain heatmap.ts — red / gray / green ramp) */
+  --heat-pos-strong: #1e5a1e;
+  --heat-pos-bright: #1e961e;
+  --heat-neg-strong: #5a1e1e;
+  --heat-neg-bright: #b41e1e;
+  --heat-neutral: #464646;
 
   /* Text */
   --text-primary: #ffffff;

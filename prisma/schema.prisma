@@ -230,6 +230,20 @@ enum FactorCode {
   CMA
   MOM
   RF
+  // Macro factors (asset-class beta) — added for MACRO14 model
+  EQ
+  LOCAL_EQ
+  RATES
+  COMM
+  EM
+  FX
+  INFL
+  // Style factors (cross-sectional risk premia) — added for MACRO14 model
+  SHORT_VOL
+  TREND
+  BAB
+  QMJ
+  CROWD
 }
 
 enum FactorSource {

@@ -23,6 +23,7 @@ function makeRollingFit(date: string, beta: number): RollingFitPoint {
       n: 252,
       k: 1,
       regularized: false,
+      failed: false,
     },
   };
 }

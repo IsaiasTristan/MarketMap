@@ -61,11 +61,27 @@ export async function GET(req: NextRequest) {
     pctReturnContribs[code] = Math.abs(totalReturn) > 1e-10 ? factorTotal / Math.abs(totalReturn) : 0;
   }
 
-  // Concentration HHI on absolute risk contributions
   const totalAbsPCR = risk.factors.reduce((s, f) => s + Math.abs(f.pctVarianceContrib), 0);
   const concentrationHHI = totalAbsPCR > 0
     ? risk.factors.reduce((s, f) => s + (Math.abs(f.pctVarianceContrib) / totalAbsPCR) ** 2, 0)
     : 0;
+
+  // Phase 3 §2.8 (Q4 lock): realised σ + varGapPct at portfolio level so the
+  // PortfolioTotalsPanel mirrors the per-stock primary-headline hierarchy
+  // (anchor to realised; model-implied is reconciliation).
+  // Computed on the same regression window slice as `endFit` to keep the
+  // identity (β'Σβ + σ²_idio) ↔ realised variance directly comparable.
+  const yEnd = engineResult.portExcessReturns.slice(-win);
+  let realizedAnnualizedVol = 0;
+  let varGapPct = 0;
+  if (yEnd.length >= 2) {
+    const mean = yEnd.reduce((s, v) => s + v, 0) / yEnd.length;
+    const sampleVar = yEnd.reduce((s, v) => s + (v - mean) ** 2, 0) / (yEnd.length - 1);
+    realizedAnnualizedVol = Math.sqrt(sampleVar * 252);
+    const realizedVar = realizedAnnualizedVol ** 2;
+    const modelVar = (risk.totalVolatility ?? 0) ** 2;
+    varGapPct = realizedVar > 0 ? (modelVar - realizedVar) / realizedVar : 0;
+  }
 
   const snapshot: FactorExposureSnapshot = {
     factors: factorCodes.map((code, i) => {
@@ -88,6 +104,8 @@ export async function GET(req: NextRequest) {
     concentrationHHI,
     systematicShare: risk.systematicShare,
     idiosyncraticShare: risk.idiosyncraticShare,
+    realizedAnnualizedVol,
+    varGapPct,
     model: model as ModelPresetName,
     window: win,
     n: endFit.n,

@@ -43,8 +43,23 @@ export async function GET(req: Request) {
     isBenchmark: false,
   }));
 
-  // Benchmarks first, then securities, capped at 12 total
-  const combined = [...benchmarkResults, ...securityResults].slice(0, 12);
+  type Suggestion = {
+    ticker: string;
+    name: string;
+    sector: string | null;
+    isBenchmark: boolean;
+  };
+
+  // Benchmarks first, then securities; dedupe by ticker (benchmark wins) and cap at 12
+  const seen = new Set<string>();
+  const combined: Suggestion[] = [];
+  for (const row of [...benchmarkResults, ...securityResults] as Suggestion[]) {
+    const key = row.ticker.toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    combined.push(row);
+    if (combined.length >= 12) break;
+  }
 
   return NextResponse.json(combined);
 }

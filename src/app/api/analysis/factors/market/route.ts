@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { factorMarketQuery } from "@/lib/api/schemas";
 import { getFactorMarketContext } from "@/server/services/factor-market.service";
+import type { ModelPresetName } from "@/types/factors";
 
 export const maxDuration = 30;
 
@@ -15,6 +16,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const context = await getFactorMarketContext(undefined, parsed.data.corrWindow);
+  const context = await getFactorMarketContext({
+    corrWindow: parsed.data.corrWindow,
+    model: parsed.data.model as ModelPresetName | undefined,
+  });
   return NextResponse.json(context);
 }
