@@ -47,12 +47,19 @@
  */
 import { prisma as db } from "@/infrastructure/db/client";
 import { rollingMultivariateOls } from "@/lib/factors/regression/rolling";
+import { normalizeFactorRows } from "@/lib/factors/regression/normalization";
 import { computeFactorCoverage } from "@/lib/factors/regression/coverage";
 import { resolveModel, minObservations } from "@/lib/factors/definitions/model-presets";
-import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
+import { getFactorDef, getFactorInputType } from "@/lib/factors/definitions/factor-codes";
 import { factorCovarianceMatrix } from "@/lib/factors/risk/covariance";
 import { computeRiskDecomposition } from "@/lib/factors/risk/decomposition";
-import type { FactorCode, ModelPresetName } from "@/types/factors";
+import {
+  factorRowLog,
+  stockExcessLog,
+  expSumMinus1,
+} from "@/lib/factors/attribution/log-returns";
+import { detectFactorStaleness } from "@/lib/factors/diagnostics/freshness";
+import type { FactorCode, FactorStalenessEntry, ModelPresetName } from "@/types/factors";
 
 const MIN_PRICE_HISTORY = 30;
 
@@ -71,6 +78,23 @@ const MIN_ROLLING_FITS = 30;
  * handful of historic dates get dropped (2026-04-26 lock-in).
  */
 const DATA_BUFFER = 20;
+
+/**
+ * Trading days lost at the front of the loaded slice to the factor-vol
+ * normalisation warm-up. `normalizeFactorRows` (called below with
+ * `rollingWindow: 252, minObservations: 60`) cannot emit a normalised row
+ * for the first `minObservations` days because there is no trailing window
+ * to vol-scale against — those rows return null and are dropped.
+ *
+ * Without budgeting for this, the surviving post-normalisation slice is
+ * `requiredHistory − NORM_WARMUP` and the rolling-OLS burn-in (which we
+ * already budgeted for in `requiredHistory` directly) collapses onto the
+ * visible window, eating ~40-90 days of decomposable observations.
+ *
+ * MUST equal the `minObservations` value passed to `normalizeFactorRows`
+ * below — if you change one, change the other.
+ */
+const NORM_WARMUP = 60;
 
 /**
  * Hard cap on the loaded date range so a user picking
@@ -185,6 +209,71 @@ export interface PerStockTimeseriesResult {
       | "INSUFFICIENT_HISTORY" // n < params.window
       | "INSUFFICIENT_ROOM_FOR_ROLLING_FITS"; // n in [params.window, params.window+MIN_ROLLING_FITS-2]
   } | null;
+  normalization: {
+    config: { rollingWindow: number; minObservations: number; winsorSigma: number; targetAnnualVol: number | null };
+    ambiguousFactors: FactorCode[];
+    insufficientObservationsByFactor: Record<string, number>;
+    totalRowsDroppedForNormalization: number;
+  };
+  /**
+   * Factors whose latest published row trails the freshest day in the
+   * loaded matrix by more than 3 trading days. Detected via
+   * `detectFactorStaleness` (see `src/lib/factors/diagnostics/freshness.ts`).
+   * Surfaced to the UI so users see a banner pointing them at
+   * `POST /api/analysis/factors/pipeline-refresh` instead of silently
+   * losing the most-recent decomposable days at the back of the window.
+   * Empty array (not null) when all factors are fresh.
+   */
+  factorDataStale: FactorStalenessEntry[];
+
+  // ---- Path B (log-return attribution) ----------------------------------
+  /**
+   * Parallel log-return rolling OLS results, computed when the per-day log
+   * domain checks succeed for every aligned date. Length matches `dates`
+   * with null entries inside burn-in / fit-failure / log-domain gaps so
+   * the log identity `Σ y_log = Σ ŷ_log + Σ ε_log` holds across non-null
+   * entries within `[displayStartIndex, n)`.
+   *
+   * Path B is intentionally computed on RAW factor log-returns
+   * (`ln(1 + f_simple)`) — vol-scaled inputs from Path A would break the
+   * additive log identity by mixing units.
+   *
+   * `null` here means the log path was unavailable (e.g. a single factor
+   * produced `1 + f ≤ 0` on some date, which is rare in MACRO14 but the
+   * service drops the entire log series in that case to keep Path A
+   * unaffected).
+   */
+  log: PerStockLogTimeseries | null;
+}
+
+export interface PerStockLogTimeseries {
+  /**
+   * Daily excess log return: `ln(1 + r_stock) - ln(1 + r_f)`.
+   * Length matches `dates`. Null on log-domain failures only (kept null
+   * pointwise but set to null array if ANY date fails so the cumulative
+   * identity stays exact).
+   */
+  excessLogReturn: number[];
+  /** Daily intercept (log space). Null inside burn-in / on fit failure. */
+  alphaLog: (number | null)[];
+  /** Daily residual `y_log - ŷ_log`. Null inside burn-in / on fit failure. */
+  residualLog: (number | null)[];
+  /** Daily predicted log excess (`α + Σ β·x_log`). Null inside burn-in / on fit failure. */
+  predictedLog: (number | null)[];
+  /** Daily β·x_log per factor. Null inside burn-in / on fit failure. */
+  factorLogContrib: Record<string, (number | null)[]>;
+  /** β at last fit (log space). */
+  betasLog: Record<string, number>;
+  /** Rolling β series in log space. Null in burn-in / fit failure. */
+  rollingBetasLog: Record<string, (number | null)[]>;
+  /** Rolling-fit failure count for the log path. */
+  rollingFitFailures: number;
+  /** Sum of daily log excess from `displayStartIndex` to last index. */
+  sumLogExcessVisible: number;
+  /** Sum of decomposed log parts (alpha + factor contribs + residual) over the visible slice. */
+  sumLogDecomposedVisible: number;
+  /** `exp(sumLogExcessVisible) - 1`. Compounded geometric realised excess. */
+  geometricExcessVisible: number;
 }
 
 interface LoadedFactorMatrix {
@@ -252,6 +341,14 @@ export async function runPerStockTimeseries(
     window: params.window,
   });
   const { usableFactors, alignedWindowDates } = coverage;
+  // Compute freshness once on the full loaded matrix so the diagnostic is
+  // independent of the per-window slicing below — a 60d view and a 1Y view
+  // surface the same "factor X last published Feb 27" warning. RF is folded
+  // in because the strict-drop loop downstream defaults missing RF to 0,
+  // which silently inflates excess returns past the last RF print.
+  const factorDataStale = detectFactorStaleness(factorByDate, usableFactors, {
+    rfByDate,
+  });
   if (usableFactors.length === 0 || alignedWindowDates.length < MIN_PRICE_HISTORY) {
     return null;
   }
@@ -264,7 +361,7 @@ export async function runPerStockTimeseries(
   const requestedRollingHint = Math.max(20, params.rollingWindow ?? Math.min(60, params.window));
   const requiredHistory = Math.min(
     MAX_HISTORY,
-    params.window + requestedRollingHint + DATA_BUFFER,
+    params.window + requestedRollingHint + NORM_WARMUP + DATA_BUFFER,
   );
   const extendedWindowDates = allDates.slice(-requiredHistory);
 
@@ -327,11 +424,34 @@ export async function runPerStockTimeseries(
   const minObs = minObservations(usableFactors.length);
   if (aligned.length < minObs) return null;
 
-  const dates = aligned.map((a) => a.date);
-  const y = aligned.map((a) => a.excessReturn);
-  const X = aligned.map((a) => a.factorRow);
+  const datesRaw = aligned.map((a) => a.date);
+  const yRaw = aligned.map((a) => a.excessReturn);
+  const XRaw = aligned.map((a) => a.factorRow);
+  const normResult = normalizeFactorRows(
+    XRaw,
+    usableFactors.map((code) => ({ code, inputType: getFactorInputType(code) })),
+    {
+      rollingWindow: 252,
+      minObservations: 60,
+      winsorSigma: 5,
+      targetAnnualVol: 0.1,
+    },
+  );
+  const dates: string[] = [];
+  const y: number[] = [];
+  const X: number[][] = [];
+  const XRawKept: number[][] = [];
+  for (let i = 0; i < datesRaw.length; i++) {
+    const row = normResult.normalizedRows[i];
+    if (!row || row.some((v) => v == null || !Number.isFinite(v))) continue;
+    dates.push(datesRaw[i]!);
+    y.push(yRaw[i]!);
+    X.push(row as number[]);
+    XRawKept.push(XRaw[i]!);
+  }
   const n = dates.length;
   const k = usableFactors.length;
+  if (n < minObs) return null;
 
   // Rolling window can be set independently from the display range
   // (`params.window`) via `params.rollingWindow`. This matches Bloomberg
@@ -416,10 +536,10 @@ export async function runPerStockTimeseries(
       const code = usableFactors[fi]!;
       const b = fit.betas[fi] ?? 0;
       rollingBetas[code]![t] = b;
-      const xv = X[t]?.[fi] ?? 0;
-      const contrib = b * xv;
-      factorContrib[code]![t] = contrib;
-      predT += contrib;
+      const xNorm = X[t]?.[fi] ?? 0;
+      const xRaw = XRawKept[t]?.[fi] ?? 0;
+      factorContrib[code]![t] = b * xRaw;
+      predT += b * xNorm;
     }
     predicted[t] = predT;
     residual[t] = (y[t] ?? 0) - predT;
@@ -470,6 +590,111 @@ export async function runPerStockTimeseries(
     return { code: c, label: def.label, shortLabel: def.shortLabel, color: def.color };
   });
 
+  // -----------------------------------------------------------------------
+  // Path B — log-return rolling OLS (coexists with simple path above).
+  // -----------------------------------------------------------------------
+  // Reconstruct daily simple stock + RF returns to build log series:
+  //   y_simple = r_stock - r_f  =>  r_stock = y_simple + r_f
+  //   y_log = ln(1 + r_stock) - ln(1 + r_f)
+  //   x_log_f = ln(1 + f_simple)
+  //
+  // Strict drop policy: if any date or factor produces a log-domain
+  // failure (1 + r ≤ 0), Path B is suppressed entirely (returned as null).
+  // In MACRO14 this should never trigger for ETF-derived factors; we keep
+  // the soft fallback so Path A is never affected.
+  let logBlock: PerStockLogTimeseries | null = null;
+  let logValid = true;
+  const yLog: number[] = new Array(n);
+  const XLog: number[][] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const rfDaily = rfByDate.get(dates[i]!) ?? 0;
+    const rStock = (y[i] ?? 0) + rfDaily;
+    const yL = stockExcessLog(rStock, rfDaily);
+    const xL = factorRowLog(XRawKept[i]!);
+    if (yL == null || xL == null) {
+      logValid = false;
+      break;
+    }
+    yLog[i] = yL;
+    XLog[i] = xL;
+  }
+
+  if (logValid && n >= effectiveWindow) {
+    const rollingFitsLog = rollingMultivariateOls(dates, yLog, XLog, effectiveWindow);
+    const alphaLog: (number | null)[] = new Array(n).fill(null);
+    const residualLog: (number | null)[] = new Array(n).fill(null);
+    const predictedLog: (number | null)[] = new Array(n).fill(null);
+    const rollingBetasLog: Record<string, (number | null)[]> = {};
+    const factorLogContrib: Record<string, (number | null)[]> = {};
+    for (const code of usableFactors) {
+      rollingBetasLog[code] = new Array(n).fill(null);
+      factorLogContrib[code] = new Array(n).fill(null);
+    }
+    let logFitFailures = 0;
+    for (let r = 0; r < rollingFitsLog.length; r++) {
+      const t = burnInIndex + r;
+      const fit = rollingFitsLog[r]!.fit;
+      if (fit.failed) {
+        logFitFailures++;
+        continue;
+      }
+      alphaLog[t] = fit.alpha;
+      let predT = fit.alpha;
+      for (let fi = 0; fi < k; fi++) {
+        const code = usableFactors[fi]!;
+        const b = fit.betas[fi] ?? 0;
+        rollingBetasLog[code]![t] = b;
+        const xL = XLog[t]?.[fi] ?? 0;
+        factorLogContrib[code]![t] = b * xL;
+        predT += b * xL;
+      }
+      predictedLog[t] = predT;
+      residualLog[t] = (yLog[t] ?? 0) - predT;
+    }
+    const betasLog: Record<string, number> = {};
+    for (const code of usableFactors) {
+      let last = 0;
+      const series = rollingBetasLog[code]!;
+      for (let i = n - 1; i >= 0; i--) {
+        const v = series[i];
+        if (v != null && Number.isFinite(v)) {
+          last = v;
+          break;
+        }
+      }
+      betasLog[code] = last;
+    }
+    let sumLogExcessVisible = 0;
+    let sumLogDecomposedVisible = 0;
+    for (let i = displayStartIndex; i < n; i++) {
+      const yL = yLog[i] ?? 0;
+      sumLogExcessVisible += yL;
+      const a = alphaLog[i];
+      const e = residualLog[i];
+      let parts = 0;
+      if (a != null) parts += a;
+      if (e != null) parts += e;
+      for (const code of usableFactors) {
+        const c = factorLogContrib[code]![i];
+        if (c != null) parts += c;
+      }
+      sumLogDecomposedVisible += parts;
+    }
+    logBlock = {
+      excessLogReturn: yLog,
+      alphaLog,
+      residualLog,
+      predictedLog,
+      factorLogContrib,
+      betasLog,
+      rollingBetasLog,
+      rollingFitFailures: logFitFailures,
+      sumLogExcessVisible,
+      sumLogDecomposedVisible,
+      geometricExcessVisible: expSumMinus1(sumLogExcessVisible),
+    };
+  }
+
   return {
     ticker: sec.ticker,
     name: sec.name,
@@ -496,5 +721,8 @@ export async function runPerStockTimeseries(
     rollingFitFailureDates,
     droppedDates,
     windowFallback,
+    normalization: normResult.diagnostics,
+    factorDataStale,
+    log: logBlock,
   };
 }

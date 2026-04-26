@@ -37,6 +37,7 @@ import {
 } from "recharts";
 import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
+import { expSumMinus1 } from "@/lib/factors/attribution/log-returns";
 import type { FactorCode } from "@/types/factors";
 import type { FactorTsRollingWindow } from "@/store/analysis";
 
@@ -70,6 +71,20 @@ export interface PerStockTimeSeriesPayload {
     effectiveWindow: number;
     availableObservations: number;
     reason: "INSUFFICIENT_HISTORY" | "INSUFFICIENT_ROOM_FOR_ROLLING_FITS";
+  } | null;
+  /** Path B (log-return) parallel attribution series. Null when unavailable. */
+  log: {
+    excessLogReturn: number[];
+    alphaLog: (number | null)[];
+    residualLog: (number | null)[];
+    predictedLog: (number | null)[];
+    factorLogContrib: Record<string, (number | null)[]>;
+    betasLog: Record<string, number>;
+    rollingBetasLog: Record<string, (number | null)[]>;
+    rollingFitFailures: number;
+    sumLogExcessVisible: number;
+    sumLogDecomposedVisible: number;
+    geometricExcessVisible: number;
   } | null;
 }
 
@@ -150,20 +165,43 @@ export function PerStockTimeSeries({
   data,
   loading,
 }: PerStockTimeSeriesProps) {
+  // Path B is the new default surface. We use log space whenever the server
+  // can provide it (data.log != null); strict-drop fallback (e.g. a daily
+  // simple return ≤ -100% in this window) silently degrades to Path A so
+  // the user still sees something — with explicit warnings owned by the
+  // PerStockDetail panel above.
+  const useLog = data?.log != null;
   // RETURN mode — cumulative stack (factors + Σα + Σε) overlaid by the
-  // realised cumulative excess. By construction (Σy = Σ(β·r)+Σα+Σε), the
-  // stack TOP and the realised line should overlap throughout the visible
-  // window. We start cumulating from `displayStartIndex` so the chart
-  // begins at zero on the first visible day (otherwise the cumulative
-  // contributions accumulated during the unseen extended-history period
-  // would appear as a non-zero offset at t₀ and break the identity tie).
+  // realised cumulative excess. We start cumulating from `displayStartIndex`
+  // so the chart begins at zero on the first visible day (otherwise the
+  // cumulative contributions accumulated during the unseen extended-history
+  // period would appear as a non-zero offset at t₀ and break the identity).
+  //
+  // Log mode (default when data.log is present):
+  //   - factor / alpha / residual stacks are PLOTTED in log space ×100. The
+  //     stack closes on a thin dashed reference line `__cumLog` (Σ y_log×100)
+  //     — that is the LOG identity Σy_log = Σ(β·x_log)+Σα+Σε.
+  //   - `__actual` is the GEOMETRIC realised path exp(Σ y_log)−1 ×100. This
+  //     is the line whose right edge ties to the panel's headline number
+  //     (which is the same exp(Σ)−1 evaluated at the last visible day).
+  //   - The two realised lines visibly diverge over the window — that gap is
+  //     the convexity adjustment (geometric > arithmetic for positive return
+  //     paths; reversed for negative). We label both clearly.
+  //
+  // Simple mode (fallback only when log path was strict-dropped):
+  //   - `__actual` plots Σ y_simple ×100 (legacy arithmetic path); stack
+  //     closes onto it directly. `__cumLog` is omitted.
   const returnChartData = useMemo(() => {
     if (!data || metric !== "return") return [];
-    const { dates, factorContrib, alpha, residual, factorMeta, excessReturn, displayStartIndex } = data;
+    const { dates, factorMeta, displayStartIndex } = data;
+    const factorContrib = useLog ? data.log!.factorLogContrib : data.factorContrib;
+    const alpha = useLog ? data.log!.alphaLog : data.alpha;
+    const residual = useLog ? data.log!.residualLog : data.residual;
+    const excess = useLog ? data.log!.excessLogReturn : data.excessReturn;
     const cumFactor: Record<string, number> = {};
     let cumAlpha = 0;
     let cumResid = 0;
-    let cumActual = 0;
+    let cumExcessInner = 0;
     for (const m of factorMeta) cumFactor[m.code] = 0;
     const out: Record<string, number | string>[] = [];
     for (let i = displayStartIndex; i < dates.length; i++) {
@@ -174,13 +212,33 @@ export function PerStockTimeSeries({
       }
       cumAlpha += num(alpha[i]);
       cumResid += num(residual[i]);
-      cumActual += excessReturn[i] ?? 0;
+      cumExcessInner += excess[i] ?? 0;
       row["__alpha"] = cumAlpha * 100;
       row["__residual"] = cumResid * 100;
-      row["__actual"] = cumActual * 100;
+      if (useLog) {
+        // Log mode: realised = geometric path; reference = inner log sum
+        // (where the factor/alpha/residual stack closes by identity).
+        row["__actual"] = (Math.exp(cumExcessInner) - 1) * 100;
+        row["__cumLog"] = cumExcessInner * 100;
+      } else {
+        row["__actual"] = cumExcessInner * 100;
+      }
       out.push(row);
     }
     return out;
+  }, [data, metric, useLog]);
+
+  const logHeadline = useMemo(() => {
+    if (!data?.log || metric !== "return") return null;
+    const { dates, displayStartIndex } = data;
+    let sum = 0;
+    for (let i = displayStartIndex; i < dates.length; i++) {
+      sum += data.log.excessLogReturn[i] ?? 0;
+    }
+    return {
+      sumLog: sum,
+      geometric: expSumMinus1(sum),
+    };
   }, [data, metric]);
 
   // RISK mode — server-side rolling Euler decomposition. Each day's
@@ -371,12 +429,20 @@ export function PerStockTimeSeries({
                 formatter={(v, name) => [
                   `${Number(v ?? 0).toFixed(2)}%`,
                   name === "__alpha"
-                    ? "Σ rolling α_t"
+                    ? useLog
+                      ? "Σ α_t (log)"
+                      : "Σ rolling α_t"
                     : name === "__residual"
-                      ? "Unexplained Residual"
+                      ? useLog
+                        ? "Σ ε_t (log)"
+                        : "Unexplained Residual"
                       : name === "__actual"
-                        ? "Realised excess (cumulative)"
-                        : getFactorDef(name as FactorCode).shortLabel,
+                        ? useLog
+                          ? "Realised excess (compounded)"
+                          : "Realised excess (arithmetic)"
+                        : name === "__cumLog"
+                          ? "Σ y_log (stack closes here)"
+                          : getFactorDef(name as FactorCode).shortLabel,
                 ]}
                 labelFormatter={(d) => String(d).slice(0, 10)}
               />
@@ -384,12 +450,20 @@ export function PerStockTimeSeries({
                 wrapperStyle={{ fontSize: 10 }}
                 formatter={(v) =>
                   v === "__alpha"
-                    ? "Σ rolling α_t"
+                    ? useLog
+                      ? "Σ α_t (log)"
+                      : "Σ rolling α_t"
                     : v === "__residual"
-                      ? "Unexplained Residual"
+                      ? useLog
+                        ? "Σ ε_t (log)"
+                        : "Unexplained Residual"
                       : v === "__actual"
-                        ? "Realised excess"
-                        : getFactorDef(v as FactorCode).shortLabel
+                        ? useLog
+                          ? "Realised (compounded)"
+                          : "Realised excess"
+                        : v === "__cumLog"
+                          ? "Σ y_log (stack closes)"
+                          : getFactorDef(v as FactorCode).shortLabel
                 }
               />
               {data.factorMeta.map((m) => (
@@ -423,6 +497,25 @@ export function PerStockTimeSeries({
                 dot={false}
                 stackId="ret"
               />
+              {/* Inner log sum line — only in log mode. The factor stack +
+                  Σα + Σε close exactly on this line by the daily log identity.
+                  Drawn thin & dashed so it doesn't compete with the heavier
+                  realised compounded line. */}
+              {useLog && (
+                <Line
+                  type="monotone"
+                  dataKey="__cumLog"
+                  stroke="#cbd5e1"
+                  strokeWidth={1}
+                  strokeDasharray="4 3"
+                  dot={false}
+                  isAnimationActive={false}
+                />
+              )}
+              {/* Realised excess line — the heavy one. In log mode this is the
+                  GEOMETRIC compounded path exp(Σ y_log) − 1 whose right edge
+                  ties to the panel's headline number. In simple-fallback mode
+                  this is Σ y_simple (arithmetic). */}
               <Line
                 type="monotone"
                 dataKey="__actual"
@@ -433,6 +526,43 @@ export function PerStockTimeSeries({
               />
             </ComposedChart>
           </ResponsiveContainer>
+        )}
+
+        {!loading && data && metric === "return" && useLog && logHeadline && (
+          <div
+            style={{
+              marginTop: 6,
+              padding: "5px 10px",
+              fontSize: 9,
+              fontFamily: "var(--font-mono, monospace)",
+              fontVariantNumeric: "tabular-nums",
+              color: "var(--text-muted)",
+              display: "flex",
+              gap: 14,
+              flexWrap: "wrap",
+            }}
+            title={
+              `Two realised lines are plotted in log mode:\n\n` +
+              `  • Heavy gold line — Realised (compounded): exp(Σ y_log) − 1 per day; ` +
+              `right edge ties to the panel's "Total Excess Return" headline.\n\n` +
+              `  • Thin dashed line — Σ y_log (stack closes): the additive inner log sum where ` +
+              `factor + α + ε stacks close exactly by daily identity.\n\n` +
+              `The gap between the two lines is the convexity adjustment (geometric > arithmetic ` +
+              `for positive return paths). Both lines start at zero on the first visible day.`
+            }
+          >
+            <span>
+              <span style={{ color: "var(--bb-amber, #f0b65d)" }}>━</span>{" "}
+              Realised (compounded) end ={" "}
+              <span style={{ color: "var(--color-positive)", fontWeight: 600 }}>
+                {(logHeadline.geometric * 100).toFixed(2)}%
+              </span>
+            </span>
+            <span>
+              <span style={{ color: "#cbd5e1" }}>┄</span>{" "}
+              Σ y_log end = {(logHeadline.sumLog * 100).toFixed(2)}% (stack closes here)
+            </span>
+          </div>
         )}
 
         {!loading && data && metric === "risk" && riskChartData.length > 0 && (

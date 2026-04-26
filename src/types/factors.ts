@@ -19,6 +19,9 @@ export type FactorCode =
 /** Supported regression model presets. */
 export type ModelPresetName = "CAPM" | "FF3" | "CARHART4" | "FF5" | "EXTENDED" | "MACRO14";
 
+/** Canonical input handling for factor normalization pre-regression. */
+export type FactorInputType = "RETURN" | "FIRST_DIFFERENCE" | "AMBIGUOUS";
+
 /** Coverage status of a factor for a particular regression window. */
 export type FactorCoverageStatus =
   | "OK"
@@ -40,6 +43,44 @@ export interface FactorDef {
   whyItMatters: string;
   units: "beta" | "zscore" | "pct";
   color: string;
+  inputType: FactorInputType;
+}
+
+export interface FactorNormalizationConfig {
+  rollingWindow: number;
+  minObservations: number;
+  winsorSigma: number;
+  targetAnnualVol: number | null;
+}
+
+export interface FactorNormalizationDiagnostics {
+  config: FactorNormalizationConfig;
+  ambiguousFactors: FactorCode[];
+  insufficientObservationsByFactor: Record<string, number>;
+  totalRowsDroppedForNormalization: number;
+}
+
+/**
+ * Per-factor staleness diagnostic. Emitted by `detectFactorStaleness` whenever
+ * the most recent published row for a factor lags the freshest day in the
+ * factor matrix by more than `thresholdTradingDays` weekday days.
+ *
+ * Used to surface a UI warning when KF / AQR / Yahoo data hasn't been
+ * refreshed and a silent zero-RF or strict-drop is happening at the back of
+ * the regression sample.
+ */
+export interface FactorStalenessEntry {
+  /** Factor code that is stale. RF is included for risk-free staleness. */
+  factor: FactorCode;
+  /** ISO date (YYYY-MM-DD) of the latest non-null row for this factor. */
+  lastDate: string;
+  /** ISO date of the freshest day across the entire factor matrix + RF. */
+  referenceDate: string;
+  /**
+   * Trading-day distance from `lastDate` (exclusive) to `referenceDate`
+   * (inclusive). Counts weekdays only; equals 0 when `lastDate ≥ referenceDate`.
+   */
+  lagTradingDays: number;
 }
 
 export interface ModelPreset {
@@ -152,6 +193,8 @@ export interface FactorExposureSnapshot {
   asOfDate: string;
   hasFundamentals: boolean;
   regularized: boolean;
+  normalizationApplied: boolean;
+  normalization: FactorNormalizationDiagnostics | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,10 +263,60 @@ export interface PeriodAttributionSummary {
   byFactor: { code: FactorCode; label: string; contribution: number; pct: number }[];
 }
 
+/**
+ * Daily log-return attribution point. Mirrors {@link AttributionDayPoint}
+ * but in log space — the multi-period sum of `portExcessLogReturn` equals
+ * `ln(Π(1 + r_t_simple_excess))`, so `exp(Σ portExcessLogReturn) - 1` is the
+ * compounded geometric realised excess return for the period.
+ */
+export interface AttributionDayPointLog {
+  date: string;
+  /** Daily excess log return: ln(1 + r_stock) - ln(1 + r_f). */
+  portExcessLogReturn: number;
+  /** Daily RF log contribution: ln(1 + r_f). */
+  rfLogContrib: number;
+  /** β_f * ln(1 + f_simple) per factor. */
+  byFactor: Record<FactorCode, number>;
+  /** y_log - Σ(β·x_log). */
+  alpha: number;
+}
+
+export interface CumulativeAttributionPointLog {
+  date: string;
+  /** Σ daily portExcessLogReturn up to this date. Use `exp(.) - 1` to compound. */
+  cumulativePortLogReturn: number;
+  /** `exp(cumulativePortLogReturn) - 1` for chart convenience. */
+  cumulativePortGeometric: number;
+  cumulativeAlpha: number;
+  cumulativeRf: number;
+  /** Σ per-factor log contribution. */
+  byFactor: Record<string, number>;
+}
+
+export interface PeriodAttributionSummaryLog {
+  label: string;
+  startDate: string;
+  endDate: string;
+  /** Σ y_log over the period. */
+  totalLogReturn: number;
+  /** exp(totalLogReturn) - 1: geometric compounded excess. */
+  totalGeometricReturn: number;
+  /** Σ Σ_f β·x_log. */
+  factorLogReturn: number;
+  /** Σ ln(1 + r_f). */
+  rfLogReturn: number;
+  alpha: number;
+  byFactor: { code: FactorCode; label: string; contribution: number; pct: number }[];
+}
+
 export interface AttributionResult {
   daily: AttributionDayPoint[];
   cumulative: CumulativeAttributionPoint[];
   periods: PeriodAttributionSummary[];
+  /** Path B: log-return attribution (null when log path unavailable). */
+  dailyLog: AttributionDayPointLog[] | null;
+  cumulativeLog: CumulativeAttributionPointLog[] | null;
+  periodsLog: PeriodAttributionSummaryLog[] | null;
   provenanceBadge: {
     frenchThrough: string;
     proxyFrom: string;
@@ -409,4 +502,24 @@ export interface FactorEngineResult {
   holdingsImplied: Partial<Record<FactorCode, number>> | null;
   model: ModelPresetName;
   factors: FactorCode[];
+  normalization: FactorNormalizationDiagnostics;
+
+  // ---- Path B (log-return) ----------------------------------------------
+  /**
+   * Daily portfolio excess log return: `ln(1 + r_p) - ln(1 + r_f)`.
+   * Length matches `dates`. Null when the log path could not be built
+   * (e.g. a daily simple return ≤ -1 — vanishingly rare for a portfolio).
+   */
+  portExcessLogReturns: number[] | null;
+  /** Per-factor daily log return: `ln(1 + f_simple)`. Null when log path unavailable. */
+  factorLogReturns: Record<string, number[]> | null;
+  /** Daily RF log return: `ln(1 + r_f)`. */
+  rfLogReturns: number[] | null;
+  /**
+   * End-of-period OLS fit on the log design matrix (raw log factors,
+   * NOT vol-scaled). Null when log path unavailable.
+   */
+  endFitLog: RegressionFit | null;
+  /** Rolling fits on the log design matrix. */
+  rollingFitsLog: RollingFitPoint[] | null;
 }

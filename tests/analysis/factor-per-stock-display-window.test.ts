@@ -144,6 +144,80 @@ describe("per-stock timeseries display-window contract (2026-04-26)", () => {
     expect(last.rSquared).toBeCloseTo(snap.rSquared, 12);
   });
 
+  it("normalisation warm-up budgeted: visible region stays at paramsWindow after the front of the loaded slice is dropped", () => {
+    // 2026-04-26 burn-in budget fix: the loader pre-loads
+    //   requiredHistory = paramsWindow + rolling + NORM_WARMUP + buffer
+    // so that AFTER `normalizeFactorRows` strips the first NORM_WARMUP rows
+    // (its `minObservations` warm-up), the surviving slice still satisfies
+    //   n_after_norm >= paramsWindow + rolling
+    // and `displayStartIndex = n_after_norm - paramsWindow > burnInIndex`,
+    // i.e. burn-in lives entirely BEFORE the visible region.
+    const paramsWindow = 252;
+    const rollingWindow = 60;
+    const NORM_WARMUP = 60;
+    const dataBuffer = 20;
+    const requiredHistory = paramsWindow + rollingWindow + NORM_WARMUP + dataBuffer; // 392
+
+    const { X, y, dates } = makeSeries(requiredHistory, 3, 31);
+
+    // Simulate normalizeFactorRows dropping the first NORM_WARMUP rows.
+    const Xn = X.slice(NORM_WARMUP);
+    const yn = y.slice(NORM_WARMUP);
+    const datesN = dates.slice(NORM_WARMUP);
+    const nAfterNorm = datesN.length;
+    expect(nAfterNorm).toBe(requiredHistory - NORM_WARMUP); // 332
+
+    const fits = rollingMultivariateOls(datesN, yn, Xn, rollingWindow);
+    expect(fits.length).toBe(nAfterNorm - rollingWindow + 1); // 273
+    for (const f of fits) expect(f.fit.failed).toBe(false);
+
+    const { burnInIndex, displayStartIndex } = deriveIndices(
+      nAfterNorm,
+      paramsWindow,
+      rollingWindow,
+    );
+    expect(burnInIndex).toBe(rollingWindow - 1); // 59
+    expect(displayStartIndex).toBe(nAfterNorm - paramsWindow); // 80
+    expect(burnInIndex).toBeLessThan(displayStartIndex);
+
+    const visibleObs = nAfterNorm - displayStartIndex;
+    expect(visibleObs).toBe(paramsWindow); // 252 — full visible window populated
+
+    // Every visible day carries a non-failed rolling fit (no normalisation
+    // bleed into the visible region).
+    for (let i = displayStartIndex; i < nAfterNorm; i++) {
+      const r = i - burnInIndex;
+      expect(fits[r]).toBeDefined();
+      expect(fits[r]!.fit.failed).toBe(false);
+    }
+  });
+
+  it("regression — without NORM_WARMUP budget, normalisation eats ~rolling days from the visible region", () => {
+    // Sanity check that the OLD budget really does shrink the visible
+    // region, so we know the NORM_WARMUP fix is doing real work.
+    const paramsWindow = 252;
+    const rollingWindow = 60;
+    const NORM_WARMUP = 60;
+    const dataBuffer = 20;
+    const oldRequiredHistory = paramsWindow + rollingWindow + dataBuffer; // 332
+
+    const { dates } = makeSeries(oldRequiredHistory, 3, 37);
+    const datesN = dates.slice(NORM_WARMUP); // 272
+    const nAfterNorm = datesN.length;
+
+    const { burnInIndex, displayStartIndex } = deriveIndices(
+      nAfterNorm,
+      paramsWindow,
+      rollingWindow,
+    );
+    // n - paramsWindow = 20, burnInIndex = 59 ⇒ displayStartIndex collapses
+    // onto the burn-in cutoff and we lose 252 - 213 = 39 visible days.
+    expect(displayStartIndex).toBe(burnInIndex);
+    const visibleObs = nAfterNorm - displayStartIndex;
+    expect(visibleObs).toBeLessThan(paramsWindow);
+    expect(visibleObs).toBe(nAfterNorm - (rollingWindow - 1)); // 213
+  });
+
   it("visible obs count formula: max(0, n - displayStartIndex) == min(paramsWindow, n - burnInIndex)", () => {
     const cases: Array<{ n: number; window: number; W: number }> = [
       { n: 524, window: 252, W: 252 },

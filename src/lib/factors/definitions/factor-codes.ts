@@ -2,7 +2,7 @@
  * Canonical factor definitions — single source of truth for labels,
  * descriptions, and tooltips shown in the UI.
  */
-import type { FactorCode, FactorDef } from "@/types/factors";
+import type { FactorCode, FactorDef, FactorInputType } from "@/types/factors";
 
 /**
  * Naming convention (Apr 2026): each factor uses its full academic name.
@@ -55,7 +55,29 @@ import type { FactorCode, FactorDef } from "@/types/factors";
  *     `normalizeProxyToFf` so units stay consistent (see
  *     `factor-pipeline-macro.service.ts`).
  */
-export const FACTOR_DEFS: Record<FactorCode, FactorDef> = {
+const FACTOR_INPUT_TYPE: Record<FactorCode, FactorInputType> = {
+  MKT_RF: "RETURN",
+  SMB: "RETURN",
+  HML: "RETURN",
+  RMW: "RETURN",
+  CMA: "RETURN",
+  MOM: "RETURN",
+  RF: "AMBIGUOUS",
+  EQ: "RETURN",
+  LOCAL_EQ: "RETURN",
+  RATES: "RETURN",
+  COMM: "RETURN",
+  EM: "RETURN",
+  FX: "RETURN",
+  INFL: "RETURN",
+  SHORT_VOL: "RETURN",
+  TREND: "RETURN",
+  BAB: "RETURN",
+  QMJ: "RETURN",
+  CROWD: "RETURN",
+};
+
+const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
   // -------------------------------------------------------------------------
   // Fama-French / Carhart factors (legacy presets)
   // -------------------------------------------------------------------------
@@ -278,6 +300,13 @@ export const FACTOR_DEFS: Record<FactorCode, FactorDef> = {
   },
 };
 
+export const FACTOR_DEFS: Record<FactorCode, FactorDef> = Object.fromEntries(
+  Object.entries(FACTOR_DEFS_BASE).map(([code, def]) => [
+    code,
+    { ...def, inputType: FACTOR_INPUT_TYPE[code as FactorCode] },
+  ]),
+) as Record<FactorCode, FactorDef>;
+
 /** Ordered list of factor codes by their canonical display order. */
 export const FACTOR_DISPLAY_ORDER: FactorCode[] = [
   "MKT_RF",
@@ -316,5 +345,10 @@ export function getFactorDef(code: FactorCode): FactorDef {
     whyItMatters: "",
     units: "beta",
     color: "#94a3b8",
+    inputType: "AMBIGUOUS",
   };
+}
+
+export function getFactorInputType(code: FactorCode): FactorInputType {
+  return FACTOR_INPUT_TYPE[code] ?? "AMBIGUOUS";
 }

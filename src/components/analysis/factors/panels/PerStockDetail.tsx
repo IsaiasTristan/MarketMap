@@ -38,6 +38,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { PerStockResult } from "@/server/services/factor-per-stock.service";
 import { useAnalysisStore } from "@/store/analysis";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
+import { pickHeadlineValue } from "@/lib/factors/attribution/headline-picker";
 import type { FactorCode } from "@/types/factors";
 import { Waterfall, type WaterfallSegment } from "../shared/Waterfall";
 import {
@@ -46,6 +47,7 @@ import {
   type PerStockTimeSeriesPayload,
 } from "./PerStockTimeSeries";
 import { PredictedActualScatter } from "./PredictedActualScatter";
+import { LogModeMethodology } from "./LogModeMethodology";
 
 interface PerStockDetailProps {
   data: PerStockResult;
@@ -145,12 +147,20 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
   const tsData: PerStockTimeSeriesPayload | null = tsRaw ?? null;
 
   // Identity sums (Q2 lock-in: skip burn-in i < displayStartIndex).
-  // Σy_post = Σ(β·r)_post + Σα_post + Σε_post (to FP precision).
+  // Path B (default when log series present): bars are decomposed in log
+  // space (Σ y_log = Σ(β·x_log) + Σα + Σε); the headline value is the
+  // compounded geometric reconciliation exp(Σ y_log) − 1, which ties to
+  // realised performance over the visible window.
+  // Path A (fallback): used only when the log path was strict-dropped (any
+  // 1+r ≤ 0 in the visible window). Identity Σy = Σ(β·r) + Σα + Σε holds
+  // daily, but the cumulative arithmetic sum is NOT a compounded total.
+  const useLog = tsData?.log != null;
   const {
     returnSegments,
     windowAlpha,
-    totalReturn,
-    idioCumulative,
+    sumLogInner,
+    geometricTotalReturn,
+    arithmeticTotalReturn,
     identitySumGap,
     postBurnObs,
     rollingAlphaToTotalRatio,
@@ -159,8 +169,9 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
       return {
         returnSegments: [] as WaterfallSegment[],
         windowAlpha: 0,
-        totalReturn: 0,
-        idioCumulative: 0,
+        sumLogInner: 0,
+        geometricTotalReturn: 0,
+        arithmeticTotalReturn: 0,
         identitySumGap: 0,
         postBurnObs: 0,
         rollingAlphaToTotalRatio: 0,
@@ -168,56 +179,82 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
     }
     const startIdx = tsData.displayStartIndex ?? 0;
     const n = tsData.dates.length;
+    const factorContrib = useLog ? tsData.log!.factorLogContrib : tsData.factorContrib;
+    const alphaSeries = useLog ? tsData.log!.alphaLog : tsData.alpha;
+    const residSeries = useLog ? tsData.log!.residualLog : tsData.residual;
+    const excessSeries = useLog ? tsData.log!.excessLogReturn : tsData.excessReturn;
+
     const segs: WaterfallSegment[] = [];
     let factorContribTotal = 0;
     for (const code of factors) {
-      const arr = tsData.factorContrib[code];
+      const arr = factorContrib[code];
       if (!arr) continue;
       let sum = 0;
       for (let i = startIdx; i < n; i++) sum += num(arr[i]);
       factorContribTotal += sum;
       const def = getFactorDef(code);
-      const last = n > 0 ? num(tsData.rollingBetas[code]?.[n - 1] ?? tsData.betas[code] ?? 0) : 0;
+      const lastBeta = useLog
+        ? num(tsData.log!.rollingBetasLog[code]?.[n - 1] ?? tsData.log!.betasLog[code] ?? 0)
+        : num(tsData.rollingBetas[code]?.[n - 1] ?? tsData.betas[code] ?? 0);
       segs.push({
         key: `ret-${code}`,
         label: def.label,
         value: sum,
         color: def.color,
-        sub: `Latest rolling β = ${last >= 0 ? "+" : ""}${last.toFixed(2)}`,
+        sub: `Latest rolling β = ${lastBeta >= 0 ? "+" : ""}${lastBeta.toFixed(2)}`,
       });
     }
     segs.sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
 
     let alphaSum = 0;
     let idioSum = 0;
-    let actualSum = 0;
+    let innerSum = 0;
     let obs = 0;
     for (let i = startIdx; i < n; i++) {
-      alphaSum += num(tsData.alpha[i]);
-      idioSum += num(tsData.residual[i]);
-      actualSum += tsData.excessReturn[i] ?? 0;
+      alphaSum += num(alphaSeries[i]);
+      idioSum += num(residSeries[i]);
+      innerSum += excessSeries[i] ?? 0;
       obs++;
     }
+
+    // Always compute the legacy arithmetic Σ y_simple over the same window
+    // — even in log mode — so the methodology popover can disclose what the
+    // old headline used to be without changing the primary view.
+    let simpleSum = 0;
+    for (let i = startIdx; i < n; i++) {
+      simpleSum += tsData.excessReturn[i] ?? 0;
+    }
+
     const idioSeg: WaterfallSegment = {
       key: "idio-ret",
       label: "Unexplained Residual",
       value: idioSum,
       color: "#94a3b8",
-      sub: "Σ ε_t = Σ (actual − predicted) over post burn-in",
+      sub: useLog
+        ? "Σ ε_log_t = Σ (y_log − ŷ_log) over post burn-in"
+        : "Σ ε_t = Σ (actual − predicted) over post burn-in",
     };
 
-    const ratio = Math.abs(actualSum) > 1e-9 ? Math.abs(alphaSum) / Math.abs(actualSum) : 0;
+    const ratio = Math.abs(innerSum) > 1e-9 ? Math.abs(alphaSum) / Math.abs(innerSum) : 0;
+
+    // Single source of truth for the headline display contract — the helper
+    // also drives the strict-drop fallback banner when the log path is null.
+    const headline = pickHeadlineValue({
+      arithmeticSum: simpleSum,
+      logSum: useLog ? innerSum : null,
+    });
 
     return {
       returnSegments: [...segs, idioSeg],
       windowAlpha: alphaSum,
-      totalReturn: actualSum,
-      idioCumulative: idioSum,
-      identitySumGap: actualSum - (factorContribTotal + alphaSum + idioSum),
+      sumLogInner: innerSum,
+      geometricTotalReturn: headline.useLog ? headline.geometric! : headline.arithmetic,
+      arithmeticTotalReturn: simpleSum,
+      identitySumGap: innerSum - (factorContribTotal + alphaSum + idioSum),
       postBurnObs: obs,
       rollingAlphaToTotalRatio: ratio,
     };
-  }, [tsData, factors]);
+  }, [tsData, factors, useLog]);
 
   const riskSegments: WaterfallSegment[] = useMemo(() => {
     if (!row) return [];
@@ -518,7 +555,7 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
         {reconLine}
       </div>
 
-      {/* WARNING BANNERS (Q3 lock + window fallback) */}
+      {/* WARNING BANNERS (Q3 lock + window fallback + factor freshness) */}
       {(() => {
         const fb = tsData?.windowFallback;
         const rollingPoints = tsData ? Math.max(0, tsData.dates.length - tsData.displayStartIndex) : 0;
@@ -526,9 +563,19 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
           Math.abs(fb.requestedWindow - fb.effectiveWindow) / Math.max(1, fb.requestedWindow) >= 0.05 ||
           rollingPoints < 60
         );
+        const stale = data.factorDataStale ?? [];
+        const staleCount = stale.length;
         const showBanner =
-          fallbackSignificant || (tsData?.rollingFitFailures ?? 0) > 0 || row.droppedDates.length > 0;
+          fallbackSignificant ||
+          (tsData?.rollingFitFailures ?? 0) > 0 ||
+          row.droppedDates.length > 0 ||
+          staleCount > 0;
         if (!showBanner) return null;
+        const staleSummary = staleCount > 0
+          ? stale
+              .map((s) => `${s.factor} last published ${s.lastDate} (lags ${s.lagTradingDays}d)`)
+              .join("\n  ")
+          : "";
         return (
         <div
           style={{
@@ -548,6 +595,13 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
               : "") +
             `${tsData?.rollingFitFailures ?? 0} rolling-fit failure(s) (singular X'WX). ` +
             `${row.droppedDates.length} factor cells dropped from snapshot regression because of missing data.\n\n` +
+            (staleCount > 0
+              ? `STALE FACTOR DATA (${staleCount}):\n  ${staleSummary}\n\n` +
+                `Run POST /api/analysis/factors/pipeline-refresh to backfill ETF-proxy splice rows ` +
+                `for the missing dates. Without the refresh, the strict drop-row policy silently ` +
+                `caps the visible regression sample at the freshest factor's last date — see the ` +
+                `factor-data-freshness-guard plan (2026-04-26) for context.\n\n`
+              : "") +
             `Phase 3 Q3 lock-in: failed fits skip from cumulative sums (no silent (α=0, ε=y) fallback); ` +
             `missing factor cells drop the row entirely (no silent zero-fill).`
           }
@@ -559,17 +613,24 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
             </span>
           )}
           {fallbackSignificant && tsData?.windowFallback &&
-            ((tsData.rollingFitFailures > 0) || row.droppedDates.length > 0) &&
+            ((tsData.rollingFitFailures > 0) || row.droppedDates.length > 0 || staleCount > 0) &&
             " · "}
           {tsData && tsData.rollingFitFailures > 0 && (
             <span style={{ marginLeft: 6 }}>
               {tsData.rollingFitFailures} rolling-fit failure(s)
             </span>
           )}
-          {tsData && tsData.rollingFitFailures > 0 && row.droppedDates.length > 0 && " · "}
+          {tsData && tsData.rollingFitFailures > 0 && (row.droppedDates.length > 0 || staleCount > 0) && " · "}
           {row.droppedDates.length > 0 && (
             <span style={{ marginLeft: 6 }}>
               {row.droppedDates.length} factor cell(s) dropped from snapshot
+            </span>
+          )}
+          {row.droppedDates.length > 0 && staleCount > 0 && " · "}
+          {staleCount > 0 && (
+            <span style={{ marginLeft: 6 }}>
+              {staleCount} factor{staleCount === 1 ? "" : "s"} stale ({stale[0]!.factor}
+              {staleCount > 1 ? ` +${staleCount - 1}` : ""} - run /api/analysis/factors/pipeline-refresh)
             </span>
           )}
         </div>
@@ -590,15 +651,43 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
 
         {returnWaterfallReady && (
           <div style={{ padding: "12px 14px 4px" }}>
+            {!useLog && (
+              <div
+                style={{
+                  marginBottom: 8,
+                  padding: "6px 8px",
+                  fontSize: 10,
+                  fontFamily: "var(--font-mono, monospace)",
+                  fontVariantNumeric: "tabular-nums",
+                  color: "#f59e0b",
+                  background: "rgba(245,158,11,0.08)",
+                  border: "1px solid rgba(245,158,11,0.30)",
+                }}
+                title={
+                  `Log attribution path (Path B) is unavailable for this window: ` +
+                  `at least one daily simple return ≤ -100% killed the ln(1+r) ` +
+                  `domain check. Falling back to arithmetic Σ y_simple. ` +
+                  `Note: this number is the sum of daily simple excess returns, ` +
+                  `NOT a compounded total return — multi-period arithmetic sums ` +
+                  `do not reconcile to realised performance.`
+                }
+              >
+                ⚠ Log path unavailable — falling back to arithmetic Σ y_simple. Headline is NOT a compounded total.
+              </div>
+            )}
             <Waterfall
               title={`Total Return Decomposition · ${postBurnObs} obs (post burn-in)`}
-              subtitle="Σ (rolling β × daily factor return) + Σ α + Σ ε = total excess return (matches realised line in chart)"
-              total={totalReturn}
+              subtitle={
+                useLog
+                  ? "Bars are log contributions Σ(β·ln(1+f)) + Σα + Σε; headline shows compounded realised exp(Σ) − 1"
+                  : "Σ (rolling β × daily factor return) + Σ α + Σ ε = total excess return (arithmetic, NOT compounded)"
+              }
+              total={sumLogInner}
               totalLabel="Total Excess Return"
               segments={returnSegments}
               residual={{
                 key: "alpha",
-                label: "Σ rolling α_t",
+                label: useLog ? "Σ α_t (log)" : "Σ rolling α_t",
                 value: windowAlpha,
                 color: "#f1f5f9",
                 sub:
@@ -606,7 +695,26 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
                     ? `⚠ |Σα|/|Σy| = ${(rollingAlphaToTotalRatio * 100).toFixed(0)}% — large rolling-α drift (possible model misspecification or β instability)`
                     : `Σ rolling intercepts (post burn-in). Static α (ann.) = ${(row.alphaAnnualized * 100).toFixed(2)}%.`,
               }}
+              headlineOverride={
+                useLog ? { value: geometricTotalReturn } : undefined
+              }
+              totalAnnotation={
+                useLog ? (
+                  <span style={{ display: "inline-flex", alignItems: "center" }}>
+                    exp(Σ y_log) − 1
+                    <LogModeMethodology
+                      sumLog={sumLogInner}
+                      geometric={geometricTotalReturn}
+                      arithmeticSimple={arithmeticTotalReturn}
+                      identityGap={identitySumGap}
+                      obsCount={postBurnObs}
+                    />
+                  </span>
+                ) : undefined
+              }
             />
+            {/* Reconciliation sub-line — log mode shows the inner Σ → exp() chain
+                with a green ✓ tick; simple-fallback shows the arithmetic identity. */}
             <div
               style={{
                 padding: "6px 4px 0",
@@ -616,14 +724,60 @@ export function PerStockDetail({ data, selectedTicker, onClose }: PerStockDetail
                 fontVariantNumeric: "tabular-nums",
               }}
               title={
-                `Identity check (Q5 lock):\n` +
-                `Σy − [Σ(β·r) + Σα + Σε] = ${(identitySumGap * 100).toFixed(4)}%.\n` +
-                `Should be ≤ 1e-6 (numerical noise). Larger gap indicates a bug or burn-in misalignment.`
+                useLog
+                  ? `Log-space identity:\n` +
+                    `Σ y_log − [Σ(β·x_log) + Σα + Σε] = ${(identitySumGap * 100).toFixed(4)}%.\n` +
+                    `Should be ≤ 1e-6 (numerical noise). Headline reconciles to compounded realised: ` +
+                    `exp(Σ y_log) − 1 = ${(geometricTotalReturn * 100).toFixed(2)}%.`
+                  : `Arithmetic identity (fallback path):\n` +
+                    `Σy − [Σ(β·r) + Σα + Σε] = ${(identitySumGap * 100).toFixed(4)}%.\n` +
+                    `Should be ≤ 1e-6 (numerical noise). Larger gap indicates a bug or burn-in misalignment.`
               }
             >
-              Identity:&nbsp;Σy = Σ(β·r) + Σα + Σε &nbsp;→&nbsp;
-              residual = {(identitySumGap * 100).toFixed(4)}%
+              {useLog ? (
+                <>
+                  Σ log contribs = {(sumLogInner * 100).toFixed(2)}%{"  →  "}
+                  exp(Σ) − 1 ={" "}
+                  <span
+                    style={{
+                      color:
+                        geometricTotalReturn >= 0
+                          ? "var(--color-positive)"
+                          : "var(--color-negative)",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {geometricTotalReturn >= 0 ? "+" : ""}
+                    {(geometricTotalReturn * 100).toFixed(2)}%
+                  </span>{" "}
+                  <span
+                    style={{
+                      color:
+                        Math.abs(identitySumGap) < 1e-6
+                          ? "var(--color-positive)"
+                          : "#f59e0b",
+                    }}
+                  >
+                    {Math.abs(identitySumGap) < 1e-6 ? "✓" : "⚠"}
+                  </span>
+                </>
+              ) : (
+                `Identity: Σy = Σ(β·r) + Σα + Σε  →  residual = ${(identitySumGap * 100).toFixed(4)}%`
+              )}
             </div>
+            {useLog && (
+              <div
+                style={{
+                  padding: "3px 4px 0",
+                  fontSize: 9,
+                  fontFamily: "var(--font-mono, monospace)",
+                  color: "var(--text-muted)",
+                  fontStyle: "italic",
+                }}
+              >
+                Bars are additive in log space only; exp(component) − 1 for an individual factor does NOT sum to the geometric total.
+              </div>
+            )}
           </div>
         )}
 

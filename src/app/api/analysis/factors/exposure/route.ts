@@ -112,6 +112,8 @@ export async function GET(req: NextRequest) {
     asOfDate,
     hasFundamentals: holdingsResult?.hasFundamentals ?? false,
     regularized: endFit.regularized,
+    normalizationApplied: true,
+    normalization: engineResult.normalization,
   };
 
   // Persist snapshot and evaluate alerts (fire-and-forget; don't block response)

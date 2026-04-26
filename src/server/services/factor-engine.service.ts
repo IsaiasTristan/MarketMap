@@ -15,7 +15,21 @@ import { exponentialWeights } from "@/lib/factors/regression/weights";
 import { factorCovarianceMatrix } from "@/lib/factors/risk/covariance";
 import { computeRiskDecomposition } from "@/lib/factors/risk/decomposition";
 import { resolveModel, minObservations } from "@/lib/factors/definitions/model-presets";
-import type { FactorCode, FactorEngineParams, FactorEngineResult, ModelPresetName } from "@/types/factors";
+import { normalizeFactorRows } from "@/lib/factors/regression/normalization";
+import { getFactorInputType } from "@/lib/factors/definitions/factor-codes";
+import {
+  factorRowLog,
+  logOnePlus,
+  stockExcessLog,
+} from "@/lib/factors/attribution/log-returns";
+import type {
+  FactorCode,
+  FactorEngineParams,
+  FactorEngineResult,
+  ModelPresetName,
+  RegressionFit,
+  RollingFitPoint,
+} from "@/types/factors";
 
 // Minimum common prices required across all portfolio positions
 const MIN_PRICE_HISTORY = 30;
@@ -162,28 +176,55 @@ export async function runFactorEngine(
     factorRows.push(factorCodes.map((c) => fDay[c]!));
   }
 
-  const n = alignedDates.length;
+  const normResult = normalizeFactorRows(
+    factorRows,
+    factorCodes.map((code) => ({ code, inputType: getFactorInputType(code) })),
+    {
+      rollingWindow: 252,
+      minObservations: 60,
+      winsorSigma: 5,
+      targetAnnualVol: 0.1,
+    },
+  );
+
+  const finalDates: string[] = [];
+  const finalPortTotalReturns: number[] = [];
+  const finalRfReturns: number[] = [];
+  const finalFactorRowsRaw: number[][] = [];
+  const finalFactorRowsNorm: number[][] = [];
+
+  for (let i = 0; i < alignedDates.length; i++) {
+    const normRow = normResult.normalizedRows[i];
+    if (!normRow || normRow.some((v) => v == null || !Number.isFinite(v))) continue;
+    finalDates.push(alignedDates[i]!);
+    finalPortTotalReturns.push(portTotalReturns[i]!);
+    finalRfReturns.push(rfReturns[i]!);
+    finalFactorRowsRaw.push(factorRows[i]!);
+    finalFactorRowsNorm.push(normRow as number[]);
+  }
+
+  const n = finalDates.length;
   const k = factorCodes.length;
   const minObs = minObservations(k);
 
   if (n < minObs) return null;
 
   // Portfolio excess returns (subtract daily RF for regression LHS)
-  const portExcessReturns = portTotalReturns.map((r, i) => r - rfReturns[i]!);
+  const portExcessReturns = finalPortTotalReturns.map((r, i) => r - finalRfReturns[i]!);
 
   // End-of-period fit over full available history (capped at regressionWindow)
   const windowN = Math.min(regressionWindow, n);
   const startIdx = n - windowN;
   const yEnd = portExcessReturns.slice(startIdx);
-  const xEnd = factorRows.slice(startIdx);
+  const xEnd = finalFactorRowsNorm.slice(startIdx);
   const endWeights = exponentialWeights(windowN, ewHalfLife);
   const endFit = multivariateOls(yEnd, xEnd, endWeights);
 
   // Rolling fits
   const rollingFits = rollingMultivariateOls(
-    alignedDates,
+    finalDates,
     portExcessReturns,
-    factorRows,
+    finalFactorRowsNorm,
     regressionWindow,
     ewHalfLife,
   );
@@ -192,7 +233,7 @@ export async function runFactorEngine(
   // Factor covariance matrix from the window used in end-of-period fit
   const covWindow = Math.min(regressionWindow, n);
   const factorSeriesWindow = factorCodes.map((_, fi) =>
-    factorRows.slice(-covWindow).map((row) => row[fi]!),
+    finalFactorRowsNorm.slice(-covWindow).map((row) => row[fi]!),
   );
   const covMatrix = factorCovarianceMatrix(factorSeriesWindow, null, true);
 
@@ -205,22 +246,79 @@ export async function runFactorEngine(
 
   // Per-factor return series (for market context, attribution)
   const factorReturns: Record<string, number[]> = {};
-  for (const code of factorCodes) {
-    factorReturns[code] = alignedDates.map((d) => factorMap.get(d)?.[code] ?? 0);
+  for (let fi = 0; fi < factorCodes.length; fi++) {
+    const code = factorCodes[fi]!;
+    factorReturns[code] = finalFactorRowsRaw.map((row) => row[fi] ?? 0);
+  }
+
+  // ---------------------------------------------------------------------
+  // Path B — log-return rolling OLS over RAW (non-vol-scaled) factors.
+  // ---------------------------------------------------------------------
+  // Strict drop policy at portfolio level: if any date produces a log-domain
+  // failure (1 + r ≤ 0) we leave Path B null so Path A is unaffected.
+  let portExcessLogReturns: number[] | null = new Array(n);
+  let rfLogReturns: number[] | null = new Array(n);
+  const factorLogRows: number[][] = new Array(n);
+  let logPathOk = true;
+  for (let i = 0; i < n; i++) {
+    const rfDaily = finalRfReturns[i] ?? 0;
+    const portTotal = finalPortTotalReturns[i] ?? 0;
+    const yLog = stockExcessLog(portTotal, rfDaily);
+    const rfLog = logOnePlus(rfDaily);
+    const xLog = factorRowLog(finalFactorRowsRaw[i]!);
+    if (yLog == null || rfLog == null || xLog == null) {
+      logPathOk = false;
+      break;
+    }
+    portExcessLogReturns[i] = yLog;
+    rfLogReturns[i] = rfLog;
+    factorLogRows[i] = xLog;
+  }
+
+  let factorLogReturns: Record<string, number[]> | null = null;
+  let endFitLog: RegressionFit | null = null;
+  let rollingFitsLog: RollingFitPoint[] | null = null;
+
+  if (logPathOk && portExcessLogReturns && rfLogReturns) {
+    factorLogReturns = {};
+    for (let fi = 0; fi < factorCodes.length; fi++) {
+      const code = factorCodes[fi]!;
+      factorLogReturns[code] = factorLogRows.map((row) => row[fi] ?? 0);
+    }
+
+    const yLogEnd = portExcessLogReturns.slice(startIdx);
+    const xLogEnd = factorLogRows.slice(startIdx);
+    endFitLog = multivariateOls(yLogEnd, xLogEnd, endWeights);
+    rollingFitsLog = rollingMultivariateOls(
+      finalDates,
+      portExcessLogReturns,
+      factorLogRows,
+      regressionWindow,
+      ewHalfLife,
+    );
+  } else {
+    portExcessLogReturns = null;
+    rfLogReturns = null;
   }
 
   return {
-    dates: alignedDates,
+    dates: finalDates,
     portExcessReturns,
-    portTotalReturns,
+    portTotalReturns: finalPortTotalReturns,
     factorReturns,
-    rfReturns,
+    rfReturns: finalRfReturns,
     endFit,
     rollingFits,
     risk,
     holdingsImplied: null, // populated by factor.service separately
     model: params.model,
     factors: factorCodes,
+    normalization: normResult.diagnostics,
+    portExcessLogReturns,
+    factorLogReturns,
+    rfLogReturns,
+    endFitLog,
+    rollingFitsLog,
   };
 }
 

@@ -12,7 +12,16 @@ import { runFactorEngine } from "./factor-engine.service";
 import { computeDailyAttribution } from "@/lib/factors/attribution/daily";
 import { computeCumulativeAttribution } from "@/lib/factors/attribution/cumulative";
 import { computePeriodAttribution } from "@/lib/factors/attribution/period";
-import type { AttributionResult, FactorCode, ModelPresetName } from "@/types/factors";
+import { computeDailyLogAttribution } from "@/lib/factors/attribution/daily-log";
+import { computeCumulativeLogAttribution } from "@/lib/factors/attribution/cumulative-log";
+import { computePeriodLogAttribution } from "@/lib/factors/attribution/period-log";
+import type {
+  AttributionDayPointLog,
+  AttributionResult,
+  CumulativeAttributionPointLog,
+  PeriodAttributionSummaryLog,
+  ModelPresetName,
+} from "@/types/factors";
 
 /**
  * Compute factor return attribution for a portfolio.
@@ -58,6 +67,51 @@ export async function computeFactorAttribution(
   const cumulative = computeCumulativeAttribution(daily);
   const periods = computePeriodAttribution(daily, factors);
 
+  // ---------------------------------------------------------------------
+  // Path B (log) — only emitted when the engine produced a parallel log
+  // pipeline and a separate set of log rolling fits.
+  // ---------------------------------------------------------------------
+  let dailyLog: AttributionDayPointLog[] | null = null;
+  let cumulativeLog: CumulativeAttributionPointLog[] | null = null;
+  let periodsLog: PeriodAttributionSummaryLog[] | null = null;
+
+  if (
+    engineResult.portExcessLogReturns &&
+    engineResult.factorLogReturns &&
+    engineResult.rfLogReturns &&
+    engineResult.rollingFitsLog
+  ) {
+    const portExcessLogMap = new Map(
+      dates.map((d, i) => [d, engineResult.portExcessLogReturns![i]!]),
+    );
+    const rfLogMap = new Map(
+      dates.map((d, i) => [d, engineResult.rfLogReturns![i]!]),
+    );
+    const factorLogMap = new Map(
+      dates.map((d, i) => {
+        const day: Record<string, number> = {};
+        for (const code of factors) {
+          day[code] = engineResult.factorLogReturns![code]?.[i] ?? 0;
+        }
+        return [d, day];
+      }),
+    );
+
+    dailyLog = computeDailyLogAttribution(
+      engineResult.rollingFitsLog,
+      factors,
+      factorLogMap,
+      portExcessLogMap,
+      rfLogMap,
+    );
+    if (dailyLog.length) {
+      cumulativeLog = computeCumulativeLogAttribution(dailyLog);
+      periodsLog = computePeriodLogAttribution(dailyLog, factors);
+    } else {
+      dailyLog = null;
+    }
+  }
+
   // Provenance badge
   const pipelineStatus = await db.factorPipelineStatus.findFirst();
   const provenanceBadge = pipelineStatus?.lastFrenchDate
@@ -68,7 +122,15 @@ export async function computeFactorAttribution(
       }
     : null;
 
-  return { daily, cumulative, periods, provenanceBadge };
+  return {
+    daily,
+    cumulative,
+    periods,
+    dailyLog,
+    cumulativeLog,
+    periodsLog,
+    provenanceBadge,
+  };
 }
 
 /** Trade statistics from closed positions — unchanged. */

@@ -53,6 +53,22 @@ interface WaterfallProps {
   formatValue?: (v: number) => string;
   /** Optional right-aligned annotation rendered next to the headline total. */
   totalAnnotation?: ReactNode;
+  /**
+   * Optional override for the big headline number rendered in the top-right
+   * cell. When provided, the headline displays `headlineOverride.value`
+   * (formatted by `headlineOverride.format` or `formatValue`) and is signed
+   * by that value. The original `total` is still used for bar-span scaling
+   * and for the daily identity (so segment bars stay calibrated to the inner
+   * sum, not to the override).
+   *
+   * Used by log-mode return attribution: bars sum to Σ y_log (in log %), but
+   * the headline shows the compounded geometric total exp(Σ y_log) − 1 so
+   * users see a number that ties to realised performance.
+   */
+  headlineOverride?: {
+    value: number;
+    format?: (v: number) => string;
+  };
 }
 
 const fmtPct = (v: number): string =>
@@ -67,17 +83,24 @@ export function Waterfall({
   residual,
   formatValue = fmtPct,
   totalAnnotation,
+  headlineOverride,
 }: WaterfallProps) {
   const all = residual ? [...segments, residual] : segments;
   // Symmetric span for bar widths — uses max(|component|, |total|) so a tiny
-  // residual segment isn't overpowered by a giant total bar that clips.
+  // residual segment isn't overpowered by a giant total bar that clips. We
+  // intentionally exclude `headlineOverride.value` from the span: in log mode
+  // the override is a much larger geometric translation (e.g. +302%) of the
+  // inner log sum (e.g. +139%), and including it would compress every segment
+  // bar to ~half its informative width.
   const span = Math.max(
     1e-9,
     ...all.map((s) => Math.abs(s.value)),
     Math.abs(total),
   );
 
-  const totalPositive = total >= 0;
+  const headlineValue = headlineOverride?.value ?? total;
+  const headlineFmt = headlineOverride?.format ?? formatValue;
+  const totalPositive = headlineValue >= 0;
 
   return (
     <div
@@ -135,7 +158,7 @@ export function Waterfall({
               lineHeight: 1.1,
             }}
           >
-            {formatValue(total)}
+            {headlineFmt(headlineValue)}
           </div>
           {totalAnnotation && (
             <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>

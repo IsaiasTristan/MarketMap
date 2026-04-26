@@ -15,6 +15,17 @@ export type FactorView = "portfolio" | "per_stock" | "correlations";
 /** Active metric in the per-stock grid heatmap. */
 export type FactorGridMetric = "beta" | "return" | "risk";
 
+/**
+ * Attribution mode for the per-stock + portfolio cumulative panels.
+ *   - `simple`: arithmetic sum of daily simple excess returns. Identity
+ *     `Σy = Σ(β·r) + Σα + Σε` holds at the daily level but the cumulative
+ *     sum does NOT equal compounded realised return.
+ *   - `log`: log-space identity `Σ y_log = Σ(β·x_log) + Σα + Σε`. Headline
+ *     uses `exp(Σ y_log) - 1` which reconciles to the compounded geometric
+ *     realised excess for the visible window.
+ */
+export type FactorAttributionMode = "simple" | "log";
+
 interface AnalysisState {
   activePortfolioId: string | null;
   dateRange: DateRange;
@@ -28,6 +39,7 @@ interface AnalysisState {
   factorView: FactorView;
   factorGridMetric: FactorGridMetric;
   factorTsRollingWindow: FactorTsRollingWindow;
+  factorAttributionMode: FactorAttributionMode;
   factorGridSelectedTicker: string | null;
   factorGridSectorFilter: string | null;
   factorGridSubThemeFilter: string | null;
@@ -43,6 +55,7 @@ interface AnalysisState {
   setFactorView: (v: FactorView) => void;
   setFactorGridMetric: (m: FactorGridMetric) => void;
   setFactorTsRollingWindow: (w: FactorTsRollingWindow) => void;
+  setFactorAttributionMode: (m: FactorAttributionMode) => void;
   setFactorGridSelectedTicker: (t: string | null) => void;
   setFactorGridSectorFilter: (s: string | null) => void;
   setFactorGridSubThemeFilter: (s: string | null) => void;
@@ -68,6 +81,7 @@ export const useAnalysisStore = create<AnalysisState>()(
       factorView: "portfolio",
       factorGridMetric: "beta",
       factorTsRollingWindow: 60,
+      factorAttributionMode: "log",
       factorGridSelectedTicker: null,
       factorGridSectorFilter: null,
       factorGridSubThemeFilter: null,
@@ -87,6 +101,7 @@ export const useAnalysisStore = create<AnalysisState>()(
       setFactorView: (factorView) => set({ factorView }),
       setFactorGridMetric: (factorGridMetric) => set({ factorGridMetric }),
       setFactorTsRollingWindow: (factorTsRollingWindow) => set({ factorTsRollingWindow }),
+      setFactorAttributionMode: (factorAttributionMode) => set({ factorAttributionMode }),
       setFactorGridSelectedTicker: (factorGridSelectedTicker) =>
         set({ factorGridSelectedTicker }),
       setFactorGridSectorFilter: (factorGridSectorFilter) =>
@@ -96,6 +111,11 @@ export const useAnalysisStore = create<AnalysisState>()(
     }),
     {
       name: "analysis-store",
+      // v2 (2026-04-26): default factorAttributionMode flipped from "simple" to
+      // "log" so the per-stock + portfolio attribution headlines reconcile to
+      // compounded geometric realised excess via exp(Σ y_log) − 1. Bumping the
+      // version drops any persisted "simple" entry from prior sessions.
+      version: 2,
       partialize: (s) => ({
         activePortfolioId: s.activePortfolioId,
         dateRange: s.dateRange,
@@ -107,7 +127,16 @@ export const useAnalysisStore = create<AnalysisState>()(
         factorView: s.factorView,
         factorGridMetric: s.factorGridMetric,
         factorTsRollingWindow: s.factorTsRollingWindow,
+        factorAttributionMode: s.factorAttributionMode,
       }),
+      migrate: (persisted, version) => {
+        if (!persisted || typeof persisted !== "object") return persisted;
+        const next = { ...(persisted as Record<string, unknown>) };
+        if (version < 2) {
+          next.factorAttributionMode = "log";
+        }
+        return next;
+      },
     },
   ),
 );

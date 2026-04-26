@@ -30,16 +30,19 @@
 import { prisma as db } from "@/infrastructure/db/client";
 import { multivariateOls } from "@/lib/factors/regression/ols";
 import { rollingMultivariateOls } from "@/lib/factors/regression/rolling";
+import { normalizeFactorRows } from "@/lib/factors/regression/normalization";
 import { factorCovarianceMatrix } from "@/lib/factors/risk/covariance";
 import { computeRiskDecomposition } from "@/lib/factors/risk/decomposition";
 import { computeFactorCoverage } from "@/lib/factors/regression/coverage";
 import { resolveModel, minObservations } from "@/lib/factors/definitions/model-presets";
-import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
+import { getFactorDef, getFactorInputType } from "@/lib/factors/definitions/factor-codes";
 import { multicollinearityReport } from "@/lib/factors/market/multicollinearity";
+import { detectFactorStaleness } from "@/lib/factors/diagnostics/freshness";
 import { pearsonCorr } from "@/domain/calculations/beta";
 import type {
   FactorCode,
   FactorCoverage,
+  FactorStalenessEntry,
   ModelPresetName,
   RegressionFit,
 } from "@/types/factors";
@@ -234,6 +237,20 @@ export interface PerStockResult {
    * interactions; defaults to 60d (matches the chart's default rolling W).
    */
   gridRollingWindow: number;
+  normalization: {
+    config: { rollingWindow: number; minObservations: number; winsorSigma: number; targetAnnualVol: number | null };
+    ambiguousFactors: FactorCode[];
+    insufficientObservationsByFactor: Record<string, number>;
+    totalRowsDroppedForNormalization: number;
+  };
+  /**
+   * Factors whose latest published row trails the freshest day in the
+   * loaded factor matrix by more than 3 trading days. Computed once per
+   * `runPerStockFactors` call (not per ticker) since the matrix is shared.
+   * Empty array when all factors are fresh. See
+   * `src/lib/factors/diagnostics/freshness.ts`.
+   */
+  factorDataStale: FactorStalenessEntry[];
 }
 
 interface PerStockParams {
@@ -344,6 +361,13 @@ export async function runPerStockFactors(
   });
 
   const { usableFactors, coverage, alignedWindowDates } = coverageResult;
+  // Computed once per request — the matrix is shared across every constituent
+  // so each row of the grid surfaces the same staleness diagnostic. RF is
+  // folded in because the per-stock excess-return computation falls back to
+  // `rfByDate.get(d) ?? 0` and silently inflates excess past the last RF print.
+  const factorDataStale = detectFactorStaleness(factorByDate, usableFactors, {
+    rfByDate,
+  });
   if (usableFactors.length === 0 || alignedWindowDates.length < MIN_PRICE_HISTORY) {
     return {
       asOfDate: allDates[allDates.length - 1] ?? new Date().toISOString().slice(0, 10),
@@ -356,6 +380,13 @@ export async function runPerStockFactors(
       skipped: [],
       zeroFillAudit: { totalImputed: 0, totalCells: 0 },
       gridRollingWindow: GRID_ROLLING_WINDOW,
+      normalization: {
+        config: { rollingWindow: 252, minObservations: 60, winsorSigma: 5, targetAnnualVol: 0.1 },
+        ambiguousFactors: [],
+        insufficientObservationsByFactor: {},
+        totalRowsDroppedForNormalization: 0,
+      },
+      factorDataStale,
     };
   }
 
@@ -365,11 +396,22 @@ export async function runPerStockFactors(
     const day = factorByDate.get(d)!;
     return usableFactors.map((c) => day[c] ?? 0);
   });
+  const matrixNorm = normalizeFactorRows(
+    factorMatrix,
+    usableFactors.map((code) => ({ code, inputType: getFactorInputType(code) })),
+    {
+      rollingWindow: 252,
+      minObservations: 60,
+      winsorSigma: 5,
+      targetAnnualVol: 0.1,
+    },
+  );
   const rfWindow: number[] = alignedWindowDates.map((d) => rfByDate.get(d) ?? 0);
 
-  const factorSeriesColsFull = usableFactors.map((_, fi) =>
-    factorMatrix.map((row) => row[fi]!),
+  const fullNormRows = matrixNorm.normalizedRows.filter(
+    (row): row is number[] => row.every((v) => v != null && Number.isFinite(v)),
   );
+  const factorSeriesColsFull = usableFactors.map((_, fi) => fullNormRows.map((row) => row[fi]!));
   const covMatrixFullWindow = factorCovarianceMatrix(factorSeriesColsFull, null, true);
   const minObs = minObservations(usableFactors.length);
 
@@ -398,6 +440,13 @@ export async function runPerStockFactors(
       skipped: [],
       zeroFillAudit: { totalImputed: 0, totalCells: 0 },
       gridRollingWindow: GRID_ROLLING_WINDOW,
+      normalization: {
+        config: { rollingWindow: 252, minObservations: 60, winsorSigma: 5, targetAnnualVol: 0.1 },
+        ambiguousFactors: [],
+        insufficientObservationsByFactor: {},
+        totalRowsDroppedForNormalization: 0,
+      },
+      factorDataStale,
     };
   }
 
@@ -486,8 +535,32 @@ export async function runPerStockFactors(
       continue;
     }
 
-    const y = aligned.map((a) => a.excessReturn);
-    const x = aligned.map((a) => a.factorRow);
+    const yRaw = aligned.map((a) => a.excessReturn);
+    const xRaw = aligned.map((a) => a.factorRow);
+    const alignedNorm = normalizeFactorRows(
+      xRaw,
+      usableFactors.map((code) => ({ code, inputType: getFactorInputType(code) })),
+      {
+        rollingWindow: 252,
+        minObservations: 60,
+        winsorSigma: 5,
+        targetAnnualVol: 0.1,
+      },
+    );
+    const y: number[] = [];
+    const x: number[][] = [];
+    const xRawKept: number[][] = [];
+    for (let i = 0; i < yRaw.length; i++) {
+      const row = alignedNorm.normalizedRows[i];
+      if (!row || row.some((v) => v == null || !Number.isFinite(v))) continue;
+      y.push(yRaw[i]!);
+      x.push(row as number[]);
+      xRawKept.push(xRaw[i]!);
+    }
+    if (y.length < minObs) {
+      skipped.push({ ticker, reason: "INSUFFICIENT_NORMALIZED_HISTORY" });
+      continue;
+    }
     const fit: RegressionFit = multivariateOls(y, x);
 
     // Strict drop-row: zero-fill is now structurally impossible.
@@ -533,14 +606,14 @@ export async function runPerStockFactors(
       covMatrixFullWindow,
       idioDailyVar,
       usableFactors,
-      alignedWindowDates.length,
+      fullNormRows.length,
     );
 
     // Cumulative additive factor returns over the stock's aligned window
     // (Σ r_t — matches the rolling-additive series displayed in the chart).
     const factorCumReturnsAdditive: number[] = usableFactors.map((_, fi) => {
       let s = 0;
-      for (const row of x) s += row[fi] ?? 0;
+      for (const row of xRawKept) s += row[fi] ?? 0;
       return s;
     });
 
@@ -584,8 +657,8 @@ export async function runPerStockFactors(
     let rollingAlphaPostBurnSum: number | null = null;
     let rollingResidualPostBurnSum: number | null = null;
     let rollingObservationsPostBurn = 0;
-    if (aligned.length >= GRID_ROLLING_WINDOW + 1) {
-      const dummyDates = aligned.map((_, i) => String(i));
+    if (y.length >= GRID_ROLLING_WINDOW + 1) {
+      const dummyDates = y.map((_, i) => String(i));
       const rolling = rollingMultivariateOls(dummyDates, y, x, GRID_ROLLING_WINDOW);
       let aSum = 0;
       let eSum = 0;
@@ -659,6 +732,8 @@ export async function runPerStockFactors(
     skipped,
     zeroFillAudit: { totalImputed, totalCells },
     gridRollingWindow: GRID_ROLLING_WINDOW,
+    normalization: matrixNorm.diagnostics,
+    factorDataStale,
   };
 }
 
