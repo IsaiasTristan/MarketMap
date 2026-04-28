@@ -1,5 +1,4 @@
 import type { PrismaClient } from "@prisma/client";
-import { Decimal } from "@prisma/client/runtime/library";
 import type { DateClose } from "@/domain/calculations/alignment";
 import {
   dailyReturnVectorsFromMatrix,
@@ -11,7 +10,6 @@ import {
   annualizedReturnFromPortDaily,
   portfolioDailyReturnSeries,
   portfolioSharpe,
-  sumWeights,
 } from "@/domain/calculations/portfolio";
 import { riskFreeAnnual } from "@/infrastructure/config/env";
 
@@ -57,14 +55,14 @@ async function loadBenchmarkSeriesDb(
 export async function listPortfolios(db: PrismaClient) {
   return db.portfolio.findMany({
     orderBy: { updatedAt: "desc" },
-    include: { _count: { select: { holdings: true } } },
+    include: { _count: { select: { positions: true } } },
   });
 }
 
 export async function getPortfolio(db: PrismaClient, id: string) {
   return db.portfolio.findUnique({
     where: { id },
-    include: { holdings: { include: { security: true } } },
+    include: { positions: { include: { security: true } } },
   });
 }
 
@@ -80,38 +78,78 @@ export async function deletePortfolio(db: PrismaClient, id: string) {
   await db.portfolio.delete({ where: { id } });
 }
 
-export async function replaceHoldings(
+// ─── Weight derivation ──────────────────────────────────────────────────
+//
+// Single source of truth for portfolio weights. Reads PortfolioPosition rows
+// (the canonical user input: ticker + shares + isShort), pulls the latest
+// available price for each security, and derives:
+//   • grossWeight  = |shares × price| / Σ |shares × price|
+//   • signedWeight = (isShort ? -1 : +1) × grossWeight
+//
+// gross weights always sum to 1 (used for HHI / sector concentration);
+// signed weights net to (longs − shorts) ∈ [-1, +1] and feed every
+// portfolio-level analytic (returns, factor regression, P&L) so a short
+// position correctly subtracts exposure / inverts daily P&L.
+
+export interface PortfolioWeight {
+  positionId: string;
+  securityId: string;
+  ticker: string;
+  name: string;
+  shares: number;
+  isShort: boolean;
+  lastPrice: number;
+  marketValue: number;
+  grossWeight: number;
+  signedWeight: number;
+  sector: string | null;
+}
+
+export async function loadPortfolioWeights(
   db: PrismaClient,
-  portfolioId: string,
-  holdings: {
-    ticker: string;
-    weight: number;
-    shares?: number | null;
-    entryDate?: string | null;
-    sector?: string | null;
-  }[]
-): Promise<void> {
-  const wsum = sumWeights(holdings.map((h) => h.weight));
-  if (Math.abs(wsum - 1) > 0.001) {
-    throw new Error(`Weights must sum to 1 (got ${wsum.toFixed(4)})`);
-  }
-  await db.$transaction(async (tx) => {
-    await tx.portfolioHolding.deleteMany({ where: { portfolioId } });
-    for (const h of holdings) {
-      const t = h.ticker.trim().toUpperCase();
-      const sec = await tx.security.findUnique({ where: { ticker: t } });
-      if (!sec) throw new Error(`Unknown ticker: ${t}`);
-      await tx.portfolioHolding.create({
-        data: {
-          portfolioId,
-          securityId: sec.id,
-          weight: new Decimal(h.weight),
-          shares: h.shares != null ? new Decimal(h.shares) : null,
-          entryDate: h.entryDate ? new Date(h.entryDate) : null,
-          sector: h.sector ?? null,
-        },
-      });
-    }
+  portfolioId: string
+): Promise<PortfolioWeight[]> {
+  const positions = await db.portfolioPosition.findMany({
+    where: { portfolioId },
+    include: { security: true },
+  });
+  if (!positions.length) return [];
+
+  const lastPrices = await Promise.all(
+    positions.map((p) =>
+      db.priceHistory.findFirst({
+        where: { securityId: p.securityId },
+        orderBy: { tradeDate: "desc" },
+        select: { adjClose: true },
+      })
+    )
+  );
+
+  const rows = positions.map((p, i) => {
+    const lastPrice = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0;
+    const shares = Number(p.shares);
+    return {
+      positionId: p.id,
+      securityId: p.securityId,
+      ticker: p.security.ticker,
+      name: p.security.name,
+      shares,
+      isShort: p.isShort,
+      lastPrice,
+      // Always positive — gross capital allocated to this name.
+      marketValue: Math.abs(shares * lastPrice),
+      sector: p.sector ?? p.security.sector ?? null,
+    };
+  });
+
+  const totalGross = rows.reduce((s, r) => s + r.marketValue, 0);
+  return rows.map((r) => {
+    const gross = totalGross > 0 ? r.marketValue / totalGross : 0;
+    return {
+      ...r,
+      grossWeight: gross,
+      signedWeight: (r.isShort ? -1 : 1) * gross,
+    };
   });
 }
 
@@ -140,13 +178,15 @@ export async function computePortfolioAnalytics(
     benchmarkSharpe: null as number | null,
   });
 
-  const p = await getPortfolio(db, portfolioId);
-  if (!p || p.holdings.length === 0) return empty();
+  const weighted = await loadPortfolioWeights(db, portfolioId);
+  if (weighted.length === 0) return empty();
 
-  const weights = p.holdings.map((h) => dec(h.weight));
+  // Use signed weights so a short position contributes -return to the
+  // portfolio's daily series.
+  const signedWeights = weighted.map((w) => w.signedWeight);
   const holdingsSeries: DateClose[][] = [];
-  for (const h of p.holdings) {
-    holdingsSeries.push(await loadPrices(db, h.securityId));
+  for (const w of weighted) {
+    holdingsSeries.push(await loadPrices(db, w.securityId));
   }
 
   const benchSeries = await loadBenchmarkSeriesDb(db, benchmarkCode);
@@ -161,7 +201,7 @@ export async function computePortfolioAnalytics(
   const n = Math.min(holdingDaily.length, benchDaily.length);
   const hd = holdingDaily.slice(-n);
   const bd = benchDaily.slice(-n);
-  const portDaily = portfolioDailyReturnSeries(weights, hd);
+  const portDaily = portfolioDailyReturnSeries(signedWeights, hd);
   const benchSlice = bd.slice(-portDaily.length);
   const rf = riskFreeAnnual();
 

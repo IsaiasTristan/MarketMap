@@ -108,21 +108,35 @@ async function getPortfolioReturnSeries(
   portfolioId: string,
 ): Promise<{ dates: string[]; navSeries: number[] }> {
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId, closedAt: null },
+    where: { portfolioId },
     include: { security: true },
   });
 
   if (!positions.length) return { dates: [], navSeries: [] };
 
-  // Weights by cost basis — used regardless of data source
-  const totalCost = positions.reduce(
-    (s, p) => s + Number(p.shares) * Number(p.entryPrice),
-    0,
+  // Market-value weights at the latest available stored price, with
+  // long/short sign applied. The constant-mix backtest below replays the
+  // current portfolio composition over history.
+  const lastPriceRows = await Promise.all(
+    positions.map((p) =>
+      db.priceHistory.findFirst({
+        where: { securityId: p.securityId },
+        orderBy: { tradeDate: "desc" },
+        select: { adjClose: true },
+      }),
+    ),
   );
-  const weights = positions.map((p) => ({
+  const grossValues = positions.map((p, i) => {
+    const price = lastPriceRows[i] ? Number(lastPriceRows[i]!.adjClose) : 0;
+    return Math.abs(Number(p.shares) * price);
+  });
+  const totalGross = grossValues.reduce((s, v) => s + v, 0);
+  const weights = positions.map((p, i) => ({
     ticker: p.security.ticker,
     secId: p.securityId,
-    weight: totalCost > 0 ? (Number(p.shares) * Number(p.entryPrice)) / totalCost : 0,
+    weight:
+      (p.isShort ? -1 : 1) *
+      (totalGross > 0 ? grossValues[i]! / totalGross : 0),
   }));
 
   const secIds = weights.map((w) => w.secId);

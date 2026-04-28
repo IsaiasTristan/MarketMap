@@ -101,7 +101,6 @@ model Security {
 
   priceHistory       PriceHistory[]
   universeRows       UniverseConstituent[]
-  portfolioHoldings  PortfolioHolding[]
   portfolioPositions PortfolioPosition[]
   factorSnapshots    FactorExposureSnapshot[]
   fundamentals       SecurityFundamentals[]
@@ -154,49 +153,29 @@ model Portfolio {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  holdings           PortfolioHolding[]
   positions          PortfolioPosition[]
   factorSnapshots    FactorExposureSnapshot[]
   stressRuns         StressScenarioRun[]
 }
 
-model PortfolioHolding {
-  id          String    @id @default(cuid())
-  portfolioId String
-  securityId  String
-  weight      Decimal   @db.Decimal(10, 8) // 0–1 in application; enforce in service
-  shares      Decimal?  @db.Decimal(20, 8) // optional number of shares held
-  entryDate   DateTime? @db.Date           // optional position entry date
-  sector      String?                      // optional sector label override
-
-  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
-  security  Security  @relation(fields: [securityId], references: [id], onDelete: Restrict)
-
-  @@unique([portfolioId, securityId])
-}
-
-/// Lot-based position (shares + entry price) for portfolio analysis.
-/// Closed positions (closedAt set) drive trade statistics.
+/// Single source of truth for a portfolio's holdings.
+/// User supplies ticker + shares + L/S direction; weights are derived at
+/// read time from shares × current price (gross + signed) so they reflect
+/// today's allocation rather than a frozen snapshot.
 model PortfolioPosition {
   id          String   @id @default(cuid())
   portfolioId String
   securityId  String
   shares      Decimal  @db.Decimal(20, 8)
-  entryPrice  Decimal  @db.Decimal(20, 8)
-  entryDate   DateTime @db.Date
-  sector      String?  // override; falls back to Security.sector
-  currency    String?  @default("USD")
-  notes       String?
-  // null = open; set on close
-  closedAt    DateTime? @db.Date
-  exitPrice   Decimal?  @db.Decimal(20, 8)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  isShort     Boolean  @default(false)
+  sector      String?  // optional override; falls back to Security.sector
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
   security  Security  @relation(fields: [securityId], references: [id], onDelete: Restrict)
 
-  @@index([portfolioId, closedAt])
+  @@unique([portfolioId, securityId])
   @@index([securityId])
 }
 

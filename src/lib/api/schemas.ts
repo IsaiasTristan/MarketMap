@@ -112,16 +112,15 @@ export const marketMapQuery = z.object({
   subTheme: z.string().optional(),
 });
 
-export const portfolioHoldingRow = z.object({
+export const portfolioPositionRow = z.object({
   ticker: z.string().min(1),
-  weight: z.number().min(0).max(1),
-  shares: z.number().positive().nullable().optional(),
-  entryDate: z.string().nullable().optional(), // ISO date "YYYY-MM-DD" or null
+  shares: z.number().positive(),
+  isShort: z.boolean().optional().default(false),
   sector: z.string().nullable().optional(),
 });
 
-export const portfolioHoldingsBody = z.object({
-  holdings: z.array(portfolioHoldingRow).min(1),
+export const portfolioPositionsBody = z.object({
+  positions: z.array(portfolioPositionRow).min(1),
 });
 
 export const renamePortfolioBody = z.object({

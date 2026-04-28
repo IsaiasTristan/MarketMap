@@ -3,11 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-type Holding = {
+type Position = {
   ticker: string;
-  weight: number;
-  shares: string;     // stored as string for free-form input
-  entryDate: string;  // "YYYY-MM-DD" or ""
+  shares: string; // free-form input; parsed on save
+  isShort: boolean;
   sector: string;
 };
 
@@ -20,17 +19,8 @@ type Analytics = {
   benchmarkSharpe: number | null;
 };
 
-function makeEmptyRow(): Holding {
-  return { ticker: "", weight: 0, shares: "", entryDate: "", sector: "" };
-}
-
-function autoWeightsFromShares(lines: Holding[]): Holding[] {
-  const totShares = lines.reduce((s, h) => s + (parseFloat(h.shares) || 0), 0);
-  if (totShares === 0) return lines;
-  return lines.map((h) => {
-    const sh = parseFloat(h.shares) || 0;
-    return { ...h, weight: parseFloat((sh / totShares).toFixed(6)) };
-  });
+function makeEmptyRow(): Position {
+  return { ticker: "", shares: "", isShort: false, sector: "" };
 }
 
 export function PortfolioDetailClient({ id }: { id: string }) {
@@ -40,7 +30,7 @@ export function PortfolioDetailClient({ id }: { id: string }) {
   const [draftName, setDraftName] = useState("");
   const nameInputRef = useRef<HTMLInputElement>(null);
 
-  const [lines, setLines] = useState<Holding[]>([makeEmptyRow()]);
+  const [lines, setLines] = useState<Position[]>([makeEmptyRow()]);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [bench, setBench] = useState<"SP500" | "NASDAQ" | "DOW">("SP500");
@@ -56,20 +46,18 @@ export function PortfolioDetailClient({ id }: { id: string }) {
     if (!p) return;
     setName(p.name);
     setDraftName(p.name);
-    if (p.holdings?.length) {
+    if (p.positions?.length) {
       setLines(
-        p.holdings.map(
+        p.positions.map(
           (h: {
             security: { ticker: string };
-            weight: { toString(): string };
-            shares: { toString(): string } | null;
-            entryDate: string | null;
+            shares: { toString(): string };
+            isShort: boolean;
             sector: string | null;
           }) => ({
             ticker: h.security.ticker,
-            weight: Number(h.weight.toString()),
-            shares: h.shares ? h.shares.toString() : "",
-            entryDate: h.entryDate ? h.entryDate.slice(0, 10) : "",
+            shares: h.shares.toString(),
+            isShort: !!h.isShort,
             sector: h.sector ?? "",
           })
         )
@@ -97,14 +85,15 @@ export function PortfolioDetailClient({ id }: { id: string }) {
     }
   }, [editingName]);
 
-  // ── Holdings helpers ────────────────────────────────────────────────────────
+  // ── Position helpers ────────────────────────────────────────────────────
 
-  const updateLine = (i: number, field: keyof Holding, v: string) => {
+  const updateLine = (i: number, field: keyof Position, v: string | boolean) => {
     setLines((prev) => {
       const next = [...prev];
       const row = { ...next[i]! };
-      if (field === "ticker") row.ticker = v.toUpperCase();
-      else (row as Record<string, string | number>)[field] = v;
+      if (field === "ticker" && typeof v === "string") row.ticker = v.toUpperCase();
+      else if (field === "isShort" && typeof v === "boolean") row.isShort = v;
+      else if (typeof v === "string") (row as Record<string, string | boolean>)[field] = v;
       next[i] = row;
       return next;
     });
@@ -115,25 +104,30 @@ export function PortfolioDetailClient({ id }: { id: string }) {
   const removeLine = (i: number) =>
     setLines((p) => p.filter((_, idx) => idx !== i));
 
-  const rebalanceFromShares = () =>
-    setLines((prev) => autoWeightsFromShares(prev));
+  // ── Save positions ──────────────────────────────────────────────────────
 
-  // ── Save holdings ───────────────────────────────────────────────────────────
-
-  const saveHoldings = async () => {
+  const savePositions = async () => {
     setMsg(null);
     setSaving(true);
-    const payload = lines.map((h) => ({
-      ticker: h.ticker,
-      weight: h.weight,
-      shares: h.shares ? parseFloat(h.shares) : null,
-      entryDate: h.entryDate || null,
-      sector: h.sector || null,
-    }));
+    const cleaned = lines
+      .map((p) => ({
+        ticker: p.ticker.trim().toUpperCase(),
+        shares: parseFloat(p.shares),
+        isShort: p.isShort,
+        sector: p.sector.trim() || null,
+      }))
+      .filter((p) => p.ticker && Number.isFinite(p.shares) && p.shares > 0);
+
+    if (cleaned.length === 0) {
+      setSaving(false);
+      setMsg({ text: "Add at least one position with a ticker and positive share count.", ok: false });
+      return;
+    }
+
     const res = await fetch(`/api/portfolios/${id}/holdings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ holdings: payload }),
+      body: JSON.stringify({ positions: cleaned }),
     });
     const j = await res.json();
     setSaving(false);
@@ -141,11 +135,11 @@ export function PortfolioDetailClient({ id }: { id: string }) {
       setMsg({ text: j.error ?? JSON.stringify(j.errors ?? j), ok: false });
       return;
     }
-    setMsg({ text: "Holdings saved.", ok: true });
+    setMsg({ text: "Positions saved.", ok: true });
     void loadAnalytics();
   };
 
-  // ── Rename ──────────────────────────────────────────────────────────────────
+  // ── Rename ──────────────────────────────────────────────────────────────
 
   const saveName = async () => {
     if (!draftName.trim() || draftName === name) {
@@ -159,14 +153,11 @@ export function PortfolioDetailClient({ id }: { id: string }) {
     });
     if (res.ok) {
       setName(draftName.trim());
-      setMsg({ text: "Portfolio renamed.", ok: true });
-    } else {
-      setMsg({ text: "Rename failed.", ok: false });
+      setEditingName(false);
     }
-    setEditingName(false);
   };
 
-  // ── Delete ──────────────────────────────────────────────────────────────────
+  // ── Delete ──────────────────────────────────────────────────────────────
 
   const doDelete = async () => {
     setDeleting(true);
@@ -180,15 +171,10 @@ export function PortfolioDetailClient({ id }: { id: string }) {
     }
   };
 
-  // ── Derived ─────────────────────────────────────────────────────────────────
-
-  const weightSum = lines.reduce((s, h) => s + (h.weight || 0), 0);
-  const weightOk = Math.abs(weightSum - 1) < 0.001;
-
   return (
     <div style={{ maxWidth: 900, padding: "1.5rem", fontFamily: "system-ui, sans-serif" }}>
 
-      {/* ── Title row ──────────────────────────────────────────────────────── */}
+      {/* ── Title row ──────────────────────────────────────────────────── */}
       <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.25rem" }}>
         {editingName ? (
           <>
@@ -220,13 +206,8 @@ export function PortfolioDetailClient({ id }: { id: string }) {
 
         <div style={{ flex: 1 }} />
 
-        {/* Delete */}
         {!confirmDelete ? (
-          <button
-            type="button"
-            onClick={() => setConfirmDelete(true)}
-            style={btnDanger}
-          >
+          <button type="button" onClick={() => setConfirmDelete(true)} style={btnDanger}>
             Delete portfolio
           </button>
         ) : (
@@ -247,33 +228,22 @@ export function PortfolioDetailClient({ id }: { id: string }) {
         )}
       </div>
 
-      {/* ── Holdings ───────────────────────────────────────────────────────── */}
-      <h2 style={{ fontSize: "1.05rem", marginTop: "1.5rem", marginBottom: "0.25rem" }}>Holdings</h2>
-
-      <div style={{ display: "flex", gap: "0.75rem", marginBottom: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
-        <span style={{ fontSize: "0.82rem", color: weightOk ? "#276749" : "#9b2c2c" }}>
-          Weight sum: <strong>{weightSum.toFixed(4)}</strong>
-          {weightOk ? " ✓" : " (must equal 1.0)"}
-        </span>
-        <button
-          type="button"
-          onClick={rebalanceFromShares}
-          style={{ ...btnGhost, fontSize: "0.8rem", padding: "0.2rem 0.5rem" }}
-          title="Auto-calculate weights from share counts (proportional)"
-        >
-          Auto-weight from shares
-        </button>
-      </div>
+      {/* ── Positions ──────────────────────────────────────────────────── */}
+      <h2 style={{ fontSize: "1.05rem", marginTop: "1.5rem", marginBottom: "0.25rem" }}>Positions</h2>
+      <p style={{ fontSize: "0.78rem", color: "#5a6779", margin: "0 0 0.75rem" }}>
+        Enter ticker, share count, and direction (L = long, S = short). Weights
+        are derived from current market value (shares × latest price); long/short
+        sign is applied automatically across all portfolio analytics.
+      </p>
 
       <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 640 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 560 }}>
           <thead>
             <tr style={{ background: "#f0f2f6" }}>
               <th style={th}>Ticker</th>
               <th style={th}>Shares</th>
-              <th style={th}>Weight (0–1)</th>
-              <th style={th}>Entry Date</th>
-              <th style={th}>Sector</th>
+              <th style={th}>L / S</th>
+              <th style={th}>Sector (optional)</th>
               <th style={th} />
             </tr>
           </thead>
@@ -285,7 +255,7 @@ export function PortfolioDetailClient({ id }: { id: string }) {
                     value={row.ticker}
                     onChange={(e) => updateLine(i, "ticker", e.target.value)}
                     placeholder="AAPL"
-                    style={{ ...inp, width: 80 }}
+                    style={{ ...inp, width: 90 }}
                   />
                 </td>
                 <td style={td}>
@@ -296,35 +266,26 @@ export function PortfolioDetailClient({ id }: { id: string }) {
                     value={row.shares}
                     onChange={(e) => updateLine(i, "shares", e.target.value)}
                     placeholder="100"
-                    style={{ ...inp, width: 90 }}
+                    style={{ ...inp, width: 100 }}
                   />
                 </td>
                 <td style={td}>
-                  <input
-                    type="number"
-                    min="0"
-                    max="1"
-                    step="0.0001"
-                    value={row.weight}
-                    onChange={(e) => updateLine(i, "weight", e.target.value)}
-                    placeholder="0.25"
-                    style={{ ...inp, width: 80 }}
-                  />
-                </td>
-                <td style={td}>
-                  <input
-                    type="date"
-                    value={row.entryDate}
-                    onChange={(e) => updateLine(i, "entryDate", e.target.value)}
-                    style={{ ...inp, width: 140 }}
-                  />
+                  <select
+                    value={row.isShort ? "S" : "L"}
+                    onChange={(e) => updateLine(i, "isShort", e.target.value === "S")}
+                    style={{ ...inp, width: 64, background: row.isShort ? "#fff5f5" : "#fff" }}
+                    title={row.isShort ? "Short — gains when price drops" : "Long — gains when price rises"}
+                  >
+                    <option value="L">L</option>
+                    <option value="S">S</option>
+                  </select>
                 </td>
                 <td style={td}>
                   <input
                     value={row.sector}
                     onChange={(e) => updateLine(i, "sector", e.target.value)}
                     placeholder="Technology"
-                    style={{ ...inp, width: 130 }}
+                    style={{ ...inp, width: 150 }}
                   />
                 </td>
                 <td style={td}>
@@ -348,11 +309,11 @@ export function PortfolioDetailClient({ id }: { id: string }) {
         </button>
         <button
           type="button"
-          onClick={() => void saveHoldings()}
-          disabled={saving || !weightOk}
-          style={{ ...btn, opacity: saving || !weightOk ? 0.6 : 1 }}
+          onClick={() => void savePositions()}
+          disabled={saving}
+          style={{ ...btn, opacity: saving ? 0.6 : 1 }}
         >
-          {saving ? "Saving…" : "Save holdings"}
+          {saving ? "Saving…" : "Save positions"}
         </button>
       </div>
 
@@ -362,7 +323,7 @@ export function PortfolioDetailClient({ id }: { id: string }) {
         </p>
       )}
 
-      {/* ── Analytics ──────────────────────────────────────────────────────── */}
+      {/* ── Analytics ──────────────────────────────────────────────────── */}
       <h2 style={{ fontSize: "1.05rem", marginTop: "2rem" }}>Analytics</h2>
       <label style={{ fontSize: "0.9rem" }}>
         Benchmark:{" "}

@@ -34,28 +34,41 @@ import type {
 // Minimum common prices required across all portfolio positions
 const MIN_PRICE_HISTORY = 30;
 
-/** Load the aligned portfolio return series from open positions. */
+/** Load the aligned portfolio return series. Weights derive from
+ *  shares × latest price; long/short sign is applied so a short position
+ *  contributes -return to the portfolio's daily series. */
 async function loadPortfolioReturns(portfolioId: string, from?: string, to?: string) {
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId, closedAt: null },
+    where: { portfolioId },
     include: { security: true },
   });
   if (!positions.length) return null;
 
   const secIds = positions.map((p) => p.securityId);
-  const priceData = await Promise.all(
-    secIds.map((id) =>
-      db.priceHistory.findMany({
-        where: {
-          securityId: id,
-          ...(from ? { tradeDate: { gte: new Date(from) } } : {}),
-          ...(to ? { tradeDate: { lte: new Date(to) } } : {}),
-        },
-        orderBy: { tradeDate: "asc" },
-        select: { adjClose: true, tradeDate: true },
-      }),
+  const [priceData, lastPrices] = await Promise.all([
+    Promise.all(
+      secIds.map((id) =>
+        db.priceHistory.findMany({
+          where: {
+            securityId: id,
+            ...(from ? { tradeDate: { gte: new Date(from) } } : {}),
+            ...(to ? { tradeDate: { lte: new Date(to) } } : {}),
+          },
+          orderBy: { tradeDate: "asc" },
+          select: { adjClose: true, tradeDate: true },
+        }),
+      ),
     ),
-  );
+    Promise.all(
+      secIds.map((id) =>
+        db.priceHistory.findFirst({
+          where: { securityId: id },
+          orderBy: { tradeDate: "desc" },
+          select: { adjClose: true },
+        }),
+      ),
+    ),
+  ]);
 
   // Build date→price maps per security
   const priceMaps = priceData.map((rows) =>
@@ -72,12 +85,22 @@ async function loadPortfolioReturns(portfolioId: string, from?: string, to?: str
 
   if (commonDates.length < MIN_PRICE_HISTORY) return null;
 
-  // Cost-based weights (stable, avoids look-ahead from market values)
-  const costs = positions.map((p) => Number(p.shares) * Number(p.entryPrice));
-  const totalCost = costs.reduce((s, c) => s + c, 0);
-  const weights = costs.map((c) => (totalCost > 0 ? c / totalCost : 0));
+  // Market-value weights at the latest available price, with long/short
+  // sign applied. This represents "given my portfolio as it stands today,
+  // what is its factor exposure?" — the natural anchor when there is no
+  // entry-price model.
+  const grossValues = positions.map((p, i) => {
+    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0;
+    return Math.abs(Number(p.shares) * price);
+  });
+  const totalGross = grossValues.reduce((s, c) => s + c, 0);
+  const weights = positions.map((p, i) => {
+    const gross = totalGross > 0 ? grossValues[i]! / totalGross : 0;
+    return (p.isShort ? -1 : 1) * gross;
+  });
 
-  // Compute daily portfolio returns
+  // Compute daily portfolio returns using signed weights — shorts subtract
+  // from the daily P&L when the underlying rises.
   const portReturns: number[] = [];
   for (let i = 1; i < commonDates.length; i++) {
     let r = 0;
@@ -96,6 +119,7 @@ async function loadPortfolioReturns(portfolioId: string, from?: string, to?: str
       ticker: p.security.ticker,
       securityId: p.securityId,
       weight: weights[i]!,
+      isShort: p.isShort,
       sector: p.sector ?? p.security.sector ?? "Other",
       subTheme: "Other", // will be enriched from universe if needed
     })),

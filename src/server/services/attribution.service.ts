@@ -133,28 +133,14 @@ export async function computeFactorAttribution(
   };
 }
 
-/** Trade statistics from closed positions — unchanged. */
-export async function computeTradeStatistics(portfolioId: string) {
-  const closed = await db.portfolioPosition.findMany({
-    where: { portfolioId, closedAt: { not: null } },
-    select: {
-      entryDate: true,
-      closedAt: true,
-      entryPrice: true,
-      exitPrice: true,
-      shares: true,
-    },
-  });
-
-  const trades = closed
-    .filter((t) => t.closedAt && t.exitPrice != null)
-    .map((t) => ({
-      entryDate: t.entryDate.toISOString().slice(0, 10),
-      exitDate: t.closedAt!.toISOString().slice(0, 10),
-      entryPrice: Number(t.entryPrice),
-      exitPrice: Number(t.exitPrice!),
-      shares: Number(t.shares),
-    }));
-
-  return computeTradeStats(trades);
+/**
+ * Trade statistics from closed positions.
+ *
+ * The simplified position model (2026-04-26) tracks only the user's current
+ * portfolio (ticker + shares + L/S) — there are no entry/exit prices or
+ * close events to compute realised-trade win rates against. Returns an
+ * empty stats object so consumers don't crash.
+ */
+export async function computeTradeStatistics(_portfolioId: string) {
+  return computeTradeStats([]);
 }

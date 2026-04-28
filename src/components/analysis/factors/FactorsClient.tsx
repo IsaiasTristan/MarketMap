@@ -5,7 +5,6 @@ import { useAnalysisStore } from "@/store/analysis";
 import { MODEL_PRESET_NAMES as VISIBLE_MODELS } from "@/lib/factors/definitions/model-presets";
 import { ControlsBar } from "./panels/ControlsBar";
 import { HeaderSummary } from "./panels/HeaderSummary";
-import { ExposurePanel } from "./panels/ExposurePanel";
 import { TimeSeriesPanel } from "./panels/TimeSeriesPanel";
 import { DriversPanel } from "./panels/DriversPanel";
 import { ScenariosPanel } from "./panels/ScenariosPanel";
@@ -16,9 +15,16 @@ import { PortfolioPerStockToggle } from "./panels/PortfolioPerStockToggle";
 import { PerStockView } from "./panels/PerStockView";
 import { CorrelationsView } from "./panels/CorrelationsView";
 import { PortfolioTotalsPanel } from "./panels/PortfolioTotalsPanel";
+import { PortfolioFactorGrid } from "./panels/PortfolioFactorGrid";
+import { FloatingPortfolioDetail } from "./panels/FloatingPortfolioDetail";
+import { FloatingPerStockDetail } from "./panels/FloatingPerStockDetail";
+import { MetricToggle } from "./shared/MetricToggle";
+import { SectorSubThemeFilter } from "./shared/SectorSubThemeFilter";
 import { BloombergTabStrip } from "@/components/analysis/BloombergTabStrip";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
 import type { FactorExposureSnapshot, AttributionResult, DriversResult, RiskDecomposition, FactorAlert } from "@/types/factors";
+import type { PerStockResult } from "@/server/services/factor-per-stock.service";
+import type { PortfolioWeight } from "@/server/services/portfolio.service";
 
 type PortfolioTab = "exposure" | "attribution" | "risk" | "drivers" | "scenarios" | "market" | "alerts";
 
@@ -44,13 +50,23 @@ export function FactorsClient() {
     factorEwHalfLife,
     factorPeriod,
     factorView,
+    factorGridMetric,
+    factorGridSectorFilter,
+    factorGridSubThemeFilter,
+    openFactorDetailPanels,
     setFactorView,
     setFactorModel,
+    setFactorGridMetric,
+    setFactorGridSectorFilter,
+    setFactorGridSubThemeFilter,
+    openFactorDetailPanel,
+    closeFactorDetailPanel,
   } = useAnalysisStore();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<PortfolioTab>("exposure");
   const [driverGroupBy, setDriverGroupBy] = useState<"position" | "sector" | "subTheme">("sector");
   const [pipelineLoading, setPipelineLoading] = useState(false);
+  const [portfolioDetailOpen, setPortfolioDetailOpen] = useState(false);
 
   // Coerce persisted store values that point at a now-hidden model (e.g. a
   // user that previously selected Carhart-4) back to the default MACRO14, so
@@ -115,6 +131,28 @@ export function FactorsClient() {
     enabled: portfolioEnabled && activeTab === "drivers",
     staleTime: 5 * 60_000,
   });
+
+  // Per-stock factor result + portfolio weights (powers the Exposure tab's
+  // heatmap-style grid). Per-stock is cached across the rest of the app —
+  // reusing the same query key so the cache is shared with PerStockView.
+  const { data: perStockData } = useQuery<PerStockResult>({
+    queryKey: ["factor-per-stock", factorModel, factorWindow],
+    queryFn: () =>
+      fetch(`/api/analysis/factors/per-stock?model=${factorModel}&window=${factorWindow}`).then(
+        (r) => r.json(),
+      ),
+    enabled: portfolioEnabled && activeTab === "exposure",
+    staleTime: 5 * 60_000,
+  });
+
+  const { data: portfolioWeightsResp } = useQuery<{ weights: PortfolioWeight[] }>({
+    queryKey: ["portfolio-weights", activePortfolioId],
+    queryFn: () =>
+      fetch(`/api/analysis/portfolio/weights?portfolioId=${activePortfolioId}`).then((r) => r.json()),
+    enabled: portfolioEnabled,
+    staleTime: 60_000,
+  });
+  const portfolioWeights: PortfolioWeight[] = portfolioWeightsResp?.weights ?? [];
 
   // Alerts (tab)
   const { data: alertsRaw } = useQuery<FactorAlert[]>({
@@ -245,10 +283,20 @@ export function FactorsClient() {
 
           <div>
             {activeTab === "exposure" && (
-              <ExposurePanel
+              <PortfolioExposureGridSection
+                perStock={perStockData}
+                holdings={portfolioWeights}
                 exposure={exposure && !("error" in (exposure as unknown as Record<string, unknown>)) ? (exposure as FactorExposureSnapshot) : null}
-                attribution={attribution}
-                selectedPeriod={factorPeriod}
+                metric={factorGridMetric}
+                onMetricChange={setFactorGridMetric}
+                sectorFilter={factorGridSectorFilter}
+                subThemeFilter={factorGridSubThemeFilter}
+                onSectorFilterChange={setFactorGridSectorFilter}
+                onSubThemeFilterChange={setFactorGridSubThemeFilter}
+                openTickers={openFactorDetailPanels.map((p) => p.ticker)}
+                onOpenTicker={openFactorDetailPanel}
+                onCloseTicker={closeFactorDetailPanel}
+                onOpenPortfolioDetail={() => setPortfolioDetailOpen(true)}
               />
             )}
             {activeTab === "attribution" && (
@@ -269,8 +317,158 @@ export function FactorsClient() {
             {activeTab === "market" && <MarketContextPanel />}
             {activeTab === "alerts" && <AlertsPanel alerts={alerts} />}
           </div>
+
+          {/* Floating per-stock detail panels triggered from the heatmap rows. */}
+          {activeTab === "exposure" && perStockData &&
+            openFactorDetailPanels.map((panel) => (
+              <FloatingPerStockDetail key={panel.ticker} panel={panel} data={perStockData} />
+            ))}
+
+          {/* Floating portfolio-level detail triggered from the Total row. */}
+          {portfolioDetailOpen && (
+            <FloatingPortfolioDetail
+              exposure={exposure && !("error" in (exposure as unknown as Record<string, unknown>)) ? (exposure as FactorExposureSnapshot) : null}
+              attribution={attribution}
+              risk={risk}
+              history={history as Parameters<typeof TimeSeriesPanel>[0]["history"]}
+              selectedPeriod={factorPeriod}
+              onClose={() => setPortfolioDetailOpen(false)}
+            />
+          )}
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Composition shell for the Exposure tab — filter controls + metric toggle
+ * above the heatmap grid. Sector / sub-theme dropdowns are scoped to the
+ * portfolio's holdings only (not the universe), since this view is about
+ * "what the user holds."
+ */
+interface PortfolioExposureGridSectionProps {
+  perStock: PerStockResult | undefined;
+  holdings: PortfolioWeight[];
+  exposure: FactorExposureSnapshot | null;
+  metric: "beta" | "return" | "risk";
+  onMetricChange: (m: "beta" | "return" | "risk") => void;
+  sectorFilter: string | null;
+  subThemeFilter: string | null;
+  onSectorFilterChange: (s: string | null) => void;
+  onSubThemeFilterChange: (s: string | null) => void;
+  openTickers: string[];
+  onOpenTicker: (t: string) => void;
+  onCloseTicker: (t: string) => void;
+  onOpenPortfolioDetail: () => void;
+}
+
+function PortfolioExposureGridSection({
+  perStock,
+  holdings,
+  exposure,
+  metric,
+  onMetricChange,
+  sectorFilter,
+  subThemeFilter,
+  onSectorFilterChange,
+  onSubThemeFilterChange,
+  openTickers,
+  onOpenTicker,
+  onCloseTicker,
+  onOpenPortfolioDetail,
+}: PortfolioExposureGridSectionProps) {
+  // Empty / loading states.
+  if (!perStock) {
+    return <SkeletonCard height={420} />;
+  }
+  if ("error" in (perStock as unknown as Record<string, unknown>)) {
+    return (
+      <div
+        style={{
+          padding: 24,
+          background: "var(--bg-surface)",
+          border: "1px solid var(--bg-border)",
+          color: "var(--text-secondary)",
+          fontSize: 13,
+        }}
+      >
+        Per-stock factor data unavailable. Refresh the factor pipeline to
+        populate it.
+      </div>
+    );
+  }
+
+  // Build dropdown options from PORTFOLIO holdings only — not the full
+  // universe. Per the user's design: only show sectors / sub-themes the
+  // user actually holds.
+  const heldTickers = new Set(holdings.map((h) => h.ticker.toUpperCase()));
+  const heldRows = perStock.rows.filter((r) => heldTickers.has(r.ticker.toUpperCase()));
+  const sectorSet = new Set<string>();
+  const subThemeMap: Record<string, Set<string>> = {};
+  for (const r of heldRows) {
+    sectorSet.add(r.sector);
+    if (!subThemeMap[r.sector]) subThemeMap[r.sector] = new Set();
+    subThemeMap[r.sector]!.add(r.subTheme);
+  }
+  const sectors = [...sectorSet].sort();
+  const subThemesBySector: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(subThemeMap)) subThemesBySector[k] = [...v].sort();
+
+  // Filter holdings (not the per-stock universe) by sector / sub-theme so the
+  // grid only renders rows that match.
+  const matchingHoldings = holdings.filter((h) => {
+    const row = perStock.rows.find((r) => r.ticker.toUpperCase() === h.ticker.toUpperCase());
+    if (!row) return false;
+    if (sectorFilter && row.sector.toLowerCase() !== sectorFilter.toLowerCase()) return false;
+    if (subThemeFilter && row.subTheme.toLowerCase() !== subThemeFilter.toLowerCase()) return false;
+    return true;
+  });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 16,
+          alignItems: "flex-end",
+          flexWrap: "wrap",
+          padding: "10px 14px",
+          background: "var(--bg-surface)",
+          border: "1px solid var(--bg-border)",
+          borderRadius: 2,
+        }}
+      >
+        <SectorSubThemeFilter
+          sectors={sectors}
+          subThemesBySector={subThemesBySector}
+          selectedSector={sectorFilter}
+          selectedSubTheme={subThemeFilter}
+          onSectorChange={onSectorFilterChange}
+          onSubThemeChange={onSubThemeFilterChange}
+        />
+        <div style={{ flex: 1 }} />
+        <MetricToggle value={metric} onChange={onMetricChange} />
+      </div>
+
+      <PortfolioFactorGrid
+        data={perStock}
+        holdings={matchingHoldings}
+        exposure={exposure}
+        metric={metric}
+        openTickers={openTickers}
+        onOpenTicker={onOpenTicker}
+        onCloseTicker={onCloseTicker}
+        onOpenPortfolioDetail={onOpenPortfolioDetail}
+      />
+
+      <div style={{ fontSize: 10, color: "var(--text-muted)", padding: "4px 4px 8px" }}>
+        Showing {matchingHoldings.length} of {holdings.length} holdings ·{" "}
+        {perStock.usableFactors.length} factors usable · regression window{" "}
+        {perStock.windowUsed} trading days · as of {perStock.asOfDate}.
+        Total row aggregates β / return contributions via signed weight (long +,
+        short −); Risk / α / T / Vol / R² come from the portfolio-level OLS.
+      </div>
     </div>
   );
 }

@@ -1,12 +1,15 @@
-﻿/**
- * position.service â€” lot-based portfolio positions for the analysis dashboard.
+/**
+ * position.service — portfolio positions for the analysis dashboard.
+ *
+ * Simplified data model (2026-04-26): users supply only ticker + shares +
+ * long/short direction. Weights are derived at read time from
+ * shares × current price (see loadPortfolioWeights in portfolio.service).
  *
  * Responsibilities:
- *  - CSV upload (papaparse): validate 4 required columns, upsert Security rows,
- *    write PortfolioPosition lots, optionally backfill sector/currency from Yahoo.
+ *  - CSV upload (papaparse): validate ticker / shares / direction, upsert
+ *    Security rows, write PortfolioPosition rows.
  *  - Manual CRUD (add / edit / delete individual positions).
  *  - Demo portfolio seeder.
- *  - Never performs HTTP I/O unless explicitly asked (backfill flag).
  */
 
 import Papa from "papaparse";
@@ -14,16 +17,13 @@ import { prisma as db } from "@/infrastructure/db/client";
 import { fetchYahooFundamentals } from "@/infrastructure/providers/yahoo-fundamentals";
 import { writeAuditLog } from "./audit.service";
 
-// â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Types ────────────────────────────────────────────────────────────────
 
 export interface PositionInput {
   ticker: string;
   shares: number;
-  entryPrice: number;
-  entryDate: string; // ISO YYYY-MM-DD
+  isShort?: boolean;
   sector?: string;
-  currency?: string;
-  notes?: string;
 }
 
 export interface PositionRow {
@@ -31,30 +31,37 @@ export interface PositionRow {
   ticker: string;
   name: string;
   shares: number;
-  entryPrice: number;
-  entryDate: string;
+  isShort: boolean;
   sector: string | null;
-  currency: string | null;
-  notes: string | null;
-  closedAt: string | null;
-  exitPrice: number | null;
 }
 
-// â”€â”€ CSV Parsing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── CSV Parsing ──────────────────────────────────────────────────────────
 
-const REQUIRED_COLS = ["ticker", "shares", "entry_price", "entry_date"];
+const REQUIRED_COLS = ["ticker", "shares"];
 const COL_ALIASES: Record<string, string> = {
   symbol: "ticker",
-  "entry price": "entry_price",
-  "entry date": "entry_date",
-  entryprice: "entry_price",
-  entrydate: "entry_date",
   quantity: "shares",
+  side: "direction",
+  position: "direction",
+  long_short: "direction",
+  "long short": "direction",
+  ls: "direction",
 };
 
 function normalizeHeader(h: string): string {
   const lower = h.toLowerCase().trim().replace(/\s+/g, "_");
   return COL_ALIASES[lower.replace(/_/g, " ")] ?? lower;
+}
+
+/**
+ * Parse a direction cell ("L", "S", "long", "short", "+", "-") into the
+ * isShort flag. Empty / unrecognized → long (default).
+ */
+function parseDirection(raw: string | undefined): boolean {
+  if (!raw) return false;
+  const v = raw.trim().toUpperCase();
+  if (v === "S" || v === "SHORT" || v === "-") return true;
+  return false;
 }
 
 export function parseCsv(csvText: string): {
@@ -88,8 +95,6 @@ export function parseCsv(csvText: string): {
     const row = result.data[i];
     const ticker = row.ticker?.trim().toUpperCase();
     const shares = parseFloat(row.shares);
-    const entryPrice = parseFloat(row.entry_price);
-    const entryDate = row.entry_date?.trim();
 
     if (!ticker) {
       errors.push(`Row ${i + 2}: missing ticker`);
@@ -99,32 +104,19 @@ export function parseCsv(csvText: string): {
       errors.push(`Row ${i + 2} (${ticker}): invalid shares`);
       continue;
     }
-    if (isNaN(entryPrice) || entryPrice <= 0) {
-      errors.push(`Row ${i + 2} (${ticker}): invalid entry_price`);
-      continue;
-    }
-    if (!entryDate || !/^\d{4}-\d{2}-\d{2}$/.test(entryDate)) {
-      errors.push(
-        `Row ${i + 2} (${ticker}): entry_date must be YYYY-MM-DD, got: ${entryDate}`,
-      );
-      continue;
-    }
 
     rows.push({
       ticker,
       shares,
-      entryPrice,
-      entryDate,
+      isShort: parseDirection(row.direction),
       sector: row.sector?.trim() || undefined,
-      currency: row.currency?.trim() || "USD",
-      notes: row.notes?.trim() || undefined,
     });
   }
 
   return { rows, errors, columnMap };
 }
 
-// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Helpers ──────────────────────────────────────────────────────────────
 
 async function upsertSecurity(
   ticker: string,
@@ -138,7 +130,7 @@ async function upsertSecurity(
   return sec.id;
 }
 
-// â”€â”€ Write positions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Write positions ──────────────────────────────────────────────────────
 
 export async function importPositions(
   portfolioId: string,
@@ -151,14 +143,11 @@ export async function importPositions(
   for (const pos of inputs) {
     try {
       let sector = pos.sector;
-      let currency = pos.currency ?? "USD";
 
       if (backfillProfile && !sector) {
         try {
           const fund = await fetchYahooFundamentals(pos.ticker);
           sector = fund.sector ?? sector;
-          currency = fund.currency ?? currency;
-          // Backfill Security profile
           await db.security.updateMany({
             where: { ticker: pos.ticker },
             data: {
@@ -174,16 +163,23 @@ export async function importPositions(
 
       const secId = await upsertSecurity(pos.ticker);
 
-      await db.portfolioPosition.create({
-        data: {
+      // Upsert so re-importing a ticker updates shares/direction rather than
+      // erroring on the (portfolioId, securityId) unique constraint.
+      await db.portfolioPosition.upsert({
+        where: {
+          portfolioId_securityId: { portfolioId, securityId: secId },
+        },
+        create: {
           portfolioId,
           securityId: secId,
           shares: pos.shares,
-          entryPrice: pos.entryPrice,
-          entryDate: new Date(pos.entryDate),
+          isShort: pos.isShort ?? false,
           sector: sector ?? null,
-          currency,
-          notes: pos.notes ?? null,
+        },
+        update: {
+          shares: pos.shares,
+          isShort: pos.isShort ?? false,
+          sector: sector ?? null,
         },
       });
       imported++;
@@ -201,21 +197,43 @@ export async function importPositions(
   return { imported, errors };
 }
 
-// â”€â”€ Read positions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-export async function getPositions(
+/**
+ * Replace ALL positions for a portfolio (used by the editor's "Save" button).
+ * Wipes existing positions then writes the new set in a transaction.
+ */
+export async function replacePositions(
   portfolioId: string,
-  includeClosedAfter?: string,
-): Promise<PositionRow[]> {
+  inputs: PositionInput[],
+): Promise<void> {
+  await db.$transaction(async (tx) => {
+    await tx.portfolioPosition.deleteMany({ where: { portfolioId } });
+    for (const pos of inputs) {
+      const t = pos.ticker.trim().toUpperCase();
+      const existing = await tx.security.findUnique({ where: { ticker: t } });
+      const secId = existing
+        ? existing.id
+        : (await tx.security.create({ data: { ticker: t, name: t } })).id;
+      await tx.portfolioPosition.create({
+        data: {
+          portfolioId,
+          securityId: secId,
+          shares: pos.shares,
+          isShort: pos.isShort ?? false,
+          sector: pos.sector ?? null,
+        },
+      });
+    }
+  });
+  await writeAuditLog("position.replace", { portfolioId, count: inputs.length });
+}
+
+// ── Read positions ───────────────────────────────────────────────────────
+
+export async function getPositions(portfolioId: string): Promise<PositionRow[]> {
   const rows = await db.portfolioPosition.findMany({
-    where: {
-      portfolioId,
-      closedAt: includeClosedAfter
-        ? { gte: new Date(includeClosedAfter) }
-        : null, // open only
-    },
+    where: { portfolioId },
     include: { security: true },
-    orderBy: { entryDate: "asc" },
+    orderBy: { createdAt: "asc" },
   });
 
   return rows.map((r) => ({
@@ -223,13 +241,8 @@ export async function getPositions(
     ticker: r.security.ticker,
     name: r.security.name,
     shares: Number(r.shares),
-    entryPrice: Number(r.entryPrice),
-    entryDate: r.entryDate.toISOString().slice(0, 10),
+    isShort: r.isShort,
     sector: r.sector ?? r.security.sector ?? null,
-    currency: r.currency ?? null,
-    notes: r.notes ?? null,
-    closedAt: r.closedAt?.toISOString().slice(0, 10) ?? null,
-    exitPrice: r.exitPrice != null ? Number(r.exitPrice) : null,
   }));
 }
 
@@ -238,30 +251,29 @@ export async function addPosition(
   input: PositionInput,
 ): Promise<string> {
   const secId = await upsertSecurity(input.ticker);
-  const pos = await db.portfolioPosition.create({
-    data: {
+  const pos = await db.portfolioPosition.upsert({
+    where: { portfolioId_securityId: { portfolioId, securityId: secId } },
+    create: {
       portfolioId,
       securityId: secId,
       shares: input.shares,
-      entryPrice: input.entryPrice,
-      entryDate: new Date(input.entryDate),
+      isShort: input.isShort ?? false,
       sector: input.sector ?? null,
-      currency: input.currency ?? "USD",
-      notes: input.notes ?? null,
+    },
+    update: {
+      shares: input.shares,
+      isShort: input.isShort ?? false,
+      sector: input.sector ?? null,
     },
   });
   await writeAuditLog("position.add", { portfolioId, ticker: input.ticker });
   return pos.id;
 }
 
-
 export interface PositionUpdateInput {
   shares?: number;
-  entryPrice?: number;
-  entryDate?: string;
+  isShort?: boolean;
   sector?: string | null;
-  currency?: string;
-  notes?: string | null;
 }
 
 export async function updatePosition(
@@ -272,58 +284,41 @@ export async function updatePosition(
     where: { id },
     data: {
       ...(input.shares !== undefined && { shares: input.shares }),
-      ...(input.entryPrice !== undefined && { entryPrice: input.entryPrice }),
-      ...(input.entryDate !== undefined && { entryDate: new Date(input.entryDate) }),
+      ...(input.isShort !== undefined && { isShort: input.isShort }),
       ...(input.sector !== undefined && { sector: input.sector }),
-      ...(input.currency !== undefined && { currency: input.currency }),
-      ...(input.notes !== undefined && { notes: input.notes }),
     },
   });
   await writeAuditLog("position.update", { id, ...input });
 }
+
 export async function deletePosition(id: string): Promise<void> {
   await db.portfolioPosition.delete({ where: { id } });
   await writeAuditLog("position.delete", { id });
 }
 
-export async function closePosition(
-  id: string,
-  exitPrice: number,
-  closedAt: string,
-): Promise<void> {
-  await db.portfolioPosition.update({
-    where: { id },
-    data: { exitPrice, closedAt: new Date(closedAt) },
-  });
-  await writeAuditLog("position.close", { id, exitPrice, closedAt });
-}
-
-// â”€â”€ Demo Portfolio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Demo Portfolio ───────────────────────────────────────────────────────
 
 const DEMO_POSITIONS: PositionInput[] = [
-  { ticker: "AAPL", shares: 50, entryPrice: 165.0, entryDate: "2023-01-15", sector: "Technology" },
-  { ticker: "MSFT", shares: 30, entryPrice: 235.0, entryDate: "2023-01-15", sector: "Technology" },
-  { ticker: "NVDA", shares: 20, entryPrice: 175.0, entryDate: "2023-03-01", sector: "Technology" },
-  { ticker: "GOOGL", shares: 40, entryPrice: 95.0, entryDate: "2023-02-01", sector: "Communication Services" },
-  { ticker: "META", shares: 25, entryPrice: 145.0, entryDate: "2023-02-01", sector: "Communication Services" },
-  { ticker: "AMZN", shares: 35, entryPrice: 100.0, entryDate: "2023-01-20", sector: "Consumer Discretionary" },
-  { ticker: "JPM", shares: 45, entryPrice: 125.0, entryDate: "2023-02-15", sector: "Financials" },
-  { ticker: "BAC", shares: 100, entryPrice: 33.0, entryDate: "2023-03-01", sector: "Financials" },
-  { ticker: "JNJ", shares: 30, entryPrice: 165.0, entryDate: "2023-01-15", sector: "Health Care" },
-  { ticker: "UNH", shares: 12, entryPrice: 490.0, entryDate: "2023-02-01", sector: "Health Care" },
-  { ticker: "XOM", shares: 40, entryPrice: 110.0, entryDate: "2023-01-25", sector: "Energy" },
-  { ticker: "CVX", shares: 25, entryPrice: 165.0, entryDate: "2023-02-10", sector: "Energy" },
-  { ticker: "PG", shares: 30, entryPrice: 140.0, entryDate: "2023-01-15", sector: "Consumer Staples" },
-  { ticker: "KO", shares: 60, entryPrice: 60.0, entryDate: "2023-03-01", sector: "Consumer Staples" },
-  { ticker: "NEE", shares: 35, entryPrice: 75.0, entryDate: "2023-02-20", sector: "Utilities" },
+  { ticker: "AAPL", shares: 50, sector: "Technology" },
+  { ticker: "MSFT", shares: 30, sector: "Technology" },
+  { ticker: "NVDA", shares: 20, sector: "Technology" },
+  { ticker: "GOOGL", shares: 40, sector: "Communication Services" },
+  { ticker: "META", shares: 25, sector: "Communication Services" },
+  { ticker: "AMZN", shares: 35, sector: "Consumer Discretionary" },
+  { ticker: "JPM", shares: 45, sector: "Financials" },
+  { ticker: "BAC", shares: 100, sector: "Financials" },
+  { ticker: "JNJ", shares: 30, sector: "Health Care" },
+  { ticker: "UNH", shares: 12, sector: "Health Care" },
+  { ticker: "XOM", shares: 40, sector: "Energy" },
+  { ticker: "CVX", shares: 25, sector: "Energy" },
+  { ticker: "PG", shares: 30, sector: "Consumer Staples" },
+  { ticker: "KO", shares: 60, sector: "Consumer Staples" },
+  { ticker: "NEE", shares: 35, sector: "Utilities" },
 ];
 
 export async function seedDemoPortfolio(portfolioId: string): Promise<number> {
-  // Wipe existing positions
   await db.portfolioPosition.deleteMany({ where: { portfolioId } });
-
   const { imported } = await importPositions(portfolioId, DEMO_POSITIONS, false);
   await writeAuditLog("portfolio.demo_loaded", { portfolioId });
   return imported;
 }
-

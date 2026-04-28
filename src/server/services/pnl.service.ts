@@ -15,10 +15,10 @@ import type { PositionRow } from "./position.service";
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface PnlSummary {
+  /** Gross capital deployed: Σ |shares × current price|. */
   totalValue: number;
-  totalCost: number;
-  unrealizedPnl: number;
-  unrealizedPnlPct: number;
+  /** Net market value: Σ signed_shares × current price (longs − shorts). */
+  netValue: number;
   dailyPnl: number;
   dailyPnlPct: number;
   mtdPnl: number;
@@ -36,15 +36,16 @@ export interface PositionWithPnl {
   sector: string | null;
   country: string | null;
   shares: number;
-  entryPrice: number;
+  isShort: boolean;
   currentPrice: number;
+  /** Gross market value: |shares × price|. Always positive. */
   marketValue: number;
-  cost: number;
-  unrealizedPnl: number;
-  unrealizedPnlPct: number;
+  /** Daily P&L in dollars, sign-adjusted for L/S (gain when short and price drops). */
   dailyPnl: number;
+  /** Daily P&L as a fraction of the position's gross market value. */
   dailyPnlPct: number;
-  weight: number; // fraction of total portfolio
+  /** Gross weight: |market value| / Σ |market value|. */
+  weight: number;
   adv20d: number; // 20-day avg daily volume
   daysToLiquidate: number; // position / (ADV * 0.20)
 }
@@ -132,11 +133,9 @@ export async function getPortfolioPnl(
   positions: PositionRow[],
 ): Promise<{ summary: PnlSummary; positionsWithPnl: PositionWithPnl[] }> {
   if (!positions.length) {
-    const zero = {
+    const zero: PnlSummary = {
       totalValue: 0,
-      totalCost: 0,
-      unrealizedPnl: 0,
-      unrealizedPnlPct: 0,
+      netValue: 0,
       dailyPnl: 0,
       dailyPnlPct: 0,
       mtdPnl: 0,
@@ -167,15 +166,17 @@ export async function getPortfolioPnl(
   const qtdStart = boundaryIso("QTD");
   const ytdStart = boundaryIso("YTD");
 
+  // totalValue is GROSS (sums |shares × price|) — used as the dollar base
+  // for weights and as the headline "capital deployed" tile.
+  // netValue is signed (longs − shorts) — the mark-to-market NAV.
   let totalValue = 0;
-  let totalCost = 0;
-  let totalMtdCostBasis = 0;
-  let totalQtdCostBasis = 0;
-  let totalYtdCostBasis = 0;
-  let dailyPrevValue = 0;
-  let mtdStartValue = 0;
-  let qtdStartValue = 0;
-  let ytdStartValue = 0;
+  let netValue = 0;
+  // Period anchors are tracked as net values (signed) so that P&L = current
+  // net − prior net correctly inverts for shorts.
+  let netDailyPrev = 0;
+  let netMtdStart = 0;
+  let netQtdStart = 0;
+  let netYtdStart = 0;
   let snapshotDate = todayIso();
 
   const positionsWithPnl: PositionWithPnl[] = [];
@@ -202,28 +203,29 @@ export async function getPortfolioPnl(
       snapshotDate = storedPrices.date; // last market close date (e.g. Friday)
     } else {
       const quote = quotes.get(toYahooSymbol(pos.ticker));
-      currentPrice = quote?.price ?? pos.entryPrice;
+      currentPrice = quote?.price ?? 0;
       prevClose = quote?.prevClose ?? currentPrice;
     }
 
-    const marketValue = pos.shares * currentPrice;
-    const cost = pos.shares * pos.entryPrice;
+    // Direction sign: short positions invert P&L (gain when price drops).
+    const sign = pos.isShort ? -1 : 1;
+    const grossMv = Math.abs(pos.shares * currentPrice);
+    const signedMv = sign * pos.shares * currentPrice;
 
-    totalValue += marketValue;
-    totalCost += cost;
-    dailyPrevValue += pos.shares * prevClose;
+    totalValue += grossMv;
+    netValue += signedMv;
+    netDailyPrev += sign * pos.shares * prevClose;
 
-    mtdStartValue += pos.shares * (mtdPrice ?? pos.entryPrice);
-    qtdStartValue += pos.shares * (qtdPrice ?? pos.entryPrice);
-    ytdStartValue += pos.shares * (ytdPrice ?? pos.entryPrice);
-    totalMtdCostBasis += pos.shares * (mtdPrice ?? pos.entryPrice);
-    totalQtdCostBasis += pos.shares * (qtdPrice ?? pos.entryPrice);
-    totalYtdCostBasis += pos.shares * (ytdPrice ?? pos.entryPrice);
+    // Period-start prices fall back to current price when no history exists,
+    // so a brand-new position starts with 0 period P&L instead of NaN.
+    netMtdStart += sign * pos.shares * (mtdPrice ?? currentPrice);
+    netQtdStart += sign * pos.shares * (qtdPrice ?? currentPrice);
+    netYtdStart += sign * pos.shares * (ytdPrice ?? currentPrice);
 
-    const dailyPnl = pos.shares * (currentPrice - prevClose);
+    const dailyPnl = sign * pos.shares * (currentPrice - prevClose);
     const adv20 = adv;
     const daysToLiquidate =
-      adv20 > 0 ? marketValue / (adv20 * currentPrice * 0.2) : 999;
+      adv20 > 0 ? grossMv / (adv20 * currentPrice * 0.2) : 999;
 
     positionsWithPnl.push({
       ticker: pos.ticker,
@@ -231,43 +233,40 @@ export async function getPortfolioPnl(
       sector: pos.sector ?? sec?.sector ?? null,
       country: sec?.country ?? null,
       shares: pos.shares,
-      entryPrice: pos.entryPrice,
+      isShort: pos.isShort,
       currentPrice,
-      marketValue,
-      cost,
-      unrealizedPnl: marketValue - cost,
-      unrealizedPnlPct: cost > 0 ? (marketValue - cost) / cost : 0,
+      marketValue: grossMv,
       dailyPnl,
-      dailyPnlPct: prevClose > 0 ? (currentPrice - prevClose) / prevClose : 0,
+      dailyPnlPct: prevClose > 0 ? sign * (currentPrice - prevClose) / prevClose : 0,
       weight: 0, // filled after totals known
       adv20d: adv20,
       daysToLiquidate,
     });
   }
 
-  // Fill weights
+  // Gross weights for display — sum to 1, direction-agnostic.
   for (const p of positionsWithPnl) {
     p.weight = totalValue > 0 ? p.marketValue / totalValue : 0;
   }
 
-  const dailyPnl = totalValue - dailyPrevValue;
-  const mtdPnl = totalValue - mtdStartValue;
-  const qtdPnl = totalValue - qtdStartValue;
-  const ytdPnl = totalValue - ytdStartValue;
+  const dailyPnl = netValue - netDailyPrev;
+  const mtdPnl = netValue - netMtdStart;
+  const qtdPnl = netValue - netQtdStart;
+  const ytdPnl = netValue - netYtdStart;
 
+  // P&L percentages anchor to gross capital (totalValue) — for a market-
+  // neutral book net values can be ~0, so anchoring to net would blow up.
   const summary: PnlSummary = {
     totalValue,
-    totalCost,
-    unrealizedPnl: totalValue - totalCost,
-    unrealizedPnlPct: totalCost > 0 ? (totalValue - totalCost) / totalCost : 0,
+    netValue,
     dailyPnl,
-    dailyPnlPct: dailyPrevValue > 0 ? dailyPnl / dailyPrevValue : 0,
+    dailyPnlPct: totalValue > 0 ? dailyPnl / totalValue : 0,
     mtdPnl,
-    mtdPnlPct: mtdStartValue > 0 ? mtdPnl / mtdStartValue : 0,
+    mtdPnlPct: totalValue > 0 ? mtdPnl / totalValue : 0,
     qtdPnl,
-    qtdPnlPct: qtdStartValue > 0 ? qtdPnl / qtdStartValue : 0,
+    qtdPnlPct: totalValue > 0 ? qtdPnl / totalValue : 0,
     ytdPnl,
-    ytdPnlPct: ytdStartValue > 0 ? ytdPnl / ytdStartValue : 0,
+    ytdPnlPct: totalValue > 0 ? ytdPnl / totalValue : 0,
     snapshotDate,
   };
 

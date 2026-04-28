@@ -47,7 +47,7 @@ export async function runFullRefresh(portfolioId?: string): Promise<RefreshResul
   if (portfolioId) {
     try {
       const positions = await db.portfolioPosition.findMany({
-        where: { portfolioId, closedAt: null },
+        where: { portfolioId },
         include: { security: true },
         distinct: ["securityId"],
       });

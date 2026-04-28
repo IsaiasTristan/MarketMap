@@ -39,7 +39,9 @@ import { rollingBeta, vasicekBeta, ols } from "@/domain/calculations/beta";
 export interface PositionRisk {
   ticker: string;
   name: string;
+  /** Gross weight: |market value| / Σ |market value|. Always in [0, 1]. */
   weight: number;
+  isShort: boolean;
   marketValue: number;
   varDollar95: number;
   varDollar99: number;
@@ -139,7 +141,7 @@ export async function computePositionRisk(
   portfolioId: string,
 ): Promise<{ positions: PositionRisk[]; portfolioValue: number }> {
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId, closedAt: null },
+    where: { portfolioId },
     include: { security: true },
   });
 
@@ -161,11 +163,14 @@ export async function computePositionRisk(
     ticker: p.security.ticker,
     name: p.security.name,
     shares: Number(p.shares),
-    lastPrice: lastPrices[i] ? Number(lastPrices[i]!.adjClose) : Number(p.entryPrice),
+    isShort: p.isShort,
+    lastPrice: lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0,
     marketValue: 0,
   }));
+  // marketValue is gross (always positive) — total portfolio value is the
+  // gross capital deployed, used as the dollar base for VaR scaling.
   posValues.forEach((pv) => {
-    pv.marketValue = pv.shares * pv.lastPrice;
+    pv.marketValue = Math.abs(pv.shares * pv.lastPrice);
   });
   const totalValue = posValues.reduce((s, pv) => s + pv.marketValue, 0);
 
@@ -195,6 +200,7 @@ export async function computePositionRisk(
       ticker: pv.ticker,
       name: pv.name,
       weight,
+      isShort: pv.isShort,
       marketValue: pv.marketValue,
       varDollar95: var95,
       varDollar99: var99,
@@ -214,7 +220,7 @@ export async function computePortfolioRisk(
   portfolioId: string,
 ): Promise<PortfolioRisk | null> {
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId, closedAt: null },
+    where: { portfolioId },
     include: { security: true },
   });
   if (!positions.length) return null;
@@ -235,12 +241,17 @@ export async function computePortfolioRisk(
       }),
     ),
   );
-  const values = positions.map((p, i) => {
-    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : Number(p.entryPrice);
-    return Number(p.shares) * price;
+  // Gross capital per name and signed weights (long +, short −) so the
+  // portfolio return series correctly reflects long/short P&L.
+  const grossValues = positions.map((p, i) => {
+    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0;
+    return Math.abs(Number(p.shares) * price);
   });
-  const totalValue = values.reduce((s, v) => s + v, 0);
-  const weights = values.map((v) => (totalValue > 0 ? v / totalValue : 0));
+  const totalValue = grossValues.reduce((s, v) => s + v, 0);
+  const weights = positions.map((p, i) => {
+    const gross = totalValue > 0 ? grossValues[i]! / totalValue : 0;
+    return (p.isShort ? -1 : 1) * gross;
+  });
 
   // Align all return series to the shortest available — typically limited by
   // the newest position or any security with limited price history.
@@ -313,7 +324,7 @@ export async function computeCorrelationMatrix(
   portfolioId: string,
 ): Promise<CorrelationPayload> {
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId, closedAt: null },
+    where: { portfolioId },
     include: { security: true },
     distinct: ["securityId"],
   });
@@ -335,7 +346,7 @@ export async function computePortfolioRiskSeries(
   portfolioId: string,
 ): Promise<{ dates: string[]; drawdown: number[]; rollingVol252: number[] }> {
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId, closedAt: null },
+    where: { portfolioId },
     include: { security: true },
   });
   if (!positions.length) return { dates: [], drawdown: [], rollingVol252: [] };
@@ -354,12 +365,15 @@ export async function computePortfolioRiskSeries(
       db.priceHistory.findFirst({ where: { securityId: id }, orderBy: { tradeDate: "desc" }, select: { adjClose: true } }),
     ),
   );
-  const values = positions.map((p, i) => {
-    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : Number(p.entryPrice);
-    return Number(p.shares) * price;
+  const grossValues = positions.map((p, i) => {
+    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0;
+    return Math.abs(Number(p.shares) * price);
   });
-  const totalValue = values.reduce((s, v) => s + v, 0);
-  const weights = values.map((v) => (totalValue > 0 ? v / totalValue : 0));
+  const totalValue = grossValues.reduce((s, v) => s + v, 0);
+  const weights = positions.map((p, i) => {
+    const gross = totalValue > 0 ? grossValues[i]! / totalValue : 0;
+    return (p.isShort ? -1 : 1) * gross;
+  });
 
   const portReturns = aligned[0].map((_, t) =>
     weights.reduce((s, w, i) => s + w * (aligned[i][t] ?? 0), 0),

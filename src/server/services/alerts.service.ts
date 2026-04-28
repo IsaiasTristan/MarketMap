@@ -32,7 +32,7 @@ async function getThresholds(portfolioId: string): Promise<AlertThresholds> {
 export async function generateAlerts(portfolioId: string): Promise<void> {
   const thresholds = await getThresholds(portfolioId);
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId, closedAt: null },
+    where: { portfolioId },
     include: { security: true },
   });
 
@@ -69,29 +69,11 @@ export async function generateAlerts(portfolioId: string): Promise<void> {
     }
   }
 
-  // 2. Stop-loss alerts per position
+  // 2. Per-position alerts
+  // (Cost-basis stop-loss removed — no entry price tracked; the portfolio-
+  // level drawdown alert above covers material downside moves.)
   for (const pos of positions) {
-    const lastPrice = await db.priceHistory.findFirst({
-      where: { securityId: pos.securityId },
-      orderBy: { tradeDate: "desc" },
-      select: { adjClose: true },
-    });
-    if (!lastPrice) continue;
-    const curPrice = Number(lastPrice.adjClose);
-    const entryPrice = Number(pos.entryPrice);
-    const pnlPct = (curPrice - entryPrice) / entryPrice;
-    if (pnlPct <= thresholds.stopLoss) {
-      await db.alert.create({
-        data: {
-          severity: "WARNING",
-          type: "stop_loss",
-          message: `${pos.security.ticker} is down ${(pnlPct * 100).toFixed(1)}% from entry (stop-loss threshold: ${(thresholds.stopLoss * 100).toFixed(0)}%)`,
-          contextJson: { ticker: pos.security.ticker, pnlPct, entryPrice, currentPrice: curPrice },
-        },
-      });
-    }
-
-    // 3. Crowding via shortRatio
+    // Crowding via shortRatio
     const fund = await db.securityFundamentals.findFirst({
       where: { securityId: pos.securityId },
       orderBy: { asOfDate: "desc" },

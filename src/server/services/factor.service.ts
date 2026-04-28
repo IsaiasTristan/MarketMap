@@ -49,7 +49,7 @@ export async function computeFactorExposures(
   portfolioId: string,
 ): Promise<FactorExposures | null> {
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId, closedAt: null },
+    where: { portfolioId },
     include: { security: true },
   });
   if (!positions.length) return null;
@@ -91,13 +91,17 @@ export async function computeFactorExposures(
   const mktPrices = benchPrices.reverse().map((r) => Number(r.adjClose));
   const mktReturns = dailyReturnsFromAdjustedCloses(mktPrices);
 
-  // Compute values + weights
-  const marketValues = positions.map((p, i) => {
-    const price = lastPrices[i][0] ? Number(lastPrices[i][0].adjClose) : Number(p.entryPrice);
-    return Number(p.shares) * price;
+  // Signed market-value weights so a short position correctly inverts its
+  // contribution to portfolio-level factor exposure.
+  const grossValues = positions.map((p, i) => {
+    const price = lastPrices[i][0] ? Number(lastPrices[i][0].adjClose) : 0;
+    return Math.abs(Number(p.shares) * price);
   });
-  const totalValue = marketValues.reduce((s, v) => s + v, 0);
-  const weights = marketValues.map((v) => (totalValue > 0 ? v / totalValue : 0));
+  const totalValue = grossValues.reduce((s, v) => s + v, 0);
+  const weights = positions.map((p, i) => {
+    const gross = totalValue > 0 ? grossValues[i]! / totalValue : 0;
+    return (p.isShort ? -1 : 1) * gross;
+  });
   const tickers = positions.map((p) => p.security.ticker);
 
   // Beta per position
@@ -198,7 +202,7 @@ export async function computeFactorExposures(
  */
 export async function refreshPortfolioFundamentals(portfolioId: string): Promise<number> {
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId, closedAt: null },
+    where: { portfolioId },
     include: { security: true },
     distinct: ["securityId"],
   });

@@ -23,7 +23,7 @@ export async function getFactorDrivers(
 
   // Load positions + prices
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId, closedAt: null },
+    where: { portfolioId },
     include: { security: true },
   });
   if (!positions.length) return null;
@@ -100,10 +100,20 @@ export async function getFactorDrivers(
   });
   const alignedRf: number[] = commonDates.map((d) => rfByDate.get(d) ?? 0);
 
-  // Build per-security return series
-  const costs = positions.map((p) => Number(p.shares) * Number(p.entryPrice));
-  const totalCost = costs.reduce((s, c) => s + c, 0);
-  const weights = costs.map((c) => (totalCost > 0 ? c / totalCost : 0));
+  // Per-security signed weights from latest price × shares (× direction).
+  // Drivers attribution sums per-name contributions, so signed weights
+  // ensure shorts subtract correctly.
+  const lastPrices = positions.map((_, i) => {
+    const rows = priceData[i]!;
+    const last = rows[rows.length - 1];
+    return last ? Number(last.adjClose) : 0;
+  });
+  const grossValues = positions.map((p, i) => Math.abs(Number(p.shares) * lastPrices[i]!));
+  const totalGross = grossValues.reduce((s, v) => s + v, 0);
+  const weights = positions.map((p, i) => {
+    const gross = totalGross > 0 ? grossValues[i]! / totalGross : 0;
+    return (p.isShort ? -1 : 1) * gross;
+  });
 
   const securities: SecurityReturnSeries[] = positions.map((pos, i) => {
     const pm = priceMaps[i]!;

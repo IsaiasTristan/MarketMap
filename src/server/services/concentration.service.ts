@@ -26,7 +26,7 @@ export async function computeConcentration(
   portfolioId: string,
 ): Promise<ConcentrationMetrics> {
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId, closedAt: null },
+    where: { portfolioId },
     include: { security: true },
   });
 
@@ -56,9 +56,12 @@ export async function computeConcentration(
     ),
   );
 
+  // Gross market value per position. HHI / sector concentration use gross
+  // (industry standard — a 50L/50S book is "concentrated in 2 names" by
+  // capital, regardless of direction). Weights are unsigned here.
   const marketValues = positions.map((p, i) => {
-    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : Number(p.entryPrice);
-    return Number(p.shares) * price;
+    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0;
+    return Math.abs(Number(p.shares) * price);
   });
   const totalValue = marketValues.reduce((s, v) => s + v, 0);
   const weights = marketValues.map((v) => (totalValue > 0 ? v / totalValue : 0));

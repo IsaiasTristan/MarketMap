@@ -30,8 +30,7 @@ type PnlData = {
     qtdPnlPct: number;
     ytdPnl: number;
     ytdPnlPct: number;
-    unrealizedPnl: number;
-    unrealizedPnlPct: number;
+    netValue: number;
   };
   positions: PositionRow[];
   allocation: {
@@ -47,6 +46,7 @@ type PositionRow = {
   ticker: string;
   name: string;
   sector: string | null;
+  isShort: boolean;
   marketValue: number;
   dailyPnl: number;
   dailyPnlPct: number;
@@ -54,7 +54,6 @@ type PositionRow = {
   adv20d: number;
   daysToLiquidate: number;
   shares: number;
-  entryPrice: number;
   currentPrice: number;
 };
 

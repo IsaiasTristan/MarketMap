@@ -20,10 +20,8 @@ interface PositionDetail {
   ticker: string;
   name: string;
   shares: number;
-  entryPrice: number;
-  entryDate: string;
+  isShort: boolean;
   sector: string | null;
-  currency: string | null;
 }
 
 function PortfolioManager() {
@@ -47,17 +45,15 @@ function PortfolioManager() {
   const [editingPositionId, setEditingPositionId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<{
     shares: string;
-    entryPrice: string;
-    entryDate: string;
+    isShort: boolean;
     sector: string;
-  }>({ shares: "", entryPrice: "", entryDate: "", sector: "" });
+  }>({ shares: "", isShort: false, sector: "" });
 
   const startEdit = (pos: PositionDetail) => {
     setEditingPositionId(pos.id);
     setEditDraft({
       shares: String(pos.shares),
-      entryPrice: String(pos.entryPrice),
-      entryDate: pos.entryDate,
+      isShort: pos.isShort,
       sector: pos.sector ?? "",
     });
     setConfirmDeletePositionId(null);
@@ -86,8 +82,7 @@ function PortfolioManager() {
       id,
       patch: {
         shares: parseFloat(editDraft.shares),
-        entryPrice: parseFloat(editDraft.entryPrice),
-        entryDate: editDraft.entryDate,
+        isShort: editDraft.isShort,
         sector: editDraft.sector || null,
       },
     });
@@ -385,7 +380,7 @@ function PortfolioManager() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
                   <tr style={{ background: "var(--bg-elevated)" }}>
-                    {["Ticker", "Name", "Shares", "Entry Price", "Entry Date", "Sector", "", ""].map(
+                    {["Ticker", "Name", "Shares", "L / S", "Sector", "", ""].map(
                       (h, i) => (
                         <th
                           key={`${h}-${i}`}
@@ -452,27 +447,30 @@ function PortfolioManager() {
                             </span>
                           )}
                         </td>
-                        {/* Entry Price */}
-                        <td style={{ padding: "4px 8px", textAlign: "right" }}>
+                        {/* L / S direction */}
+                        <td style={{ padding: "4px 8px", textAlign: "center" }}>
                           {isEditing ? (
-                            <input type="number" min={0} step="any" value={editDraft.entryPrice}
-                              onChange={(e) => setEditDraft((d) => ({ ...d, entryPrice: e.target.value }))}
-                              style={editInput(true)} />
+                            <select
+                              value={editDraft.isShort ? "S" : "L"}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, isShort: e.target.value === "S" }))}
+                              style={{ ...editInput(true), background: editDraft.isShort ? "rgba(239,68,68,0.08)" : "var(--bg-surface)", textAlign: "center", width: 56 }}
+                            >
+                              <option value="L">L</option>
+                              <option value="S">S</option>
+                            </select>
                           ) : (
-                            <span style={{ fontFamily: "var(--font-mono, monospace)", color: "var(--text-primary)" }}>
-                              ${pos.entryPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </span>
-                          )}
-                        </td>
-                        {/* Entry Date */}
-                        <td style={{ padding: "4px 8px" }}>
-                          {isEditing ? (
-                            <input type="date" value={editDraft.entryDate}
-                              onChange={(e) => setEditDraft((d) => ({ ...d, entryDate: e.target.value }))}
-                              style={editInput()} />
-                          ) : (
-                            <span style={{ fontFamily: "var(--font-mono, monospace)", color: "var(--text-secondary)" }}>
-                              {pos.entryDate}
+                            <span
+                              style={{
+                                fontFamily: "var(--font-mono, monospace)",
+                                fontWeight: 700,
+                                color: pos.isShort ? "var(--color-negative, #ef4444)" : "var(--color-positive, #22c55e)",
+                                padding: "2px 8px",
+                                borderRadius: 3,
+                                background: pos.isShort ? "rgba(239,68,68,0.10)" : "rgba(34,197,94,0.10)",
+                              }}
+                              title={pos.isShort ? "Short — gains when price drops" : "Long — gains when price rises"}
+                            >
+                              {pos.isShort ? "S" : "L"}
                             </span>
                           )}
                         </td>
@@ -584,8 +582,8 @@ function CsvUpload() {
     <Card>
       <SectionHeading>Upload Portfolio CSV</SectionHeading>
       <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 12 }}>
-        Required columns: <code>ticker, shares, entry_price, entry_date</code> (YYYY-MM-DD).
-        Optional: <code>sector, currency, notes</code>
+        Required columns: <code>ticker, shares</code>. Optional:{" "}
+        <code>direction</code> (L or S; defaults to L), <code>sector</code>.
       </div>
       <div
         onDragEnter={() => setDragging(true)}
@@ -799,51 +797,9 @@ function ManualEntry() {
   const [form, setForm] = useState({
     ticker: "",
     shares: "",
-    entryPrice: "",
-    entryDate: new Date().toISOString().slice(0, 10),
+    isShort: false,
     sector: "",
-    currency: "USD",
   });
-  const [priceFetching, setPriceFetching] = useState(false);
-  const [priceNote, setPriceNote] = useState<string | null>(null);
-  const priceOverrideRef = useRef(false);
-
-  // Auto-fill entry price whenever ticker + entryDate change and user hasn't manually overridden.
-  // Require at least 1 char but wait for the ticker to look complete (no pending debounce).
-  useEffect(() => {
-    if (priceOverrideRef.current) return;
-    if (!form.ticker || !form.entryDate) return;
-    if (form.ticker.length < 1) return;
-    // Only fire once the ticker looks like it could be valid (>=1 char after ^)
-    const bare = form.ticker.replace(/^\^/, "");
-    if (bare.length < 1) return;
-
-    const controller = new AbortController();
-    setPriceFetching(true);
-    setPriceNote(null);
-
-    fetch(
-      `/api/analysis/securities/price?ticker=${encodeURIComponent(form.ticker)}&date=${form.entryDate}`,
-      { signal: controller.signal },
-    )
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.price != null) {
-          setForm((f) => ({ ...f, entryPrice: String(d.price) }));
-          if (d.date !== form.entryDate) {
-            setPriceNote(`No data for ${form.entryDate} -- using nearest prior trading day (${d.date})`);
-          } else {
-            setPriceNote(null);
-          }
-        } else {
-          setPriceNote(d.error ?? "Price not found");
-        }
-      })
-      .catch(() => {})
-      .finally(() => setPriceFetching(false));
-
-    return () => controller.abort();
-  }, [form.ticker, form.entryDate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -858,21 +814,26 @@ function ManualEntry() {
         portfolioId: activePortfolioId,
         ticker: form.ticker.toUpperCase(),
         shares: parseFloat(form.shares),
-        entryPrice: parseFloat(form.entryPrice),
-        entryDate: form.entryDate,
+        isShort: form.isShort,
         sector: form.sector || undefined,
-        currency: form.currency,
       }),
     });
     if (r.ok) {
       addToast({ severity: "success", message: `${form.ticker.toUpperCase()} added` });
       qc.invalidateQueries({ queryKey: ["positions", activePortfolioId] });
-      priceOverrideRef.current = false;
-      setPriceNote(null);
-      setForm((f) => ({ ...f, ticker: "", shares: "", entryPrice: "" }));
+      setForm({ ticker: "", shares: "", isShort: false, sector: form.sector });
     } else {
-      const d = await r.json();
-      addToast({ severity: "error", message: d.error ?? "Failed to add position" });
+      const text = await r.text();
+      let message = `Failed to add position (${r.status})`;
+      if (text) {
+        try {
+          const d = JSON.parse(text);
+          message = d.error ?? message;
+        } catch {
+          message = text.slice(0, 200);
+        }
+      }
+      addToast({ severity: "error", message });
     }
   };
 
@@ -898,14 +859,13 @@ function ManualEntry() {
   return (
     <Card>
       <SectionHeading>Add Position Manually</SectionHeading>
-      <form onSubmit={handleSubmit} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+      <form onSubmit={handleSubmit} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 0.6fr 1fr", gap: 12 }}>
 
         {field("Ticker",
           <TickerCombobox
             value={form.ticker}
             onChange={(t) => setForm((f) => ({ ...f, ticker: t }))}
             onSelect={(s) => {
-              priceOverrideRef.current = false;
               setForm((f) => ({ ...f, ticker: s.ticker, sector: s.sector ?? f.sector }));
             }}
           />
@@ -923,45 +883,20 @@ function ManualEntry() {
           />
         )}
 
-        {field("Entry Date",
-          <input
-            type="date"
-            value={form.entryDate}
-            onChange={(e) => {
-              priceOverrideRef.current = false;
-              setForm((f) => ({ ...f, entryDate: e.target.value }));
+        {field("L / S",
+          <select
+            value={form.isShort ? "S" : "L"}
+            onChange={(e) => setForm((f) => ({ ...f, isShort: e.target.value === "S" }))}
+            style={{
+              ...inputStyle(true),
+              textAlign: "center",
+              background: form.isShort ? "rgba(239,68,68,0.08)" : "var(--bg-elevated)",
             }}
-            style={inputStyle()}
-          />
-        )}
-
-        {field(
-          priceFetching ? "Entry Price ($) -- fetching..." : "Entry Price ($)",
-          <div style={{ position: "relative" }}>
-            <input
-              type="number"
-              value={form.entryPrice}
-              onChange={(e) => {
-                priceOverrideRef.current = true;
-                setForm((f) => ({ ...f, entryPrice: e.target.value }));
-              }}
-              placeholder="auto"
-              min={0}
-              step="any"
-              style={{
-                ...inputStyle(true),
-                width: "100%",
-                boxSizing: "border-box",
-                paddingRight: priceFetching ? 28 : undefined,
-                opacity: priceFetching ? 0.6 : 1,
-              }}
-            />
-            {priceFetching && (
-              <span style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", fontSize: 11, color: "var(--text-muted)" }}>
-                
-              </span>
-            )}
-          </div>
+            title="L = long (gains when price rises). S = short (gains when price drops)."
+          >
+            <option value="L">L</option>
+            <option value="S">S</option>
+          </select>
         )}
 
         {field("Sector (optional)",
@@ -972,21 +907,6 @@ function ManualEntry() {
             placeholder="Technology"
             style={inputStyle()}
           />
-        )}
-
-        {field("Currency",
-          <input
-            type="text"
-            value={form.currency}
-            onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value }))}
-            style={inputStyle()}
-          />
-        )}
-
-        {priceNote && (
-          <div style={{ gridColumn: "1/-1", fontSize: 11, color: "var(--color-warning, #f0b65d)", marginTop: -4 }}>
-            {priceNote}
-          </div>
         )}
 
         <div style={{ gridColumn: "1/-1", display: "flex", justifyContent: "flex-end" }}>

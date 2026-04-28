@@ -1,9 +1,11 @@
-﻿import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import {
   getPositions,
   addPosition,
   deletePosition,
   updatePosition,
+  replacePositions,
+  type PositionInput,
 } from "@/server/services/position.service";
 
 export async function GET(req: Request) {
@@ -16,24 +18,46 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const body = await req.json().catch(() => ({}));
-  const { portfolioId, ticker, shares, entryPrice, entryDate, sector, currency, notes } = body;
+  try {
+    const body = await req.json().catch(() => ({}));
+    const { portfolioId, ticker, shares, isShort, sector, replace, positions } = body;
 
-  if (!portfolioId || !ticker || !shares || !entryPrice || !entryDate) {
-    return NextResponse.json({ error: "portfolioId, ticker, shares, entryPrice, entryDate required" }, { status: 400 });
+    if (!portfolioId) {
+      return NextResponse.json({ error: "portfolioId required" }, { status: 400 });
+    }
+
+    // Bulk replace mode (used by the editor's "Save" button).
+    if (replace && Array.isArray(positions)) {
+      const inputs: PositionInput[] = positions.map((p) => ({
+        ticker: String(p.ticker).toUpperCase(),
+        shares: Number(p.shares),
+        isShort: Boolean(p.isShort),
+        sector: p.sector ? String(p.sector) : undefined,
+      }));
+      await replacePositions(portfolioId, inputs);
+      return NextResponse.json({ ok: true, count: inputs.length });
+    }
+
+    // Single-position add (legacy path used by the inline "Add ticker" form).
+    if (!ticker || !shares) {
+      return NextResponse.json({ error: "ticker and shares required" }, { status: 400 });
+    }
+
+    const id = await addPosition(portfolioId, {
+      ticker: String(ticker).toUpperCase(),
+      shares: Number(shares),
+      isShort: Boolean(isShort),
+      sector: sector ? String(sector) : undefined,
+    });
+
+    return NextResponse.json({ id });
+  } catch (e) {
+    console.error("POST /api/analysis/portfolio/positions failed:", e);
+    return NextResponse.json(
+      { error: (e as Error).message ?? "Failed to add position" },
+      { status: 500 },
+    );
   }
-
-  const id = await addPosition(portfolioId, {
-    ticker: String(ticker).toUpperCase(),
-    shares: Number(shares),
-    entryPrice: Number(entryPrice),
-    entryDate: String(entryDate),
-    sector: sector ? String(sector) : undefined,
-    currency: currency ? String(currency) : "USD",
-    notes: notes ? String(notes) : undefined,
-  });
-
-  return NextResponse.json({ id });
 }
 
 export async function DELETE(req: Request) {
@@ -49,14 +73,11 @@ export async function PATCH(req: Request) {
   const id = searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   const body = await req.json().catch(() => ({}));
-  const { shares, entryPrice, entryDate, sector, currency, notes } = body;
-  const input: Record<string, unknown> = {};
+  const { shares, isShort, sector } = body;
+  const input: Parameters<typeof updatePosition>[1] = {};
   if (shares !== undefined) input.shares = Number(shares);
-  if (entryPrice !== undefined) input.entryPrice = Number(entryPrice);
-  if (entryDate !== undefined) input.entryDate = String(entryDate);
+  if (isShort !== undefined) input.isShort = Boolean(isShort);
   if (sector !== undefined) input.sector = sector ?? null;
-  if (currency !== undefined) input.currency = String(currency);
-  if (notes !== undefined) input.notes = notes ?? null;
-  await updatePosition(id, input as Parameters<typeof updatePosition>[1]);
+  await updatePosition(id, input);
   return NextResponse.json({ ok: true });
 }
