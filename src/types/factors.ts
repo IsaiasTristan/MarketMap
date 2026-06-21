@@ -41,6 +41,14 @@ export interface FactorDef {
   shortLabel: string;
   description: string;
   whyItMatters: string;
+  /** Concise one-line description of how the factor return is constructed. */
+  howCalculated: string;
+  /**
+   * Underlying data/series the factor is built from (ETF ticker, AQR/Ken
+   * French series, frequency, provider) — surfaced as the tooltip "Data used"
+   * line so the user can see the provenance of every number.
+   */
+  dataSource?: string;
   units: "beta" | "zscore" | "pct";
   color: string;
   inputType: FactorInputType;
@@ -165,9 +173,20 @@ export interface FactorExposureEntry {
 
 export interface FactorExposureSnapshot {
   factors: FactorExposureEntry[];
-  /** Annualized alpha (daily intercept × 252). */
+  /** Annualized alpha (daily intercept × 252). Simple-return space. */
   alphaAnnualized: number;
   alphaTStat: number;
+  /**
+   * Log-space static alpha annualised (`α_log_daily × 252`) from the
+   * engine's `endFitLog`. Optional for back-compat — older snapshots
+   * leave it undefined and the UI falls back to simple-space rendering.
+   * For high-vol portfolios `alphaAnnualizedLog` can disagree wildly with
+   * `alphaAnnualized` due to Jensen's inequality on each day's residual.
+   */
+  alphaAnnualizedLog?: number | null;
+  alphaTStatLog?: number | null;
+  /** Log-space CI half-width on the annualised log α: 1.96 × SE(α_log) × 252. */
+  alphaCi95HalfLog?: number | null;
   rSquared: number;
   adjRSquared: number;
   /** Herfindahl-Hirschman index of factor risk contributions (0 = diversified, 1 = concentrated). */
@@ -187,6 +206,38 @@ export interface FactorExposureSnapshot {
    * (Q4 lock): |gap| < 2% → no badge, 2-5% → neutral, ≥ 5% → amber.
    */
   varGapPct?: number;
+  /**
+   * Portfolio-level "Unexplained" residual stats — feeds the Total row's
+   * Unexplained cell in the Exposure grid across STAT = Value / T / CI.
+   * Constructed as ε_p,t = Σ_i w_i · ε_i,t from per-stock rolling-OLS
+   * residuals with snapshot weights and fixed membership; T-stat and CI
+   * use Newey-West (1994) HAC SE on the mean. See
+   * `factor-portfolio-residual.service.ts` for methodology.
+   * Optional for back-compat — old snapshots leave it undefined.
+   */
+  residual?: {
+    // Simple-space (existing fields)
+    sum: number;
+    mean: number;
+    tStat: number;
+    ci95Half: number;
+    annualizedVol: number;
+    bandwidth: number;
+    n: number;
+    startDate: string;
+    endDate: string;
+    droppedHoldings: string[];
+    coverageWeight: number;
+    // Log-space mirror — null when the log path failed for any
+    // contributing holding; the UI falls back to simple in that case.
+    sumLog?: number | null;
+    meanLog?: number | null;
+    tStatLog?: number | null;
+    ci95HalfLog?: number | null;
+    annualizedVolLog?: number | null;
+    bandwidthLog?: number | null;
+    nLog?: number | null;
+  };
   model: ModelPresetName;
   window: number;
   n: number;
@@ -310,7 +361,14 @@ export interface PeriodAttributionSummaryLog {
 }
 
 export interface AttributionResult {
+  /**
+   * Full-length daily attribution using the horizon end-fit betas (NOT the
+   * rolling-fit tail). Defined for every aligned date so trailing reporting
+   * periods slice correctly at any horizon. Feeds `periods` and the
+   * period-sliced variance decomposition (`pickPeriodRiskSummary`).
+   */
   daily: AttributionDayPoint[];
+  /** Rolling-beta cumulative path — drives the time-series chart. */
   cumulative: CumulativeAttributionPoint[];
   periods: PeriodAttributionSummary[];
   /** Path B: log-return attribution (null when log path unavailable). */
@@ -522,4 +580,16 @@ export interface FactorEngineResult {
   endFitLog: RegressionFit | null;
   /** Rolling fits on the log design matrix. */
   rollingFitsLog: RollingFitPoint[] | null;
+
+  /**
+   * Set when the requested regression window exceeded the available aligned
+   * history and the rolling window had to shrink so the engine still emits
+   * at least one rolling fit (the same shape used by per-stock timeseries).
+   * Null when `availableObservations >= requestedWindow`.
+   */
+  windowFallback: {
+    requestedWindow: number;
+    effectiveWindow: number;
+    availableObservations: number;
+  } | null;
 }

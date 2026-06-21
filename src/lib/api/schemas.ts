@@ -54,6 +54,12 @@ export const factorPerStockQuery = z.object({
     .pipe(z.number().int().min(20).max(2520)),
   sector: z.string().optional(),
   subTheme: z.string().optional(),
+  /**
+   * Optional attribution period. When present, the route overlays each row's
+   * Return / Alpha / Unexplained columns with the values restricted to this
+   * trailing period (betas / risk / R² / vol stay on the full horizon window).
+   */
+  period: z.enum(["1D", "5D", "1M", "3M", "6M", "1Y"]).optional(),
 });
 
 export const factorDriversQuery = factorQueryParams.extend({
@@ -110,6 +116,14 @@ export const marketMapQuery = z.object({
   benchmark: z.enum(["SP500", "NASDAQ", "DOW"]).optional(),
   sector: z.string().optional(),
   subTheme: z.string().optional(),
+});
+
+export const factorPerformanceQuery = z.object({
+  metric: z
+    .enum(["RETURN", "EXCESS_RETURN", "VOLATILITY", "SHARPE"])
+    .optional()
+    .default("RETURN"),
+  benchmark: z.enum(["SP500", "NASDAQ", "DOW"]).optional().default("SP500"),
 });
 
 export const portfolioPositionRow = z.object({

@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getExposureHistory } from "@/server/services/factor-snapshot.service";
 import { MODEL_PRESET_NAMES } from "@/lib/api/schemas";
+import { requirePortfolioAccess } from "@/lib/api/guards";
 
 const querySchema = z.object({
   portfolioId: z.string().min(1),
@@ -25,6 +26,8 @@ export async function GET(req: NextRequest) {
   }
 
   const { portfolioId, model, limit } = parsed.data;
+  const guard = await requirePortfolioAccess(req, portfolioId);
+  if (guard) return guard;
   const history = await getExposureHistory(portfolioId, model, limit);
   return NextResponse.json(history);
 }

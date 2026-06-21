@@ -64,6 +64,7 @@ export function MetricCard({
             name={tooltip.name}
             definition={tooltip.definition}
             formula={tooltip.formula}
+            dataUsed={tooltip.dataUsed}
             goodValue={tooltip.goodValue}
             currentValue={tooltipCurrentValue}
             passing={tooltipPassing}

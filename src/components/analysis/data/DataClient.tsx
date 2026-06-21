@@ -2,6 +2,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAnalysisStore } from "@/store/analysis";
+import { useIsAdmin } from "@/lib/api/useMe";
 import { Card, CardLabel, SectionHeading } from "@/components/analysis/ui/Card";
 import { DataTable, type Column } from "@/components/analysis/ui/DataTable";
 import { StatusBadge } from "@/components/analysis/ui/StatusBadge";
@@ -1027,6 +1028,276 @@ function DataSourceStatus() {
   );
 }
 
+// -- Securities health -----------------------------------------------------
+
+interface DelistCandidateRow {
+  id: string;
+  ticker: string;
+  name: string;
+  lastBarDate: string | null;
+  firstMissedAt: string | null;
+  lastMissedAt: string | null;
+  consecutiveMisses: number;
+  suggestedReplacement: string | null;
+}
+
+interface DelistedRow {
+  id: string;
+  ticker: string;
+  name: string;
+  lastBarDate: string | null;
+  delistedAt: string | null;
+  suggestedReplacement: string | null;
+}
+
+function fmtDate(d: string | null): string {
+  if (!d) return "—";
+  return d.length > 10 ? d.slice(0, 10) : d;
+}
+
+function SecuritiesHealth() {
+  const qc = useQueryClient();
+  const { addToast } = useAnalysisStore();
+  const isAdmin = useIsAdmin();
+  const { data, isLoading } = useQuery<{
+    candidates: DelistCandidateRow[];
+    delisted: DelistedRow[];
+  }>({
+    queryKey: ["securities-health"],
+    queryFn: () => fetch("/api/analysis/securities/health").then((r) => r.json()),
+    refetchInterval: 60_000,
+  });
+
+  const actionMut = useMutation({
+    mutationFn: async (vars: { action: string; securityId: string }) => {
+      const r = await fetch("/api/analysis/securities/health", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(vars),
+      });
+      if (!r.ok) throw new Error((await r.json()).error ?? "Failed");
+      return r.json();
+    },
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ["securities-health"] });
+      qc.invalidateQueries({ queryKey: ["market-map"] });
+      addToast({
+        severity: "success",
+        message:
+          vars.action === "confirm-delist"
+            ? "Ticker deactivated"
+            : vars.action === "mark-live"
+            ? "Marked live — counters cleared"
+            : "Reactivated",
+      });
+    },
+    onError: (e: Error) => {
+      addToast({ severity: "error", message: e.message });
+    },
+  });
+
+  if (isLoading) return <Skeleton height={120} />;
+  const candidates = data?.candidates ?? [];
+  const delisted = data?.delisted ?? [];
+
+  if (candidates.length === 0 && delisted.length === 0) {
+    return (
+      <Card>
+        <SectionHeading>Securities Health</SectionHeading>
+        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          No delist candidates and no deactivated tickers.
+        </div>
+      </Card>
+    );
+  }
+
+  const cellStyle: React.CSSProperties = {
+    padding: "8px 10px",
+    borderBottom: "1px solid var(--bg-border)",
+    fontSize: 12,
+    color: "var(--text-secondary)",
+    verticalAlign: "middle",
+  };
+  const headStyle: React.CSSProperties = {
+    ...cellStyle,
+    color: "var(--text-muted)",
+    fontWeight: 600,
+    textAlign: "left" as const,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  };
+  const btn = (color: string): React.CSSProperties => ({
+    padding: "4px 10px",
+    fontSize: 11,
+    fontWeight: 600,
+    borderRadius: 2,
+    border: `1px solid ${color}`,
+    background: "transparent",
+    color,
+    cursor: "pointer",
+  });
+
+  return (
+    <Card>
+      <SectionHeading>Securities Health</SectionHeading>
+
+      <div style={{ marginBottom: 20 }}>
+        <CardLabel>
+          Delist candidates ({candidates.length})
+        </CardLabel>
+        <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "4px 0 12px" }}>
+          Yahoo has returned a hard-delist signal repeatedly for these tickers
+          over at least 90 days. Confirm to deactivate (hidden from the grid,
+          historical bars retained), or mark live to reset the counter.
+        </p>
+        {candidates.length === 0 ? (
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>None.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={headStyle}>Ticker</th>
+                  <th style={headStyle}>Name</th>
+                  <th style={headStyle}>Last bar</th>
+                  <th style={headStyle}>First missed</th>
+                  <th style={headStyle}>Misses</th>
+                  <th style={headStyle}>Suggested rename</th>
+                  <th style={headStyle}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {candidates.map((c) => (
+                  <tr key={c.id}>
+                    <td style={{ ...cellStyle, fontFamily: "monospace", color: "var(--text-primary)", fontWeight: 600 }}>
+                      {c.ticker}
+                    </td>
+                    <td style={cellStyle}>{c.name}</td>
+                    <td style={cellStyle}>{fmtDate(c.lastBarDate)}</td>
+                    <td style={cellStyle}>{fmtDate(c.firstMissedAt)}</td>
+                    <td style={cellStyle}>{c.consecutiveMisses}</td>
+                    <td style={cellStyle}>
+                      {c.suggestedReplacement ? (
+                        <span style={{ fontFamily: "monospace", color: "var(--color-accent)" }}>
+                          → {c.suggestedReplacement}
+                        </span>
+                      ) : (
+                        <span style={{ color: "var(--text-muted)" }}>—</span>
+                      )}
+                    </td>
+                    <td style={cellStyle}>
+                      {isAdmin ? (
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button
+                            style={btn("var(--color-negative)")}
+                            disabled={actionMut.isPending}
+                            onClick={() =>
+                              actionMut.mutate({
+                                action: "confirm-delist",
+                                securityId: c.id,
+                              })
+                            }
+                          >
+                            Confirm delist
+                          </button>
+                          <button
+                            style={btn("var(--text-secondary)")}
+                            disabled={actionMut.isPending}
+                            onClick={() =>
+                              actionMut.mutate({
+                                action: "mark-live",
+                                securityId: c.id,
+                              })
+                            }
+                          >
+                            Mark live
+                          </button>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                          Admin only
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div>
+        <CardLabel>
+          Delisted (auto-hidden) ({delisted.length})
+        </CardLabel>
+        <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "4px 0 12px" }}>
+          Already deactivated. They won't ingest or render until you reactivate.
+        </p>
+        {delisted.length === 0 ? (
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>None.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={headStyle}>Ticker</th>
+                  <th style={headStyle}>Name</th>
+                  <th style={headStyle}>Last bar</th>
+                  <th style={headStyle}>Delisted at</th>
+                  <th style={headStyle}>Suggested rename</th>
+                  <th style={headStyle}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {delisted.map((d) => (
+                  <tr key={d.id}>
+                    <td style={{ ...cellStyle, fontFamily: "monospace", color: "var(--text-primary)", fontWeight: 600 }}>
+                      {d.ticker}
+                    </td>
+                    <td style={cellStyle}>{d.name}</td>
+                    <td style={cellStyle}>{fmtDate(d.lastBarDate)}</td>
+                    <td style={cellStyle}>{fmtDate(d.delistedAt)}</td>
+                    <td style={cellStyle}>
+                      {d.suggestedReplacement ? (
+                        <span style={{ fontFamily: "monospace", color: "var(--color-accent)" }}>
+                          → {d.suggestedReplacement}
+                        </span>
+                      ) : (
+                        <span style={{ color: "var(--text-muted)" }}>—</span>
+                      )}
+                    </td>
+                    <td style={cellStyle}>
+                      {isAdmin ? (
+                        <button
+                          style={btn("var(--color-accent)")}
+                          disabled={actionMut.isPending}
+                          onClick={() =>
+                            actionMut.mutate({
+                              action: "reactivate",
+                              securityId: d.id,
+                            })
+                          }
+                        >
+                          Reactivate
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                          Admin only
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 // -- Audit log -------------------------------------------------------------
 
 const auditCols: Column<{ id: string; at: string; action: string; actor: string; payloadJson: unknown }>[] = [
@@ -1068,6 +1339,98 @@ function AuditLogTable() {
   );
 }
 
+// -- Users (admin only) -----------------------------------------------------
+
+interface UserRow {
+  email: string;
+  role: "ADMIN" | "USER";
+  lastLoginAt: string | null;
+  createdAt: string;
+}
+
+function UsersPanel() {
+  const isAdmin = useIsAdmin();
+  const { data, isLoading } = useQuery<{ users: UserRow[] }>({
+    queryKey: ["admin-users"],
+    queryFn: () => fetch("/api/admin/users").then((r) => r.json()),
+    enabled: isAdmin,
+    refetchInterval: 60_000,
+  });
+
+  if (!isAdmin) return null;
+
+  const cellStyle: React.CSSProperties = {
+    padding: "8px 10px",
+    borderBottom: "1px solid var(--bg-border)",
+    fontSize: 12,
+    color: "var(--text-secondary)",
+    verticalAlign: "middle",
+  };
+  const headStyle: React.CSSProperties = {
+    ...cellStyle,
+    color: "var(--text-muted)",
+    fontWeight: 600,
+    textAlign: "left" as const,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  };
+
+  const users = data?.users ?? [];
+
+  return (
+    <Card>
+      <SectionHeading>Users</SectionHeading>
+      <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px" }}>
+        Everyone who has signed in via Cloudflare Access. Each user has their own
+        portfolios; the admin alone controls the shared ticker universe and
+        securities. Roles derive from the <code>ADMIN_EMAILS</code> allow-list.
+      </p>
+      {isLoading ? (
+        <Skeleton height={80} />
+      ) : users.length === 0 ? (
+        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No users yet.</div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={headStyle}>Email</th>
+                <th style={headStyle}>Role</th>
+                <th style={headStyle}>Last login</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.email}>
+                  <td style={{ ...cellStyle, color: "var(--text-primary)" }}>{u.email}</td>
+                  <td style={cellStyle}>
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        letterSpacing: "0.06em",
+                        padding: "2px 6px",
+                        borderRadius: 3,
+                        border: `1px solid ${u.role === "ADMIN" ? "var(--color-accent)" : "var(--bg-border)"}`,
+                        color: u.role === "ADMIN" ? "var(--color-accent)" : "var(--text-secondary)",
+                      }}
+                    >
+                      {u.role}
+                    </span>
+                  </td>
+                  <td style={cellStyle}>
+                    {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString() : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // -- Main -------------------------------------------------------------------
 
 export function DataClient() {
@@ -1089,6 +1452,8 @@ export function DataClient() {
       </div>
       <ManualEntry />
       <DataSourceStatus />
+      <SecuritiesHealth />
+      <UsersPanel />
       <AuditLogTable />
     </div>
   );

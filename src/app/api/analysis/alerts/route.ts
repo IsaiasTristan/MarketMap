@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAlerts, generateAlerts, dismissAlert } from "@/server/services/alerts.service";
+import { requirePortfolioAccess } from "@/lib/api/guards";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -18,6 +19,8 @@ export async function POST(req: Request) {
   }
 
   if (action === "generate" && portfolioId) {
+    const guard = await requirePortfolioAccess(req, portfolioId);
+    if (guard) return guard;
     await generateAlerts(portfolioId);
     return NextResponse.json({ ok: true });
   }

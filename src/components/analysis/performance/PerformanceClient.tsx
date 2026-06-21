@@ -340,15 +340,7 @@ export function PerformanceClient() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 600, color: "var(--text-primary)", margin: "0 0 4px" }}>
-            Performance
-          </h1>
-          <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: 0 }}>
-            How good are my risk-adjusted returns?
-          </p>
-        </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
         <div style={{ display: "flex", gap: 4 }}>
           {BENCHMARKS.map((b) => (
             <button

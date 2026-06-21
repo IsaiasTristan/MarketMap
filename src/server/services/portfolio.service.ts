@@ -52,8 +52,9 @@ async function loadBenchmarkSeriesDb(
     .map((p) => ({ date: iso(p.tradeDate), adjClose: dec(p.adjClose) }));
 }
 
-export async function listPortfolios(db: PrismaClient) {
+export async function listPortfolios(db: PrismaClient, userId: string) {
   return db.portfolio.findMany({
+    where: { userId },
     orderBy: { updatedAt: "desc" },
     include: { _count: { select: { positions: true } } },
   });
@@ -66,8 +67,12 @@ export async function getPortfolio(db: PrismaClient, id: string) {
   });
 }
 
-export async function createPortfolio(db: PrismaClient, name: string) {
-  return db.portfolio.create({ data: { name } });
+export async function createPortfolio(
+  db: PrismaClient,
+  name: string,
+  userId: string,
+) {
+  return db.portfolio.create({ data: { name, userId } });
 }
 
 export async function renamePortfolio(db: PrismaClient, id: string, name: string) {

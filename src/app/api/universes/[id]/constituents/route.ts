@@ -2,9 +2,11 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/infrastructure/db/client";
 import { saveConstituentsBody } from "@/lib/api/schemas";
 import {
+  addUniverseConstituents,
   removeUniverseConstituent,
   replaceUniverseConstituents,
 } from "@/server/services/universe.service";
+import { requireAdminGuard } from "@/lib/api/guards";
 
 // Replacing a multi-thousand-ticker universe touches 5+ batched queries
 // inside one Postgres transaction. Allow plenty of headroom over the default
@@ -15,6 +17,8 @@ export const dynamic = "force-dynamic";
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function POST(req: Request, ctx: Ctx) {
+  const adminGuard = await requireAdminGuard(req);
+  if (adminGuard) return adminGuard;
   const { id } = await ctx.params;
   const json = await req.json().catch(() => null);
   const parsed = saveConstituentsBody.safeParse(json);
@@ -31,16 +35,22 @@ export async function POST(req: Request, ctx: Ctx) {
       { status: 404 }
     );
 
+  // `mode=append` adds the rows to the existing universe (single-ticker /
+  // handful add path); the default replaces the whole list (CSV / paste).
+  const mode = new URL(req.url).searchParams.get("mode")?.trim();
+  const append = mode === "append";
+
   try {
-    const result = await replaceUniverseConstituents(
-      prisma,
-      id,
-      parsed.data.rows
-    );
+    const result = append
+      ? await addUniverseConstituents(prisma, id, parsed.data.rows)
+      : await replaceUniverseConstituents(prisma, id, parsed.data.rows);
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    console.error("[constituents.POST] replace failed", { universeId: id, message });
+    console.error(
+      `[constituents.POST] ${append ? "append" : "replace"} failed`,
+      { universeId: id, message }
+    );
     return NextResponse.json(
       { ok: false, error: `Failed to save tickers: ${message}` },
       { status: 500 }
@@ -49,6 +59,8 @@ export async function POST(req: Request, ctx: Ctx) {
 }
 
 export async function DELETE(req: Request, ctx: Ctx) {
+  const adminGuard = await requireAdminGuard(req);
+  if (adminGuard) return adminGuard;
   const { id } = await ctx.params;
   const ticker = new URL(req.url).searchParams.get("ticker")?.trim();
   if (!ticker) {

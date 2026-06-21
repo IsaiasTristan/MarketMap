@@ -93,7 +93,7 @@ export function AttributionClient() {
       )
     : [];
 
-  // Period summary table (MTD / QTD / YTD from engine `periods` / `periodsLog`).
+  // Period summary table (1D / 5D / 1M / 3M / 6M / 1Y from engine `periods` / `periodsLog`).
   //
   // In log mode each row carries a `_total_geometric` (exp(Σ y_log) − 1) and
   // `_total_log` (Σ y_log) so the rendered "Total Excess" cell can show the
@@ -102,7 +102,7 @@ export function AttributionClient() {
     const codes = ["MKT_RF", "SMB", "HML", "MOM", "RMW", "CMA"] as const;
     if (useLog) {
       if (!attribution?.periodsLog?.length) return [];
-      return (["MTD", "QTD", "YTD"] as const)
+      return (["1D", "5D", "1M", "3M", "6M", "1Y"] as const)
         .map((label) => attribution.periodsLog!.find((p) => p.label === label))
         .filter((p): p is PeriodAttributionSummaryLog => p != null)
         .map((p) => {
@@ -119,7 +119,7 @@ export function AttributionClient() {
         });
     }
     if (!attribution?.periods?.length) return [];
-    return (["MTD", "QTD", "YTD"] as const)
+    return (["1D", "5D", "1M", "3M", "6M", "1Y"] as const)
       .map((label) => attribution.periods.find((p) => p.label === label))
       .filter((p): p is PeriodAttributionSummary => p != null)
       .map((p) => {

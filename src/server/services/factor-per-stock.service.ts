@@ -31,6 +31,14 @@ import { prisma as db } from "@/infrastructure/db/client";
 import { multivariateOls } from "@/lib/factors/regression/ols";
 import { rollingMultivariateOls } from "@/lib/factors/regression/rolling";
 import { normalizeFactorRows } from "@/lib/factors/regression/normalization";
+import {
+  factorRowLog,
+  logOnePlusClipped,
+} from "@/lib/factors/attribution/log-returns";
+import {
+  resolvePeriodSlice,
+  type PeriodLabel,
+} from "@/lib/factors/attribution/period";
 import { factorCovarianceMatrix } from "@/lib/factors/risk/covariance";
 import { computeRiskDecomposition } from "@/lib/factors/risk/decomposition";
 import { computeFactorCoverage } from "@/lib/factors/regression/coverage";
@@ -204,6 +212,107 @@ export interface PerStockRow {
   rollingResidualPostBurnSum: number | null;
   /** Count of valid (non-failed, non-burn-in) rolling fits summed. */
   rollingObservationsPostBurn: number;
+  /**
+   * Date-aligned post-burn-in rolling residual stream — only populated when
+   * the caller passes `retainResidualStreams: true`. Used by the portfolio
+   * residual service to construct ε_p,t = Σ_i w_i · ε_i,t. Excluded from
+   * the API response by the per-stock route to keep payloads compact.
+   */
+  rollingResidualStream?: { dates: string[]; residuals: number[] };
+  /**
+   * t-statistic for `rollingResidualPostBurnSum`: Σε / (σ_idio × √n_eff).
+   * Reads as "is the rolling-OLS residual drift over post burn-in
+   * statistically distinct from zero?" σ_idio is the daily SD of the
+   * rolling-OLS residual stream itself; n_eff is `rollingObservationsPostBurn`.
+   * Null when the rolling sum is null.
+   */
+  residualTStat: number | null;
+  /**
+   * 95 % CI half-width for `rollingResidualPostBurnSum`: 1.96 × σ_idio × √n_eff.
+   * Pair with the "Unexplained" column to read the band. Null when the
+   * rolling sum is null.
+   */
+  residualCi95Half: number | null;
+
+  // ----- Log-space variants (Attribution mode = "log") -----------------
+  // Mirrors of the simple-space fields above, computed by running parallel
+  // OLS on log returns (y_log = ln(1+r) − ln(1+rf), x_log = factorRowLog(...)).
+  // Null when the log path failed for this stock (rare — happens when a
+  // factor return is below −100 % in domain).
+  /** Log-space static α annualised: α_log_daily × 252. */
+  alphaAnnualizedLog: number | null;
+  /** Log-space static α t-stat from snapshot OLS on (y_log, x_log). */
+  alphaTStatLog: number | null;
+  /** Log-space SE(α) per day. */
+  alphaStdErrorLog: number | null;
+  /** Log-space annualised CI half: 1.96 × SE(α_log) × 252. */
+  alphaCi95HalfLog: number | null;
+  /** Σ rolling α_log over post burn-in. exp(this) − 1 ≈ compounded geometric alpha. */
+  rollingAlphaPostBurnSumLog: number | null;
+  /** Σ rolling ε_log over post burn-in. */
+  rollingResidualPostBurnSumLog: number | null;
+  /** t-stat on the log-space residual sum, derived from σ of the rolling log-residual stream. */
+  residualTStatLog: number | null;
+  /** 95 % CI half on log-space Σε. */
+  residualCi95HalfLog: number | null;
+  /**
+   * Date-aligned log-space rolling residual stream — only populated when
+   * the caller passes `retainResidualStreams: true`. Used by the portfolio
+   * residual service to construct ε_p,t in log space when the user is in
+   * log attribution mode. Excluded from the API response by the per-stock
+   * route to keep payloads compact.
+   */
+  rollingResidualStreamLog?: { dates: string[]; residuals: number[] };
+  /**
+   * Number of days in the per-stock log path where 1 + r fell below the
+   * clip floor (LOG_ONE_PLUS_CLIP_FLOOR ≈ 1e-6) and the log was substituted
+   * with a clipped value. Surfaced in the cell tooltip when > 0 so the user
+   * knows the log-α / log-ε for that stock should be read with caution.
+   */
+  clippedLogDayCount: number;
+  /**
+   * Per-attribution-period slices of the Return / Alpha / Unexplained
+   * columns. Betas are fit on the full horizon window; these restrict the
+   * realized contributions to a trailing reporting period so the grid can
+   * follow the Attribution Period control without re-running 400-ticker
+   * regressions. Keyed by the same labels as the UI's PeriodSelect.
+   */
+  periodSlices?: Record<PeriodLabel, PerStockPeriodSlice>;
+  /**
+   * Realized total return of the stock over the full regression-aligned
+   * window: `exp(Σ ln(1 + r_t)) − 1` over the same date sample the
+   * regression uses. Pure price quantity (dividend-inclusive via
+   * adjClose), independent of betas / alpha / residual — matches the
+   * stock price chart's headline over the same date range. Period-level
+   * variants live on `periodSlices[label].realizedTotalReturn`. Null
+   * when any `1 + r ≤ 0` (strict-drop, consistent with log-path policy).
+   */
+  realizedTotalReturn: number | null;
+}
+
+/**
+ * Period-restricted contributions for a single stock. `returnByFactor[code]`
+ * is `β_f × Σ_{t in period} r_{t,f}` (additive, simple). Alpha / residual
+ * sums come from the same fixed-W rolling OLS used for the full-window
+ * columns, restricted to the period's date range.
+ */
+export interface PerStockPeriodSlice {
+  returnByFactor: Partial<Record<FactorCode, number>>;
+  alphaSum: number | null;
+  residualSum: number | null;
+  alphaSumLog: number | null;
+  residualSumLog: number | null;
+  observations: number;
+  startDate: string;
+  endDate: string;
+  /**
+   * Realized total stock return over this period's date range:
+   * `exp(Σ ln(1 + r_t)) − 1` over `[startDate, endDate]`. Pure price
+   * quantity (dividend-inclusive via adjClose); matches the price chart
+   * headline over the same dates. Null when any `1 + r ≤ 0` in the
+   * slice (strict-drop, consistent with log-path policy).
+   */
+  realizedTotalReturn: number | null;
 }
 
 export interface PerStockResult {
@@ -267,6 +376,17 @@ interface PerStockParams {
   sector?: string | null;
   /** Optional sub-theme filter (case-insensitive). */
   subTheme?: string | null;
+  /**
+   * Restrict the run to a specific set of tickers (e.g. portfolio holdings).
+   * Case-insensitive match. When set, sector/sub-theme filters still apply.
+   */
+  tickerSubset?: string[];
+  /**
+   * When true, attach `rollingResidualStream: {dates, residuals}` to each
+   * PerStockRow. Internal-only — never serialised to the API. Used by the
+   * portfolio residual service to build ε_p,t.
+   */
+  retainResidualStreams?: boolean;
 }
 
 /** Load every active UniverseConstituent with sector/sub-theme metadata. */
@@ -368,6 +488,42 @@ export async function runPerStockFactors(
   });
 
   const { usableFactors, coverage, alignedWindowDates } = coverageResult;
+  // Pre-window burn-in runway. Mirror the per-stock-timeseries service's
+  // budget so the rolling-OLS sample feeding the grid's Σα / Σε column
+  // covers the same dates the waterfall sums over.
+  //
+  // Three burn-in components stack at the front of the alignment loop:
+  //   1. NORM_WARMUP (60): the per-stock factor normalization runs a
+  //      252-day rolling window with `minObservations: 60`, so the first
+  //      ~60 rows produce null and are dropped post-norm.
+  //   2. ROLLING_OLS burn-in (GRID_ROLLING_WINDOW − 1 = 59): once
+  //      normalization survives, the rolling regression itself needs W
+  //      observations before producing its first fit.
+  //   3. DATA_BUFFER (20): absorbs minor calendar misalignment / strict-
+  //      drop losses so the visible model-window starts on a valid fit
+  //      even when a handful of historic dates get dropped.
+  //
+  // MUST equal NORM_WARMUP + (GRID_ROLLING_WINDOW − 1) + DATA_BUFFER from
+  // factor-per-stock-timeseries.service. If you change one, change both.
+  const NORM_WARMUP = 60;
+  const DATA_BUFFER = 20;
+  const PRE_WINDOW_BURN_IN =
+    NORM_WARMUP + (GRID_ROLLING_WINDOW - 1) + DATA_BUFFER;
+  const windowFirstDate = alignedWindowDates[0] ?? null;
+  const preWindowBurnInDates: string[] = (() => {
+    if (!windowFirstDate || PRE_WINDOW_BURN_IN <= 0) return [];
+    const idx = allDates.indexOf(windowFirstDate);
+    if (idx <= 0) return [];
+    const candidate = allDates.slice(Math.max(0, idx - PRE_WINDOW_BURN_IN), idx);
+    return candidate.filter((d) =>
+      usableFactors.every((c) => perFactorByDate.get(c)?.has(d)),
+    );
+  })();
+  const extendedAlignedWindowDates = [
+    ...preWindowBurnInDates,
+    ...alignedWindowDates,
+  ];
+  const MODEL_START_IDX_EXT = preWindowBurnInDates.length;
   // Computed once per request — the matrix is shared across every constituent
   // so each row of the grid surfaces the same staleness diagnostic. RF is
   // folded in because the per-stock excess-return computation falls back to
@@ -413,7 +569,10 @@ export async function runPerStockFactors(
       targetAnnualVol: 0.1,
     },
   );
-  const rfWindow: number[] = alignedWindowDates.map((d) => rfByDate.get(d) ?? 0);
+  // rfWindow was indexed positionally over alignedWindowDates; with the
+  // per-stock alignment loop now iterating the EXTENDED sample, RF lookups
+  // moved to direct `rfByDate.get(d)` reads, which is robust to the index
+  // shift. Removed.
 
   const fullNormRows = matrixNorm.normalizedRows.filter(
     (row): row is number[] => row.every((v) => v != null && Number.isFinite(v)),
@@ -430,10 +589,16 @@ export async function runPerStockFactors(
     return prod - 1;
   });
 
-  const constituents = await loadActiveConstituents({
+  const allConstituents = await loadActiveConstituents({
     sector: params.sector,
     subTheme: params.subTheme,
   });
+  const tickerSubsetUpper = params.tickerSubset
+    ? new Set(params.tickerSubset.map((t) => t.toUpperCase()))
+    : null;
+  const constituents = tickerSubsetUpper
+    ? allConstituents.filter((c) => tickerSubsetUpper.has(c.security.ticker.toUpperCase()))
+    : allConstituents;
 
   if (!constituents.length) {
     return {
@@ -457,7 +622,9 @@ export async function runPerStockFactors(
     };
   }
 
-  const winStart = new Date(alignedWindowDates[0]!);
+  // Price-history load extends back to the first EXTENDED date (model window
+  // + pre-window burn-in runway) so the rolling-OLS sample has full coverage.
+  const winStart = new Date(extendedAlignedWindowDates[0] ?? alignedWindowDates[0]!);
   const winEnd = new Date(alignedWindowDates[alignedWindowDates.length - 1]!);
   winStart.setUTCDate(winStart.getUTCDate() - 7);
 
@@ -482,7 +649,7 @@ export async function runPerStockFactors(
   const skipped: { ticker: string; reason: string }[] = [];
 
   // Aggregate zero-fill audit
-  let totalImputed = 0;
+  const totalImputed = 0;
   let totalCells = 0;
 
   for (const c of constituents) {
@@ -496,16 +663,79 @@ export async function runPerStockFactors(
     // STRICT DROP-ROW (Phase 3, Q3 lock): if any factor cell is missing
     // for date d, drop the row entirely and record (date, factor) into
     // `droppedDates`. NEVER impute as 0.
-    const aligned: { factorRow: number[]; excessReturn: number }[] = [];
+    //
+    // Each kept row also carries `excessLog = ln(1 + r) − ln(1 + rf)` for
+    // the parallel log-space regression path. Uses the clipped log helper:
+    // a delisting-to-zero day shouldn't poison the entire stock's log
+    // path; clipping with a flag is preferable to strict-drop for the
+    // per-stock screener (the engine's strict-drop policy is still right
+    // for the portfolio-level path).
+    interface AlignedRow {
+      factorRow: number[];
+      excessReturn: number;
+      /**
+       * Raw daily simple stock return on this date: (P_t / P_{t-1}) − 1
+       * via adjClose, so dividends are already included. Carried alongside
+       * `excessReturn` so the realized total return column can be computed
+       * directly from prices over arbitrary period slices, independent of
+       * any beta / alpha / residual decomposition.
+       */
+      rawReturn: number;
+      /**
+       * Absolute adjusted-close price on this date (`cur` from priceMap).
+       * Used to compute realized total return as a direct price ratio
+       * (P_end / P_anchor) − 1 over arbitrary slices. This is robust to
+       * multi-day gaps in the stock's price series — the chained
+       * `exp(Σ ln(1 + r)) − 1` approach silently drops gap-down moves
+       * when the alignment skips rows; the direct price ratio captures
+       * them correctly because both endpoints are stored prices.
+       */
+      price: number;
+      /**
+       * Anchor price for computing the daily return on this row: the
+       * adjClose at the trading day immediately before this row that the
+       * stock actually traded on (resolved via the priceMap backsearch).
+       * Stored so the realized total return helper can anchor a slice
+       * starting at `startIdx == 0` to the same price `r[0]` was computed
+       * against (i.e. the very first kept return is included in the
+       * "over the slice" total).
+       */
+      prevPrice: number;
+      excessLog: number;
+      yClippedLog: boolean;
+      /** True iff this row falls within the user-requested model window. */
+      inModelWindow: boolean;
+    }
+    const aligned: AlignedRow[] = [];
+    const alignedDates: string[] = [];
     const droppedDates: { date: string; factor: FactorCode }[] = [];
-    for (let i = 0; i < alignedWindowDates.length; i++) {
-      const d = alignedWindowDates[i]!;
-      const dPrev = i === 0 ? null : alignedWindowDates[i - 1]!;
+    // Iterate over the EXTENDED window (pre-window burn-in + model window).
+    // The pre-window prefix never contributes to per-stock summary fields;
+    // it only feeds the rolling-OLS sample so burn-in falls outside the
+    // user's analysis window.
+    for (let i = 0; i < extendedAlignedWindowDates.length; i++) {
+      const d = extendedAlignedWindowDates[i]!;
+      const dPrev = i === 0 ? null : extendedAlignedWindowDates[i - 1]!;
       const cur = priceMap.get(d);
-      let prev: number | undefined;
-      if (dPrev != null) {
-        prev = priceMap.get(dPrev);
-      } else {
+      // Resolve `prev` with a 7-day backward calendar search whenever the
+      // direct lookup fails. This handles two cases consistently:
+      //   1) i === 0 — there's no `dPrev` in extendedAlignedWindowDates,
+      //      so we walk back from `d` to find the most recent stored close.
+      //   2) i > 0  — `dPrev` exists in the date union but priceMap has no
+      //      entry for it. This happens when (a) the stock didn't trade on
+      //      `dPrev` (e.g. multi-day halt or post-IPO gap) or (b) the date
+      //      is a phantom from the factor matrix (AQR's global-calendar
+      //      US holidays, FRED RF weekend rows). Without the backsearch
+      //      the day's daily return is silently DROPPED — which collapses
+      //      the chained `exp(Σ ln(1+r)) − 1` to a value disconnected from
+      //      the actual price ratio (BATL 1Y was +51 % via skipped-gap
+      //      compounding while the underlying price went 1.5 → 1.4 = −7 %).
+      // Mirrors the same fix in factor-per-stock-timeseries.service.ts so
+      // the grid's realizedTotalReturn ties to the per-stock chart's
+      // `Total ≈ X%` line.
+      let prev: number | undefined =
+        dPrev != null ? priceMap.get(dPrev) : undefined;
+      if (prev === undefined) {
         const check = new Date(d);
         for (let lag = 1; lag <= 7 && prev === undefined; lag++) {
           check.setUTCDate(check.getUTCDate() - 1);
@@ -514,7 +744,18 @@ export async function runPerStockFactors(
       }
       if (cur == null || prev == null || prev <= 0) continue;
       const r = (cur - prev) / prev;
-      const excess = r - (rfWindow[i] ?? 0);
+      const rfDaily = rfByDate.get(d) ?? 0;
+      const excess = r - rfDaily;
+      const inModelWindow = i >= MODEL_START_IDX_EXT;
+
+      const rLog = logOnePlusClipped(r);
+      const rfLog = logOnePlusClipped(rfDaily);
+      let excessLog = Number.NaN;
+      let yClippedLog = false;
+      if (Number.isFinite(rLog.value) && Number.isFinite(rfLog.value)) {
+        excessLog = rLog.value - rfLog.value;
+        yClippedLog = rLog.clipped || rfLog.clipped;
+      }
 
       const dayMap = factorByDate.get(d);
       if (!dayMap) {
@@ -534,10 +775,26 @@ export async function runPerStockFactors(
         row[fi] = v;
       }
       if (dropRow) continue;
-      aligned.push({ factorRow: row, excessReturn: excess });
+      aligned.push({
+        factorRow: row,
+        excessReturn: excess,
+        rawReturn: r,
+        price: cur,
+        prevPrice: prev,
+        excessLog,
+        yClippedLog,
+        inModelWindow,
+      });
+      alignedDates.push(d);
     }
 
-    if (aligned.length < minObs) {
+    // Model-window-only count for the static-OLS DOF check (the pre-window
+    // burn-in prefix doesn't count toward "enough data to fit").
+    const modelWindowAlignedCount = aligned.reduce(
+      (n, a) => n + (a.inModelWindow ? 1 : 0),
+      0,
+    );
+    if (modelWindowAlignedCount < minObs) {
       skipped.push({ ticker, reason: "INSUFFICIENT_DOF" });
       continue;
     }
@@ -554,21 +811,154 @@ export async function runPerStockFactors(
         targetAnnualVol: 0.1,
       },
     );
-    const y: number[] = [];
-    const x: number[][] = [];
-    const xRawKept: number[][] = [];
+    // EXTENDED arrays: full pre-window-burn-in + model-window sample. Used
+    // for rolling OLS so burn-in falls in the pre-window prefix and the
+    // resulting fits cover the entire model window.
+    const yExt: number[] = [];
+    const xExt: number[][] = [];
+    const xRawExtKept: number[][] = [];
+    const alignedExtKeptDates: string[] = [];
+    const inModelWindowExt: boolean[] = [];
+    /**
+     * Raw daily simple stock returns aligned 1:1 with `yExt` /
+     * `alignedExtKeptDates`. Used to compute realized total return
+     * (Σ ln(1 + r) → exp − 1) over arbitrary slices, independent of
+     * the regression. Dividend-inclusive (sourced from adjClose).
+     */
+    const rawReturnExt: number[] = [];
+    /**
+     * Absolute adjClose price at each kept aligned date (1:1 with
+     * `rawReturnExt`). Anchors the realized-total-return helper to a
+     * direct price ratio that captures multi-day gap moves the chained
+     * sum drops.
+     */
+    const priceExt: number[] = [];
+    /**
+     * Anchor price (priceMap.get backsearch) for each kept row's daily
+     * return. `priceExt[i] / prevPriceExt[i] - 1 == rawReturnExt[i]` by
+     * construction. Used to anchor the realized-total-return helper when
+     * the slice starts at `startIdx == 0`.
+     */
+    const prevPriceExt: number[] = [];
+    const yLogExt: number[] = [];
+    const xLogExt: number[][] = [];
+    let logPathOk = true;
+    let clippedLogDayCount = 0;
     for (let i = 0; i < yRaw.length; i++) {
       const row = alignedNorm.normalizedRows[i];
       if (!row || row.some((v) => v == null || !Number.isFinite(v))) continue;
-      y.push(yRaw[i]!);
-      x.push(row as number[]);
-      xRawKept.push(xRaw[i]!);
+      yExt.push(yRaw[i]!);
+      xExt.push(row as number[]);
+      xRawExtKept.push(xRaw[i]!);
+      alignedExtKeptDates.push(alignedDates[i]!);
+      inModelWindowExt.push(aligned[i]!.inModelWindow);
+      rawReturnExt.push(aligned[i]!.rawReturn);
+      priceExt.push(aligned[i]!.price);
+      prevPriceExt.push(aligned[i]!.prevPrice);
+
+      if (logPathOk) {
+        const a = aligned[i]!;
+        const xLogRow = factorRowLog(xRaw[i]!);
+        if (!Number.isFinite(a.excessLog) || xLogRow === null) {
+          logPathOk = false;
+        } else {
+          if (a.inModelWindow && a.yClippedLog) clippedLogDayCount++;
+          yLogExt.push(a.excessLog);
+          xLogExt.push(xLogRow);
+        }
+      }
     }
+    // First index in the kept (extended) arrays where the model window
+    // starts — used as the burn-in cutoff for rolling-fit α/ε sums and
+    // as the slice point for static-OLS computations.
+    const modelStartIdxExt = (() => {
+      for (let i = 0; i < inModelWindowExt.length; i++) {
+        if (inModelWindowExt[i]) return i;
+      }
+      return inModelWindowExt.length;
+    })();
+
+    // Model-window-only slices for the snapshot OLS, realized vol,
+    // covariance, decompositions — every "static" stat anchored to the
+    // user-requested window.
+    const y = yExt.slice(modelStartIdxExt);
+    const x = xExt.slice(modelStartIdxExt);
+    const xRawKept = xRawExtKept.slice(modelStartIdxExt);
+    const yLog = yLogExt.slice(modelStartIdxExt);
+    const xLog = xLogExt.slice(modelStartIdxExt);
+    /**
+     * Raw daily simple stock returns sliced to the model window — aligns
+     * 1:1 with `xRawKept` and the dates returned by
+     * `alignedExtKeptDates.slice(modelStartIdxExt)`. Kept available for
+     * any consumer that needs the per-day series; the `realizedTotalReturn`
+     * helper below anchors directly to absolute prices instead so it is
+     * robust to multi-day gaps in the stock's price series.
+     */
+    const rawReturn = rawReturnExt.slice(modelStartIdxExt);
+    const priceArr = priceExt.slice(modelStartIdxExt);
+    const prevPriceArr = prevPriceExt.slice(modelStartIdxExt);
+
+    /**
+     * Realized total return over `[startIdx, endIdx]` (inclusive) computed
+     * as a direct price endpoint ratio:
+     *
+     *     anchor   = startIdx === 0 ? prevPriceArr[0] : priceArr[startIdx - 1]
+     *     end      = priceArr[endIdx]
+     *     return   = end / anchor − 1
+     *
+     * Anchor semantics: the price at the kept-aligned trading day
+     * IMMEDIATELY BEFORE the slice's first date — i.e. the same anchor a
+     * Σ ln(1+r) over `r[startIdx..endIdx]` would have if every `r` were
+     * computed against the immediately previous trading day. For
+     * `startIdx === 0` we fall back to `prevPriceArr[0]`, which is the
+     * priceMap-backsearch result for the very first kept row (the price
+     * the very first daily return was computed against).
+     *
+     * This formulation is robust to multi-day gaps in the stock's price
+     * series (e.g. trading halts, post-IPO sparsity): the chained
+     * `exp(Σ ln(1+r)) − 1` approach silently drops returns whenever a
+     * row is skipped because its predecessor wasn't in priceMap, so a
+     * −43 % gap-down move can simply vanish from the chained sum and
+     * leave the chained "total" wildly disconnected from the actual
+     * price ratio. The endpoint approach keeps both anchors as stored
+     * prices and therefore matches the per-stock chart's headline
+     * essentially exactly (modulo any drift between the slice's
+     * resolved start date and the chart's calendar offset).
+     *
+     * Returns `null` when prices are missing or non-positive.
+     */
+    const realizedTotalReturnOver = (
+      startIdx: number,
+      endIdx: number,
+    ): number | null => {
+      if (startIdx < 0 || endIdx < startIdx || endIdx >= priceArr.length) {
+        return null;
+      }
+      const anchor = startIdx === 0 ? prevPriceArr[0] : priceArr[startIdx - 1];
+      const end = priceArr[endIdx];
+      if (
+        anchor == null ||
+        end == null ||
+        !Number.isFinite(anchor) ||
+        !Number.isFinite(end) ||
+        anchor <= 0
+      ) {
+        return null;
+      }
+      return end / anchor - 1;
+    };
+    const realizedTotalReturnFullWindow = realizedTotalReturnOver(
+      0,
+      priceArr.length - 1,
+    );
     if (y.length < minObs) {
       skipped.push({ ticker, reason: "INSUFFICIENT_NORMALIZED_HISTORY" });
       continue;
     }
     const fit: RegressionFit = multivariateOls(y, x);
+    // Log-space static OLS — null when the log path failed or the sample is too short.
+    const fitLog: RegressionFit | null =
+      logPathOk && yLog.length >= minObs ? multivariateOls(yLog, xLog) : null;
 
     // Strict drop-row: zero-fill is now structurally impossible.
     const zeroFillCount = 0;
@@ -664,30 +1054,233 @@ export async function runPerStockFactors(
     let rollingAlphaPostBurnSum: number | null = null;
     let rollingResidualPostBurnSum: number | null = null;
     let rollingObservationsPostBurn = 0;
-    if (y.length >= GRID_ROLLING_WINDOW + 1) {
-      const dummyDates = y.map((_, i) => String(i));
-      const rolling = rollingMultivariateOls(dummyDates, y, x, GRID_ROLLING_WINDOW);
+    let residualTStat: number | null = null;
+    let residualCi95Half: number | null = null;
+    let residualStreamForOutput: { dates: string[]; residuals: number[] } | undefined;
+    // Per-day rolling α / ε keyed by model-window index, so period slices can
+    // re-sum over an arbitrary trailing sub-range without re-running OLS.
+    const rollingByModelIdx: { modelIdx: number; alpha: number; residual: number }[] = [];
+    const rollingByModelIdxLog: { modelIdx: number; alpha: number; residual: number }[] = [];
+    if (yExt.length >= GRID_ROLLING_WINDOW + 1) {
+      // Rolling OLS runs over the EXTENDED sample so pre-window dates
+      // serve as burn-in runway. We then sum α/ε ONLY over indices
+      // falling within the model window — the user's analysis window —
+      // matching the per-stock-timeseries waterfall's sum range exactly.
+      const datesUsed = params.retainResidualStreams
+        ? alignedExtKeptDates
+        : yExt.map((_, i) => String(i));
+      const rolling = rollingMultivariateOls(datesUsed, yExt, xExt, GRID_ROLLING_WINDOW);
       let aSum = 0;
       let eSum = 0;
       let obs = 0;
+      // Stash each post-burn-in rolling residual so we can derive the SD of
+      // the residual stream itself. We can't reuse the per-day OLS residuals
+      // (those condition on the full window) — the rolling residuals are the
+      // actual realisations of unexplained drift the user sees in the chart.
+      const rollingResiduals: number[] = [];
+      const rollingResidualDates: string[] = [];
       for (let r = 0; r < rolling.length; r++) {
         const t = GRID_ROLLING_WINDOW - 1 + r;
+        // Skip pre-window indices: the rolling fit at t looks back W days,
+        // and we want sums to start once the *fit's right edge* lands in
+        // the model window. Pre-window-edge fits exist (they're well-formed
+        // OLS fits with W days of data) but their α/ε belong to a date
+        // outside the user's window.
+        if (t < modelStartIdxExt) continue;
         const rfit = rolling[r]!.fit;
         if (rfit.failed) continue;
-        const xt = x[t];
+        const xt = xExt[t];
         if (!xt) continue;
         let pred = rfit.alpha;
         for (let fi = 0; fi < k; fi++) pred += (rfit.betas[fi] ?? 0) * (xt[fi] ?? 0);
+        const eps = (yExt[t] ?? 0) - pred;
         aSum += rfit.alpha;
-        eSum += (y[t] ?? 0) - pred;
+        eSum += eps;
+        rollingResiduals.push(eps);
+        rollingResidualDates.push(rolling[r]!.date);
+        rollingByModelIdx.push({ modelIdx: t - modelStartIdxExt, alpha: rfit.alpha, residual: eps });
         obs++;
       }
       if (obs > 0) {
         rollingAlphaPostBurnSum = aSum;
         rollingResidualPostBurnSum = eSum;
         rollingObservationsPostBurn = obs;
+        if (params.retainResidualStreams) {
+          residualStreamForOutput = {
+            dates: rollingResidualDates,
+            residuals: rollingResiduals,
+          };
+        }
+      }
+      // T = Σε / (σ_ε × √n) where σ_ε is the SD of the rolling-OLS residual
+      // stream itself (Bessel-corrected). Treats the residuals as draws from
+      // an unknown-mean distribution and asks whether the cumulative drift
+      // is statistically distinct from zero. CI half-width follows the same
+      // SE on the sum: 1.96 × σ_ε × √n.
+      if (obs >= 2) {
+        const meanEps = rollingResiduals.reduce((s, v) => s + v, 0) / obs;
+        const varEps =
+          rollingResiduals.reduce((s, v) => s + (v - meanEps) ** 2, 0) / (obs - 1);
+        const sdEps = Math.sqrt(Math.max(varEps, 0));
+        const seSum = sdEps * Math.sqrt(obs);
+        if (seSum > 0 && Number.isFinite(seSum) && rollingResidualPostBurnSum != null) {
+          residualTStat = rollingResidualPostBurnSum / seSum;
+          residualCi95Half = 1.96 * seSum;
+        }
       }
     }
+
+    // -------------------------------------------------------------------
+    // Log-space rolling OLS — parallel to the simple-space block above,
+    // run on (yLog, xLog). When the user has the screener in log
+    // attribution mode (the default), the grid reads these fields so the
+    // ALPHA / UNEXPLAINED columns match the per-stock waterfall's
+    // log-space segments rather than the simple-space static-α (which
+    // can disagree by Jensen's inequality on high-vol stocks).
+    //
+    // Annualisation reference (locked):
+    //   Σ α_simple   = Σ daily α_simple over rolling W. Cumulative units;
+    //                  ≈ α_simple × N for N rolling fits. NOT a compounded
+    //                  return — sums of simple returns aren't compounding.
+    //   α_simple_ann = α_simple_daily × 252. Linear scaling.
+    //   Σ α_log      = Σ daily α_log over rolling W. Cumulative log
+    //                  units; exp(Σ α_log) − 1 is the compounded
+    //                  alpha-only geometric return on this stock.
+    //   α_log_ann    = α_log_daily × 252.
+    // The simple-space and log-space sums differ by approximately
+    //   ≈ Σ (1/2) σ²_y_t × Δt
+    // (Jensen's inequality on each day). For low-vol stocks the gap is
+    // < 1pp; for a 290 %-vol stock it can be > 300pp.
+    let rollingAlphaPostBurnSumLog: number | null = null;
+    let rollingResidualPostBurnSumLog: number | null = null;
+    let residualTStatLog: number | null = null;
+    let residualCi95HalfLog: number | null = null;
+    let residualStreamLogForOutput:
+      | { dates: string[]; residuals: number[] }
+      | undefined;
+    if (logPathOk && yLogExt.length >= GRID_ROLLING_WINDOW + 1) {
+      // Same extended-sample / model-window-sum convention as the simple
+      // path above — this is what makes the grid's Σα (log) tie to the
+      // waterfall's Σα (log) within numerical precision.
+      const datesUsedLog = params.retainResidualStreams
+        ? alignedExtKeptDates
+        : yLogExt.map((_, i) => String(i));
+      const rollingLog = rollingMultivariateOls(
+        datesUsedLog,
+        yLogExt,
+        xLogExt,
+        GRID_ROLLING_WINDOW,
+      );
+      let aSumLog = 0;
+      let eSumLog = 0;
+      let obsLog = 0;
+      const rollingResidualsLog: number[] = [];
+      const rollingResidualDatesLog: string[] = [];
+      for (let r = 0; r < rollingLog.length; r++) {
+        const t = GRID_ROLLING_WINDOW - 1 + r;
+        if (t < modelStartIdxExt) continue;
+        const rfit = rollingLog[r]!.fit;
+        if (rfit.failed) continue;
+        const xt = xLogExt[t];
+        if (!xt) continue;
+        let pred = rfit.alpha;
+        for (let fi = 0; fi < k; fi++) pred += (rfit.betas[fi] ?? 0) * (xt[fi] ?? 0);
+        const eps = (yLogExt[t] ?? 0) - pred;
+        aSumLog += rfit.alpha;
+        eSumLog += eps;
+        rollingResidualsLog.push(eps);
+        rollingResidualDatesLog.push(rollingLog[r]!.date);
+        rollingByModelIdxLog.push({ modelIdx: t - modelStartIdxExt, alpha: rfit.alpha, residual: eps });
+        obsLog++;
+      }
+      if (obsLog > 0) {
+        rollingAlphaPostBurnSumLog = aSumLog;
+        rollingResidualPostBurnSumLog = eSumLog;
+        if (params.retainResidualStreams) {
+          residualStreamLogForOutput = {
+            dates: rollingResidualDatesLog,
+            residuals: rollingResidualsLog,
+          };
+        }
+      }
+      if (obsLog >= 2) {
+        const meanEpsLog =
+          rollingResidualsLog.reduce((s, v) => s + v, 0) / obsLog;
+        const varEpsLog =
+          rollingResidualsLog.reduce((s, v) => s + (v - meanEpsLog) ** 2, 0) /
+          (obsLog - 1);
+        const sdEpsLog = Math.sqrt(Math.max(varEpsLog, 0));
+        const seSumLog = sdEpsLog * Math.sqrt(obsLog);
+        if (
+          seSumLog > 0 &&
+          Number.isFinite(seSumLog) &&
+          rollingResidualPostBurnSumLog != null
+        ) {
+          residualTStatLog = rollingResidualPostBurnSumLog / seSumLog;
+          residualCi95HalfLog = 1.96 * seSumLog;
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------
+    // Period slices — restrict Return / Alpha / Unexplained to each trailing
+    // reporting period. Betas are unchanged (fit on the full horizon window);
+    // only the realized contribution sums are sliced. modelDates aligns 1:1
+    // with xRawKept / y (the model-window sample).
+    // -------------------------------------------------------------------
+    const periodSlices = (() => {
+      const modelDates = alignedExtKeptDates.slice(modelStartIdxExt);
+      const labels: PeriodLabel[] = ["1D", "5D", "1M", "3M", "6M", "1Y"];
+      const out = {} as Record<PeriodLabel, PerStockPeriodSlice>;
+      for (const label of labels) {
+        const slice = resolvePeriodSlice(modelDates, label);
+        const { startIndex, endIndex } = slice;
+        const returnByFactor: Partial<Record<FactorCode, number>> = {};
+        if (startIndex >= 0) {
+          for (let fi = 0; fi < usableFactors.length; fi++) {
+            let s = 0;
+            for (let i = startIndex; i <= endIndex; i++) s += xRawKept[i]?.[fi] ?? 0;
+            returnByFactor[usableFactors[fi]!] = (fit.betas[fi] ?? 0) * s;
+          }
+        }
+        const sumRolling = (
+          stream: { modelIdx: number; alpha: number; residual: number }[],
+        ): { alpha: number | null; residual: number | null; obs: number } => {
+          let a = 0;
+          let e = 0;
+          let o = 0;
+          for (const p of stream) {
+            if (p.modelIdx >= startIndex && p.modelIdx <= endIndex) {
+              a += p.alpha;
+              e += p.residual;
+              o++;
+            }
+          }
+          return o > 0 ? { alpha: a, residual: e, obs: o } : { alpha: null, residual: null, obs: 0 };
+        };
+        const simple = sumRolling(rollingByModelIdx);
+        const logS = sumRolling(rollingByModelIdxLog);
+        // Realized total stock return over this period's date range:
+        // exp(Σ ln(1 + r)) − 1 over [startIndex, endIndex] of `rawReturn`.
+        // Pure price quantity (dividend-inclusive via adjClose), so it
+        // matches the price chart headline over the same dates and is
+        // independent of the regression's beta / alpha / residual split.
+        const realizedTotalReturn =
+          startIndex >= 0 ? realizedTotalReturnOver(startIndex, endIndex) : null;
+        out[label] = {
+          returnByFactor,
+          alphaSum: simple.alpha,
+          residualSum: simple.residual,
+          alphaSumLog: logS.alpha,
+          residualSumLog: logS.residual,
+          observations: simple.obs,
+          startDate: slice.startDate,
+          endDate: slice.endDate,
+          realizedTotalReturn,
+        };
+      }
+      return out;
+    })();
 
     rows.push({
       ticker,
@@ -695,6 +1288,8 @@ export async function runPerStockFactors(
       sector: c.sector,
       subTheme: c.subTheme,
       cells,
+      periodSlices,
+      realizedTotalReturn: realizedTotalReturnFullWindow,
       rSquared: fit.rSquared,
       alphaAnnualized: fit.alpha * TRADING_DAYS,
       alphaTStat: fit.alphaTStat,
@@ -722,6 +1317,23 @@ export async function runPerStockFactors(
       rollingAlphaPostBurnSum,
       rollingResidualPostBurnSum,
       rollingObservationsPostBurn,
+      residualTStat,
+      residualCi95Half,
+      ...(residualStreamForOutput ? { rollingResidualStream: residualStreamForOutput } : {}),
+      // Log-space outputs — parallel to the simple-space fields. Consumers
+      // that want to render in log-space attribution mode read these.
+      alphaAnnualizedLog: fitLog ? fitLog.alpha * TRADING_DAYS : null,
+      alphaTStatLog: fitLog ? fitLog.alphaTStat : null,
+      alphaStdErrorLog: fitLog ? fitLog.alphaStdError : null,
+      alphaCi95HalfLog: fitLog ? 1.96 * fitLog.alphaStdError * TRADING_DAYS : null,
+      rollingAlphaPostBurnSumLog,
+      rollingResidualPostBurnSumLog,
+      residualTStatLog,
+      residualCi95HalfLog,
+      ...(residualStreamLogForOutput
+        ? { rollingResidualStreamLog: residualStreamLogForOutput }
+        : {}),
+      clippedLogDayCount,
     });
   }
 

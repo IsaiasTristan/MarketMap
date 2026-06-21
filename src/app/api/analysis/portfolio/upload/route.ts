@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { parseCsv, importPositions } from "@/server/services/position.service";
+import { requirePortfolioAccess } from "@/lib/api/guards";
 
 export const maxDuration = 60;
 
@@ -9,6 +10,8 @@ export async function POST(req: Request) {
 
   const portfolioId = String(formData.get("portfolioId") ?? "");
   if (!portfolioId) return NextResponse.json({ error: "portfolioId required" }, { status: 400 });
+  const guard = await requirePortfolioAccess(req, portfolioId);
+  if (guard) return guard;
 
   const file = formData.get("file");
   let csvText: string;

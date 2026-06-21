@@ -102,29 +102,54 @@ describe("computeCumulativeAttribution", () => {
 });
 
 describe("computePeriodAttribution", () => {
-  it("produces ITD covering all dates", () => {
-    const daily = [
-      {
-        date: "2023-01-10",
-        portExcessReturn: 0.01,
-        rfContrib: 0.0002,
-        byFactor: { MKT_RF: 0.009 } as Record<string, number>,
-        alpha: 0.001,
-      },
-      {
-        date: "2023-06-15",
-        portExcessReturn: 0.02,
-        rfContrib: 0.0003,
-        byFactor: { MKT_RF: 0.018 } as Record<string, number>,
-        alpha: 0.002,
-      },
-    ] as Parameters<typeof computePeriodAttribution>[0];
+  const daily = [
+    {
+      date: "2023-01-10",
+      portExcessReturn: 0.01,
+      rfContrib: 0.0002,
+      byFactor: { MKT_RF: 0.009 } as Record<string, number>,
+      alpha: 0.001,
+    },
+    {
+      date: "2023-06-15",
+      portExcessReturn: 0.02,
+      rfContrib: 0.0003,
+      byFactor: { MKT_RF: 0.018 } as Record<string, number>,
+      alpha: 0.002,
+    },
+  ] as Parameters<typeof computePeriodAttribution>[0];
 
+  it("emits exactly the trailing period set (1D/5D/1M/3M/6M/1Y)", () => {
     const periods = computePeriodAttribution(daily, ["MKT_RF"], new Date("2023-12-31"));
-    const itd = periods.find((p) => p.label === "ITD")!;
+    expect(periods.map((p) => p.label)).toEqual(["1D", "5D", "1M", "3M", "6M", "1Y"]);
+  });
 
-    expect(itd).toBeDefined();
-    expect(itd.startDate).toBe("2023-01-10");
-    expect(itd.alpha).toBeCloseTo(0.001 + 0.002, 8);
+  it("1D is count-based — only the last observation", () => {
+    const periods = computePeriodAttribution(daily, ["MKT_RF"], new Date("2023-12-31"));
+    const oneD = periods.find((p) => p.label === "1D")!;
+    expect(oneD).toBeDefined();
+    expect(oneD.startDate).toBe("2023-06-15");
+    expect(oneD.alpha).toBeCloseTo(0.002, 8);
+  });
+
+  it("1Y covers all in-range dates and reaches ~1 year back", () => {
+    const periods = computePeriodAttribution(daily, ["MKT_RF"], new Date("2023-12-31"));
+    const oneY = periods.find((p) => p.label === "1Y")!;
+    expect(oneY).toBeDefined();
+    expect(oneY.startDate <= "2022-12-31").toBe(true);
+    expect(oneY.alpha).toBeCloseTo(0.001 + 0.002, 8);
+  });
+
+  it("defaults refDate to the LAST daily date (not today) so calendar buckets anchor to the data", () => {
+    // No explicit refDate. With the new default the calendar offsets anchor
+    // to the data's last observation (`2023-06-15`), so the 6M bucket
+    // covers all rows back to ~Dec 2022 — both rows are included.
+    const periods = computePeriodAttribution(daily, ["MKT_RF"]);
+    const sixM = periods.find((p) => p.label === "6M")!;
+    expect(sixM).toBeDefined();
+    // Both rows fall within 6M of 2023-06-15 → alpha sums both.
+    expect(sixM.alpha).toBeCloseTo(0.001 + 0.002, 8);
+    // endDate is the last data date, not today.
+    expect(sixM.endDate).toBe("2023-06-15");
   });
 });

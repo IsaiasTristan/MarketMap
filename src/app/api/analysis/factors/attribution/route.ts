@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { factorQueryParams } from "@/lib/api/schemas";
 import { computeFactorAttribution } from "@/server/services/attribution.service";
+import { requirePortfolioAccess } from "@/lib/api/guards";
 import type { ModelPresetName } from "@/types/factors";
 
 export const maxDuration = 60;
@@ -17,6 +18,8 @@ export async function GET(req: NextRequest) {
   }
 
   const { portfolioId, model, window: win } = parsed.data;
+  const guard = await requirePortfolioAccess(req, portfolioId);
+  if (guard) return guard;
   const result = await computeFactorAttribution(portfolioId, model as ModelPresetName, win);
 
   if (!result) {

@@ -7,6 +7,8 @@ const nextConfig: NextConfig = {
     maxInactiveAge: 60_000,
     pagesBufferLength: 2,
   },
+  /** Hosts allowed to load dev assets (HMR, _next/*) over a non-localhost origin. */
+  allowedDevOrigins: ["dev.itmarketmap.com"],
 };
 
 export default nextConfig;

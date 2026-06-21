@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { computePerformanceSeries } from "@/server/services/performance.service";
+import { requirePortfolioAccess } from "@/lib/api/guards";
 
 export const maxDuration = 60;
 
@@ -9,6 +10,8 @@ export async function GET(req: Request) {
   const benchmark = (searchParams.get("benchmark") as "SP500" | "NASDAQ" | "DOW") ?? "SP500";
 
   if (!portfolioId) return NextResponse.json({ error: "portfolioId required" }, { status: 400 });
+  const guard = await requirePortfolioAccess(req, portfolioId);
+  if (guard) return guard;
 
   try {
     const series = await computePerformanceSeries(portfolioId, benchmark);

@@ -24,15 +24,27 @@ import {
   heatSignedBloomberg,
   heatTStatBloomberg,
 } from "@/domain/calculations/heatmap";
-import type { FactorGridMetric } from "@/store/analysis";
+import {
+  useAnalysisStore,
+  type FactorGridMetric,
+  type FactorGridStat,
+  type FactorPeriod,
+} from "@/store/analysis";
 import type {
   PerStockResult,
   PerStockFactorCell,
   PerStockRow,
 } from "@/server/services/factor-per-stock.service";
-import type { FactorCode, FactorExposureSnapshot } from "@/types/factors";
+import type {
+  AttributionResult,
+  FactorCode,
+  FactorExposureSnapshot,
+} from "@/types/factors";
 import type { PortfolioWeight } from "@/server/services/portfolio.service";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
+import { getMetricDef } from "@/lib/factors/definitions/metric-defs";
+import { pickPeriodSummary } from "@/lib/factors/attribution/pick-period-summary";
+import { FactorTooltip } from "../shared/FactorTooltip";
 import {
   BB_GRID_BORDER,
   BB_GRID_FONT_SIZE,
@@ -52,8 +64,18 @@ interface PortfolioFactorGridProps {
   holdings: PortfolioWeight[];
   /** Portfolio-level OLS snapshot (powers the Total row's α / T / CI / Vol / R² / Risk cells). */
   exposure: FactorExposureSnapshot | null;
+  /** Portfolio attribution — drives the Total row's period Total Return cell. */
+  attribution: AttributionResult | null | undefined;
+  /** Active Attribution Period — selects which period's Total Return to show. */
+  selectedPeriod: FactorPeriod;
   /** Beta / Return / Risk toggle, shared with PerStockView. */
   metric: FactorGridMetric;
+  /**
+   * STAT lens — same semantics as PerStockGrid. Risk × T/CI is blocked by
+   * the toolbar and the store setters, so the impossible combination never
+   * reaches us.
+   */
+  stat: FactorGridStat;
   /** Currently-open per-stock floating detail panels. */
   openTickers: ReadonlyArray<string>;
   onOpenTicker: (ticker: string) => void;
@@ -62,9 +84,8 @@ interface PortfolioFactorGridProps {
 }
 
 type SummarySortKey =
+  | "totalReturn"
   | "alpha"
-  | "alphaT"
-  | "alphaCi"
   | "residual"
   | "realizedVol"
   | "rSquared";
@@ -77,22 +98,24 @@ const SUMMARY_COL_WIDTH = 78;
 const FACTOR_COL_WIDTH = 78;
 const ROW_HEIGHT = 30;
 
+// Total Return | R² | Vol | Alpha | Unexplained — realized period return
+// first (price-based, geometric, stat-invariant), then descriptive stats
+// (R² and Vol don't change with the Stat toggle), then the two stat-aware
+// columns. Mirrors the per-stock screener grid's column order.
 const SUMMARY_KEYS: readonly SummarySortKey[] = [
-  "alpha",
-  "alphaT",
-  "alphaCi",
-  "residual",
-  "realizedVol",
+  "totalReturn",
   "rSquared",
+  "realizedVol",
+  "alpha",
+  "residual",
 ] as const;
 
 const SUMMARY_LABELS: Record<SummarySortKey, string> = {
-  alpha: "Alpha",
-  alphaT: "T",
-  alphaCi: "CI",
-  residual: "Unexplained",
-  realizedVol: "Vol",
+  totalReturn: "Total Return",
   rSquared: "R²",
+  realizedVol: "Vol",
+  alpha: "Alpha",
+  residual: "Unexplained",
 };
 
 function pickValue(cell: PerStockFactorCell | undefined, metric: FactorGridMetric): number | null {
@@ -109,23 +132,75 @@ function formatValue(v: number | null, metric: FactorGridMetric): string {
   return `${(v * 100).toFixed(1)}%`;
 }
 
-function summaryValue(row: PerStockRow, key: SummarySortKey): number | null {
-  if (key === "alpha") return row.rollingAlphaPostBurnSum;
-  if (key === "alphaT") return row.alphaTStat;
-  if (key === "alphaCi") return row.alphaCi95Half;
-  if (key === "residual") return row.rollingResidualPostBurnSum;
-  if (key === "realizedVol") return row.realizedAnnualizedVol;
-  return row.rSquared;
+function formatCellValue(
+  v: number | null,
+  metric: FactorGridMetric,
+  stat: FactorGridStat,
+): string {
+  if (v === null || !Number.isFinite(v)) return "—";
+  if (stat === "t") return v.toFixed(2);
+  if (stat === "ci") {
+    if (metric === "beta") return `±${v.toFixed(2)}`;
+    return `±${(v * 100).toFixed(1)}%`;
+  }
+  return formatValue(v, metric);
 }
 
-function formatSummaryValue(v: number | null, key: SummarySortKey): string {
+function ciHalfFromValueAndT(value: number, tStat: number): number | null {
+  if (!Number.isFinite(value) || !Number.isFinite(tStat)) return null;
+  if (Math.abs(tStat) < 1e-9) return null;
+  return Math.abs(value / tStat) * 1.96;
+}
+
+/** Stat-aware lookup for per-holding rows (mirrors PerStockGrid). */
+function summaryValue(row: PerStockRow, key: SummarySortKey, stat: FactorGridStat): number | null {
+  // Total Return is stat-invariant — the realized period total stock return
+  // (price-based, geometric, dividend-inclusive), already overlaid to the
+  // active Attribution Period by the per-stock route.
+  if (key === "totalReturn") return row.realizedTotalReturn;
+  if (key === "rSquared") return row.rSquared;
+  if (key === "realizedVol") return row.realizedAnnualizedVol;
+  if (key === "alpha") {
+    if (stat === "t") return row.alphaTStat;
+    if (stat === "ci") return row.alphaCi95Half > 0 ? row.alphaCi95Half : null;
+    return row.rollingAlphaPostBurnSum;
+  }
+  // residual
+  if (stat === "t") return row.residualTStat;
+  if (stat === "ci")
+    return row.residualCi95Half != null && row.residualCi95Half > 0 ? row.residualCi95Half : null;
+  return row.rollingResidualPostBurnSum;
+}
+
+function formatSummaryValue(v: number | null, key: SummarySortKey, stat: FactorGridStat): string {
   if (v === null || !Number.isFinite(v)) return "—";
-  if (key === "alphaT") return v.toFixed(2);
-  if (key === "alphaCi") return v > 0 ? `±${(v * 100).toFixed(1)}%` : "—";
   if (key === "rSquared") return `${(v * 100).toFixed(0)}%`;
   if (key === "realizedVol") return `${(v * 100).toFixed(1)}%`;
+  if (key === "totalReturn") {
+    const sign = v >= 0 ? "+" : "";
+    return `${sign}${(v * 100).toFixed(1)}%`;
+  }
+  if (stat === "t") return v.toFixed(2);
+  if (stat === "ci") return `±${(v * 100).toFixed(1)}%`;
   const sign = v >= 0 ? "+" : "";
   return `${sign}${(v * 100).toFixed(1)}%`;
+}
+
+/** Pull what a per-holding factor cell currently shows under (metric, stat). */
+function factorCellShownValue(
+  cell: PerStockFactorCell | undefined,
+  metric: FactorGridMetric,
+  stat: FactorGridStat,
+): number | null {
+  if (!cell) return null;
+  if (stat === "t") return cell.tStat;
+  if (stat === "ci") {
+    if (metric === "risk") return null;
+    const base = pickValue(cell, metric);
+    if (base === null) return null;
+    return ciHalfFromValueAndT(base, cell.tStat);
+  }
+  return pickValue(cell, metric);
 }
 
 const headerCellStyle: React.CSSProperties = {
@@ -154,22 +229,40 @@ const stickyLeftStyle: React.CSSProperties = {
 };
 
 interface TotalRowSummary {
-  alpha: number | null;
-  alphaT: number | null;
-  alphaCi: number | null;
-  residual: number | null;
-  realizedVol: number | null;
   rSquared: number | null;
+  realizedVol: number | null;
+  alpha: number | null;
+  residual: number | null;
 }
 
 /**
- * Total Portfolio row — β / return cells aggregate per-stock results via
- * signed weights (linear, exact under the same OLS); risk + α + T + CI +
- * Vol + R² come from the portfolio-level regression in /exposure (which
- * is the principled source for those non-linear stats).
+ * Total Portfolio row.
+ *
+ * Factor cells:
+ *   • metric=β / return: signed-weighted sum of per-stock cells (linear).
+ *   • metric=risk: pulled from portfolio-level OLS in /exposure (PCR is
+ *     non-linear in β; weighted sums of per-stock PCRs would be wrong).
+ *
+ * Summary cells:
+ *   • R², Vol, Alpha-Value: portfolio-level OLS via /exposure (rSquared,
+ *     realizedAnnualizedVol, alphaAnnualized).
+ *   • Unexplained (Value/T/CI): constructed-from-per-stock residual stats
+ *     surfaced by the portfolio-residual service (`exposure.residual.*`).
+ *     Genuinely a roll-up of the grid.
+ *
+ * Stat lens mapping for the Total row:
+ *   • alpha cell: Value→alphaAnnualized; T→alphaTStat; CI→1.96·|α/T_α|.
+ *   • residual cell: Value→residual.sum; T→residual.tStat; CI→residual.ci95Half.
+ *   • factor cells: Value→weighted-sum (β/RC) or PCR (risk); T→portfolio-OLS
+ *     factor t-stat (the principled aggregate, since per-stock t-stats don't
+ *     aggregate); CI→1.96·|value/T| using portfolio's t.
  */
 interface TotalRow {
-  cells: Partial<Record<FactorCode, { value: number | null; metric: FactorGridMetric }>>;
+  /** value-mode amount per factor (β/RC/PCR) — used for STAT=value AND as
+   *  the magnitude in CI mode (CI = 1.96·|value/t|). */
+  cellValue: Partial<Record<FactorCode, number | null>>;
+  /** portfolio-level t-stat per factor from /exposure. */
+  cellTStat: Partial<Record<FactorCode, number | null>>;
   summary: TotalRowSummary;
 }
 
@@ -180,43 +273,117 @@ function buildTotalRow(
   metric: FactorGridMetric,
   exposure: FactorExposureSnapshot | null,
 ): TotalRow {
-  const cells: TotalRow["cells"] = {};
+  const cellValue: TotalRow["cellValue"] = {};
+  const cellTStat: TotalRow["cellTStat"] = {};
+  const exposureFactorMap = new Map(
+    (exposure?.factors ?? []).map((f) => [f.code, f]),
+  );
   for (const code of factors) {
+    // value-mode amount.
     if (metric === "risk") {
-      // Risk contribution: pull from the portfolio-level regression. The
-      // weighted sum of per-stock PCRs is mathematically wrong because PCR
-      // depends on covariance between names — not a linear aggregate.
-      const f = exposure?.factors.find((x) => x.code === code);
-      cells[code] = { value: f?.pctRiskContrib ?? null, metric };
-      continue;
+      cellValue[code] = exposureFactorMap.get(code)?.pctRiskContrib ?? null;
+    } else {
+      let total = 0;
+      let any = false;
+      for (const row of filteredRows) {
+        const w = weightByTicker.get(row.ticker) ?? 0;
+        const v = pickValue(row.cells[code], metric);
+        if (v === null || !Number.isFinite(v)) continue;
+        total += w * v;
+        any = true;
+      }
+      cellValue[code] = any ? total : null;
     }
-    // β and return contribution are linear in weights — exact weighted sum.
-    let total = 0;
-    let any = false;
-    for (const row of filteredRows) {
-      const w = weightByTicker.get(row.ticker) ?? 0;
-      const v = pickValue(row.cells[code], metric);
-      if (v === null || !Number.isFinite(v)) continue;
-      total += w * v;
-      any = true;
-    }
-    cells[code] = { value: any ? total : null, metric };
+    // t-stat from portfolio's own OLS — the principled aggregate.
+    cellTStat[code] = exposureFactorMap.get(code)?.tStat ?? null;
   }
 
+  // Total-row defaults read the simple-space fields; the rendering path
+  // calls totalSummaryValue(key, stat, exposure, mode) at draw time, which
+  // is where mode-routing happens. These defaults are only used as the
+  // fallback when totalSummaryValue isn't queried explicitly.
   const summary: TotalRowSummary = {
-    alpha: exposure?.alphaAnnualized ?? null,
-    alphaT: exposure?.alphaTStat ?? null,
-    // Snapshot doesn't yet expose alpha CI half-width — leave as null.
-    alphaCi: null,
-    // Σε for the portfolio is approximately 0 by construction (the OLS
-    // intercept absorbs the mean residual). Leave as null rather than
-    // showing a misleading near-zero number.
-    residual: null,
-    realizedVol: exposure?.realizedAnnualizedVol ?? null,
     rSquared: exposure?.rSquared ?? null,
+    realizedVol: exposure?.realizedAnnualizedVol ?? null,
+    alpha: exposure?.alphaAnnualized ?? null,
+    residual: exposure?.residual?.sum ?? null,
   };
 
-  return { cells, summary };
+  return { cellValue, cellTStat, summary };
+}
+
+/**
+ * Stat-aware reader for the Total row's summary column. Pulls from the
+ * portfolio exposure snapshot under T / CI lens, and routes between log /
+ * simple space using the active attribution mode (default: log).
+ *
+ * When mode = "log" but the log-space residual or static-α failed (rare
+ * fallback path — usually a daily portfolio simple return below −100 %),
+ * we silently fall back to simple-space rather than rendering "—" so the
+ * Total row stays informative.
+ */
+function totalSummaryValue(
+  key: SummarySortKey,
+  stat: FactorGridStat,
+  exposure: FactorExposureSnapshot | null,
+  mode: "log" | "simple" = "log",
+): number | null {
+  // Total Return for the Total row is the portfolio's realized period total
+  // return, resolved from attribution by the caller (not derivable from the
+  // exposure snapshot) — handled in the render path, not here.
+  if (key === "totalReturn") return null;
+  if (!exposure) return null;
+  if (key === "rSquared") return exposure.rSquared ?? null;
+  if (key === "realizedVol") return exposure.realizedAnnualizedVol ?? null;
+  if (key === "alpha") {
+    const useLog = mode === "log" && exposure.alphaAnnualizedLog != null;
+    const ann = useLog ? exposure.alphaAnnualizedLog : exposure.alphaAnnualized;
+    const tStat = useLog ? exposure.alphaTStatLog : exposure.alphaTStat;
+    const ciHalf = useLog ? exposure.alphaCi95HalfLog : null;
+    if (stat === "t") return tStat ?? null;
+    if (stat === "ci") {
+      if (useLog && ciHalf != null) return ciHalf;
+      // Simple-space fallback: derive 1.96 × SE(α) annualised = 1.96 × |α/T_α|.
+      if (tStat && Math.abs(tStat) > 1e-9 && ann != null) {
+        return Math.abs(ann / tStat) * 1.96;
+      }
+      return null;
+    }
+    return ann ?? null;
+  }
+  // residual
+  const r = exposure.residual;
+  if (!r) return null;
+  const useLog =
+    mode === "log" && r.sumLog != null && Number.isFinite(r.sumLog);
+  if (stat === "t") {
+    return useLog ? r.tStatLog ?? null : r.tStat;
+  }
+  if (stat === "ci") {
+    if (useLog) {
+      const v = r.ci95HalfLog;
+      return v != null && v > 0 ? v : null;
+    }
+    return r.ci95Half > 0 ? r.ci95Half : null;
+  }
+  return useLog ? r.sumLog ?? null : r.sum;
+}
+
+/** Total row's factor cell value under the active (metric, stat) lens. */
+function totalFactorCellValue(
+  code: FactorCode,
+  totalRow: TotalRow,
+  metric: FactorGridMetric,
+  stat: FactorGridStat,
+): number | null {
+  const valueMode = totalRow.cellValue[code] ?? null;
+  if (stat === "value") return valueMode;
+  const t = totalRow.cellTStat[code] ?? null;
+  if (stat === "t") return t;
+  // ci
+  if (metric === "risk") return null;
+  if (valueMode === null || t === null) return null;
+  return ciHalfFromValueAndT(valueMode, t);
 }
 
 function compareRows(
@@ -225,6 +392,7 @@ function compareRows(
   weightByTicker: Map<string, number>,
   key: GridSortKey,
   metric: FactorGridMetric,
+  stat: FactorGridStat,
   dir: "asc" | "desc",
 ): number {
   if (key === "ticker") {
@@ -246,11 +414,11 @@ function compareRows(
   }
   const isSummary = (SUMMARY_KEYS as readonly string[]).includes(key as string);
   const va = isSummary
-    ? summaryValue(a, key as SummarySortKey)
-    : pickValue(a.cells[key as FactorCode], metric);
+    ? summaryValue(a, key as SummarySortKey, stat)
+    : factorCellShownValue(a.cells[key as FactorCode], metric, stat);
   const vb = isSummary
-    ? summaryValue(b, key as SummarySortKey)
-    : pickValue(b.cells[key as FactorCode], metric);
+    ? summaryValue(b, key as SummarySortKey, stat)
+    : factorCellShownValue(b.cells[key as FactorCode], metric, stat);
   const na = va === null || !Number.isFinite(va);
   const nb = vb === null || !Number.isFinite(vb);
   if (na && nb) return a.ticker.localeCompare(b.ticker);
@@ -274,7 +442,10 @@ export function PortfolioFactorGrid({
   data,
   holdings,
   exposure,
+  attribution,
+  selectedPeriod,
   metric,
+  stat,
   openTickers,
   onOpenTicker,
   onCloseTicker,
@@ -282,6 +453,18 @@ export function PortfolioFactorGrid({
 }: PortfolioFactorGridProps) {
   const openTickerSet = useMemo(() => new Set(openTickers), [openTickers]);
   const factors = data.usableFactors;
+  // Attribution mode for the Total row's Alpha + Unexplained. Default log;
+  // matches the per-stock grid so both views agree on which space the
+  // user is reading.
+  const attributionMode = useAnalysisStore((s) => s.factorAttributionMode);
+
+  // Portfolio realized total return over the selected Attribution Period —
+  // mode-aware (log geometric / simple arithmetic). Drives the Total row's
+  // Total Return cell so it ties to the Total Return Decomposition headline.
+  const portfolioPeriodTotalReturn = useMemo(() => {
+    const picked = pickPeriodSummary(attribution, selectedPeriod, attributionMode);
+    return picked?.totalReturn ?? null;
+  }, [attribution, selectedPeriod, attributionMode]);
 
   // Map ticker → signed weight; tickers in holdings but not in the per-stock
   // result will simply not appear as rows (the regression didn't fit them).
@@ -322,17 +505,17 @@ export function PortfolioFactorGrid({
   const sortedRows = useMemo(() => {
     const rows = [...filteredRows];
     if (!sortBy) return rows;
-    rows.sort((a, b) => compareRows(a, b, signedWeightByTicker, sortBy.key, metric, sortBy.dir));
+    rows.sort((a, b) => compareRows(a, b, signedWeightByTicker, sortBy.key, metric, stat, sortBy.dir));
     return rows;
-  }, [filteredRows, sortBy, metric, signedWeightByTicker]);
+  }, [filteredRows, sortBy, metric, stat, signedWeightByTicker]);
 
   const totalRow = useMemo(
     () => buildTotalRow(filteredRows, signedWeightByTicker, factors, metric, exposure),
     [filteredRows, signedWeightByTicker, factors, metric, exposure],
   );
 
-  // Heatmap span — anchor on max |value| across both stock rows AND the
-  // total row so the total cell shading is visually consistent with the rest.
+  // Heatmap span — anchor on max |value-mode magnitude| across stock rows
+  // AND the total row so the shading is stable when the user toggles STAT.
   const colSpans = useMemo(() => {
     const m = new Map<FactorCode, number>();
     for (const f of factors) {
@@ -341,7 +524,7 @@ export function PortfolioFactorGrid({
         const v = pickValue(r.cells[f], metric);
         if (v !== null && Number.isFinite(v) && Math.abs(v) > max) max = Math.abs(v);
       }
-      const tot = totalRow.cells[f]?.value;
+      const tot = totalRow.cellValue[f];
       if (tot !== null && tot !== undefined && Number.isFinite(tot) && Math.abs(tot) > max) {
         max = Math.abs(tot);
       }
@@ -352,18 +535,17 @@ export function PortfolioFactorGrid({
 
   const summarySpans = useMemo(() => {
     const out: Record<SummarySortKey, number> = {
-      alpha: 1e-6,
-      alphaT: 1,
-      alphaCi: 1e-6,
-      residual: 1e-6,
-      realizedVol: 1e-6,
+      totalReturn: 1e-6,
       rSquared: 1e-6,
+      realizedVol: 1e-6,
+      alpha: 1e-6,
+      residual: 1e-6,
     };
     for (const k of SUMMARY_KEYS) {
-      if (k === "alphaT") continue;
       let max = 0;
+      // Always read in value mode so the heat scale is stable across STAT toggle.
       for (const r of filteredRows) {
-        const v = summaryValue(r, k);
+        const v = summaryValue(r, k, "value");
         if (v !== null && Number.isFinite(v) && Math.abs(v) > max) max = Math.abs(v);
       }
       out[k] = Math.max(max, 1e-6);
@@ -483,6 +665,7 @@ export function PortfolioFactorGrid({
             </th>
             {SUMMARY_KEYS.map((k, idx) => {
               const isLastSummary = idx === SUMMARY_KEYS.length - 1;
+              const md = getMetricDef(k);
               return (
                 <th
                   key={`summary-${k}`}
@@ -502,9 +685,16 @@ export function PortfolioFactorGrid({
                     onClick={() => onHeaderClick(k)}
                     style={headerButtonBase}
                   >
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {SUMMARY_LABELS[k]}
-                    </span>
+                    <FactorTooltip
+                      name={md.name}
+                      definition={md.definition}
+                      howCalculated={md.howCalculated}
+                      dataUsed={md.dataUsed}
+                    >
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {SUMMARY_LABELS[k]}
+                      </span>
+                    </FactorTooltip>
                     <SortCaret active={sortBy?.key === k} dir={sortBy?.dir ?? "desc"} />
                   </button>
                 </th>
@@ -515,7 +705,6 @@ export function PortfolioFactorGrid({
               return (
                 <th
                   key={code}
-                  title={`${def.label}\n${def.description}\n\nClick to sort rows by this column.`}
                   style={{
                     ...headerCellStyle,
                     width: FACTOR_COL_WIDTH,
@@ -526,9 +715,12 @@ export function PortfolioFactorGrid({
                   <button
                     type="button"
                     onClick={() => onHeaderClick(code)}
+                    title="Click to sort rows by this column"
                     style={headerButtonBase}
                   >
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{def.shortLabel}</span>
+                    <FactorTooltip code={code} concise>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{def.shortLabel}</span>
+                    </FactorTooltip>
                     <SortCaret active={sortBy?.key === code} dir={sortBy?.dir ?? "desc"} />
                   </button>
                 </th>
@@ -649,17 +841,29 @@ export function PortfolioFactorGrid({
                   {`${signed >= 0 ? "+" : ""}${(signed * 100).toFixed(1)}%`}
                 </td>
                 {SUMMARY_KEYS.map((k, idx) => {
-                  const v = summaryValue(row, k);
+                  const v = summaryValue(row, k, stat);
                   const isLastSummary = idx === SUMMARY_KEYS.length - 1;
                   const bg = ((): string => {
                     if (v === null || !Number.isFinite(v)) return "rgba(255,255,255,0.02)";
-                    if (k === "alpha" || k === "residual") {
-                      return heatSignedBloomberg(v, summarySpans[k]);
-                    }
-                    if (k === "alphaT") return heatTStatBloomberg(v);
-                    if (k === "realizedVol") return heatSequentialBloomberg(v, summarySpans.realizedVol, "red");
+                    if (k === "totalReturn")
+                      return heatSignedBloomberg(v, summarySpans.totalReturn);
                     if (k === "rSquared") return heatSequentialBloomberg(v, 1, "green");
-                    return "transparent";
+                    if (k === "realizedVol")
+                      return heatSequentialBloomberg(v, summarySpans.realizedVol, "red");
+                    // alpha + residual respond to stat — under T or CI the
+                    // heat is keyed on |t| (CI heat = identical to T heat
+                    // because |T| = |value|/(CI/1.96)).
+                    if (stat === "t") return heatTStatBloomberg(v);
+                    if (stat === "ci") {
+                      const tForRow =
+                        k === "alpha"
+                          ? row.alphaTStat
+                          : row.residualTStat ?? Number.NaN;
+                      return Number.isFinite(tForRow)
+                        ? heatTStatBloomberg(tForRow)
+                        : "rgba(255,255,255,0.02)";
+                    }
+                    return heatSignedBloomberg(v, summarySpans[k]);
                   })();
                   const lowFit = k === "rSquared" && v !== null && Number.isFinite(v) && v < 0.3;
                   const color =
@@ -667,9 +871,7 @@ export function PortfolioFactorGrid({
                       ? "var(--text-muted)"
                       : lowFit
                         ? "var(--text-muted)"
-                        : k === "alphaCi"
-                          ? "var(--text-primary)"
-                          : pickTextColor(bg);
+                        : pickTextColor(bg);
                   return (
                     <td
                       key={`summary-${k}`}
@@ -687,18 +889,22 @@ export function PortfolioFactorGrid({
                           : "1px solid rgba(0,0,0,0.4)",
                       }}
                     >
-                      {formatSummaryValue(v, k)}
+                      {formatSummaryValue(v, k, stat)}
                     </td>
                   );
                 })}
                 {factors.map((code) => {
                   const cell = row.cells[code];
-                  const value = pickValue(cell, metric);
+                  const value = factorCellShownValue(cell, metric, stat);
                   const span = colSpans.get(code) ?? 1;
-                  const bg =
-                    value === null
-                      ? "rgba(255,255,255,0.02)"
-                      : heatSignedBloomberg(value, span);
+                  const bg = ((): string => {
+                    if (value === null || !Number.isFinite(value))
+                      return "rgba(255,255,255,0.02)";
+                    if (stat === "t" || stat === "ci") {
+                      return heatTStatBloomberg(cell?.tStat ?? Number.NaN);
+                    }
+                    return heatSignedBloomberg(value, span);
+                  })();
                   return (
                     <td
                       key={code}
@@ -719,7 +925,7 @@ export function PortfolioFactorGrid({
                           : `${getFactorDef(code).label}: no data for this stock at this window`
                       }
                     >
-                      {formatValue(value, metric)}
+                      {formatCellValue(value, metric, stat)}
                     </td>
                   );
                 })}
@@ -801,15 +1007,35 @@ export function PortfolioFactorGrid({
                 })()}
               </td>
               {SUMMARY_KEYS.map((k, idx) => {
-                const v = totalRow.summary[k];
+                const v =
+                  k === "totalReturn"
+                    ? portfolioPeriodTotalReturn
+                    : totalSummaryValue(k, stat, exposure, attributionMode);
                 const isLastSummary = idx === SUMMARY_KEYS.length - 1;
                 const bg = ((): string => {
                   if (v === null || !Number.isFinite(v)) return "rgba(240,182,93,0.10)";
-                  if (k === "alpha" || k === "residual") return heatSignedBloomberg(v, summarySpans[k]);
-                  if (k === "alphaT") return heatTStatBloomberg(v);
-                  if (k === "realizedVol") return heatSequentialBloomberg(v, summarySpans.realizedVol, "red");
+                  if (k === "totalReturn")
+                    return heatSignedBloomberg(v, summarySpans.totalReturn);
                   if (k === "rSquared") return heatSequentialBloomberg(v, 1, "green");
-                  return "transparent";
+                  if (k === "realizedVol")
+                    return heatSequentialBloomberg(v, summarySpans.realizedVol, "red");
+                  // alpha + residual: same |t|-keyed heat as the per-holding rows.
+                  // Use the mode-correct t-stat so heat lines up with the value.
+                  if (stat === "t") return heatTStatBloomberg(v);
+                  if (stat === "ci") {
+                    const tForCol =
+                      k === "alpha"
+                        ? (attributionMode === "log"
+                            ? exposure?.alphaTStatLog
+                            : exposure?.alphaTStat) ?? Number.NaN
+                        : (attributionMode === "log"
+                            ? exposure?.residual?.tStatLog
+                            : exposure?.residual?.tStat) ?? Number.NaN;
+                    return Number.isFinite(tForCol)
+                      ? heatTStatBloomberg(tForCol)
+                      : "rgba(240,182,93,0.10)";
+                  }
+                  return heatSignedBloomberg(v, summarySpans[k]);
                 })();
                 return (
                   <td
@@ -828,19 +1054,28 @@ export function PortfolioFactorGrid({
                         ? "2px solid var(--bg-border)"
                         : "1px solid rgba(0,0,0,0.4)",
                     }}
+                    title={k === "residual" && exposure?.residual
+                      ? `Constructed-from-per-stock residual ε_p,t = Σ wᵢ·εᵢ,t.\nNewey-West (1994) HAC SE on mean(ε_p,t), bandwidth L = ${exposure.residual.bandwidth}.\nSeries ${exposure.residual.startDate} → ${exposure.residual.endDate}, n = ${exposure.residual.n} obs.${exposure.residual.droppedHoldings.length > 0 ? `\nDropped holdings (no usable rolling fit): ${exposure.residual.droppedHoldings.join(", ")}.` : ""}`
+                      : undefined}
                   >
-                    {formatSummaryValue(v, k)}
+                    {formatSummaryValue(v, k, stat)}
                   </td>
                 );
               })}
               {factors.map((code) => {
-                const tot = totalRow.cells[code];
-                const value = tot?.value ?? null;
+                const value = totalFactorCellValue(code, totalRow, metric, stat);
                 const span = colSpans.get(code) ?? 1;
-                const bg =
-                  value === null
-                    ? "rgba(240,182,93,0.10)"
-                    : heatSignedBloomberg(value, span);
+                const bg = ((): string => {
+                  if (value === null || !Number.isFinite(value))
+                    return "rgba(240,182,93,0.10)";
+                  if (stat === "t" || stat === "ci") {
+                    const t = totalRow.cellTStat[code] ?? Number.NaN;
+                    return Number.isFinite(t)
+                      ? heatTStatBloomberg(t)
+                      : "rgba(240,182,93,0.10)";
+                  }
+                  return heatSignedBloomberg(value, span);
+                })();
                 return (
                   <td
                     key={`total-${code}`}
@@ -857,12 +1092,16 @@ export function PortfolioFactorGrid({
                       borderRight: "1px solid rgba(0,0,0,0.4)",
                     }}
                     title={
-                      metric === "risk"
-                        ? `${getFactorDef(code).label}: portfolio-level risk contribution from /exposure (true OLS, not weighted sum).`
-                        : `${getFactorDef(code).label}: Σ wᵢ × per-stock value (linear under OLS — exact).`
+                      stat === "t"
+                        ? `${getFactorDef(code).label}: portfolio-level OLS t-stat from /exposure.`
+                        : stat === "ci"
+                          ? `${getFactorDef(code).label}: 1.96 × |value/T| using portfolio's own t-stat.`
+                          : metric === "risk"
+                            ? `${getFactorDef(code).label}: portfolio-level risk contribution from /exposure (true OLS, not weighted sum).`
+                            : `${getFactorDef(code).label}: Σ wᵢ × per-stock value (linear under OLS — exact).`
                     }
                   >
-                    {formatValue(value, metric)}
+                    {formatCellValue(value, metric, stat)}
                   </td>
                 );
               })}

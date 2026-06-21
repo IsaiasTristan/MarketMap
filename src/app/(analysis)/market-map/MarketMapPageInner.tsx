@@ -3,16 +3,22 @@
 import type { CSSProperties } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MarketMapClient } from "@/components/MarketMapClient";
+import { MarketMapClient, type MarketMapLoadedInfo } from "@/components/MarketMapClient";
 import { ManageTickersModal } from "@/components/ManageTickersModal";
+import { useIsAdmin } from "@/lib/api/useMe";
 
 const AUTO_REFRESH_MS = 30_000;
+/** While the US equity session is open we tail-refresh Yahoo prices on this
+ *  cadence so the grid reflects today's intraday move. Outside market hours we
+ *  fall back to the regular AUTO_REFRESH_MS DB poll only — no Yahoo traffic. */
+const LIVE_REFRESH_MS = 60_000;
 /** Abort hanging Prisma/DB connects so the UI does not sit on "Loading universe…" forever. */
 const UNIVERSE_DEFAULT_FETCH_MS = 20_000;
 
 export function MarketMapPageInner() {
   const sp = useSearchParams();
   const router = useRouter();
+  const isAdmin = useIsAdmin();
   const universeIdParam = sp.get("universeId");
 
   const [resolvedUniverseId, setResolvedUniverseId] = useState<string | null>(
@@ -22,6 +28,9 @@ export function MarketMapPageInner() {
   const [modalOpen, setModalOpen] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(null);
+  const [dataAsOf, setDataAsOf] = useState<string | null>(null);
+  const [staleTickerCount, setStaleTickerCount] = useState(0);
+  const [activeTickerCount, setActiveTickerCount] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const [ingesting, setIngesting] = useState(false);
   const [ingestErr, setIngestErr] = useState<string | null>(null);
@@ -78,46 +87,64 @@ export function MarketMapPageInner() {
   }, []);
 
   const triggerIngest = useCallback(
-    async (universeId: string, mode: "missing" | "all") => {
+    async (
+      universeId: string,
+      modes: ("missing" | "tail" | "all")[]
+    ) => {
       if (ingesting) return;
       setIngesting(true);
       setIngestErr(null);
+      const notes: string[] = [];
       try {
-        const qs = mode === "missing" ? "?onlyMissing=true" : "";
-        const [universeRes, benchRes] = await Promise.allSettled([
-          fetch(`/api/universes/${universeId}/ingest${qs}`, {
-            method: "POST",
-            keepalive: true,
-          }),
-          fetch(`/api/benchmarks/ingest${qs}`, {
-            method: "POST",
-            keepalive: true,
-          }),
-        ]);
+        for (const mode of modes) {
+          const qs = `?mode=${mode}`;
+          const [universeRes, benchRes] = await Promise.allSettled([
+            fetch(`/api/universes/${universeId}/ingest${qs}`, {
+              method: "POST",
+              keepalive: true,
+            }),
+            fetch(`/api/benchmarks/ingest${qs}`, {
+              method: "POST",
+              keepalive: true,
+            }),
+          ]);
 
-        const notes: string[] = [];
-        if (universeRes.status === "fulfilled") {
-          const j = (await universeRes.value
-            .json()
-            .catch(() => null)) as
-            | { ok?: boolean; tickers?: number; failed?: { ticker: string }[] }
-            | null;
-          if (j?.failed?.length) {
-            const sample = j.failed
-              .slice(0, 3)
-              .map((f) => f.ticker)
-              .join(", ");
-            notes.push(
-              `${j.failed.length} ticker(s) couldn't be priced (${sample}${
-                j.failed.length > 3 ? ", …" : ""
-              }).`
-            );
+          if (universeRes.status === "fulfilled") {
+            const j = (await universeRes.value
+              .json()
+              .catch(() => null)) as
+              | {
+                  ok?: boolean;
+                  tickers?: number;
+                  failed?: { ticker: string }[];
+                  autoDeactivated?: string[];
+                }
+              | null;
+            if (j?.failed?.length) {
+              const sample = j.failed
+                .slice(0, 3)
+                .map((f) => f.ticker)
+                .join(", ");
+              notes.push(
+                `${j.failed.length} ticker(s) couldn't be priced (${sample}${
+                  j.failed.length > 3 ? ", …" : ""
+                }).`
+              );
+            }
+            if (j?.autoDeactivated?.length) {
+              const sample = j.autoDeactivated.slice(0, 5).join(", ");
+              notes.push(
+                `Auto-removed ${j.autoDeactivated.length} delisted/acquired ticker(s): ${sample}${
+                  j.autoDeactivated.length > 5 ? ", …" : ""
+                }. Review in Data tab → Securities Health.`
+              );
+            }
+          } else {
+            notes.push(`Universe ${mode} refresh request failed.`);
           }
-        } else {
-          notes.push("Universe price refresh request failed.");
-        }
-        if (benchRes.status === "rejected") {
-          notes.push("Benchmark price refresh request failed.");
+          if (benchRes.status === "rejected") {
+            notes.push(`Benchmark ${mode} refresh request failed.`);
+          }
         }
         setIngestErr(notes.length ? notes.join(" ") : null);
         // Nudge the chart to re-fetch immediately after ingest completes so
@@ -132,14 +159,19 @@ export function MarketMapPageInner() {
     [ingesting]
   );
 
-  // Kick off a one-shot "missing prices" ingest the first time we resolve a
-  // universe. The dashboard auto-polls below so values appear as bars land.
+  // First time we resolve a universe: seed any missing tickers (no-op once
+  // seeded) and then tail-refresh the last ~10 sessions for everything so the
+  // grid is current. Without the tail step, an already-seeded universe would
+  // show stale "1D" returns from whatever day it was last manually refreshed.
   useEffect(() => {
+    // Price ingestion is an admin-only, single-instance job. Non-admins read
+    // the shared, already-refreshed data; they never trigger Yahoo traffic.
+    if (!isAdmin) return;
     if (!resolvedUniverseId) return;
     if (ingestStartedFor.current === resolvedUniverseId) return;
     ingestStartedFor.current = resolvedUniverseId;
-    void triggerIngest(resolvedUniverseId, "missing");
-  }, [resolvedUniverseId, triggerIngest]);
+    void triggerIngest(resolvedUniverseId, ["missing", "tail"]);
+  }, [resolvedUniverseId, isAdmin, triggerIngest]);
 
   // Auto-refresh the chart on a fixed cadence while the tab is visible so
   // backgrounded windows do not hammer Postgres / Next RSC.
@@ -164,6 +196,36 @@ export function MarketMapPageInner() {
     };
   }, [resolvedUniverseId]);
 
+  // Live tail-refresh during US market hours: every LIVE_REFRESH_MS pull
+  // today's partial-day bar from Yahoo so the 1D return reflects the
+  // intraday move. The chart auto-poll above will then surface the new
+  // values. Outside market hours this is a no-op — daily data doesn't move.
+  const triggerIngestRef = useRef(triggerIngest);
+  useEffect(() => {
+    triggerIngestRef.current = triggerIngest;
+  }, [triggerIngest]);
+  const ingestingRef = useRef(ingesting);
+  useEffect(() => {
+    ingestingRef.current = ingesting;
+  }, [ingesting]);
+
+  useEffect(() => {
+    // Live intraday tail-refresh is admin-only (see note above).
+    if (!isAdmin) return;
+    if (!resolvedUniverseId) return;
+    const tick = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      const status = getUsMarketStatus(new Date());
+      if (status.label !== "Open") return;
+      if (ingestingRef.current) return;
+      void triggerIngestRef.current(resolvedUniverseId, ["tail"]);
+    };
+    const t = setInterval(tick, LIVE_REFRESH_MS);
+    return () => clearInterval(t);
+  }, [resolvedUniverseId, isAdmin]);
+
   const marketStatus = useMemo(() => getUsMarketStatus(new Date(now)), [now]);
   const refreshLabel = useMemo(
     () => formatAgo(lastRefreshedAt, now),
@@ -172,11 +234,14 @@ export function MarketMapPageInner() {
 
   const onForceRefresh = useCallback(() => {
     if (!resolvedUniverseId || ingesting) return;
-    void triggerIngest(resolvedUniverseId, "all");
+    void triggerIngest(resolvedUniverseId, ["all"]);
   }, [resolvedUniverseId, ingesting, triggerIngest]);
 
-  const onDataLoaded = useCallback(() => {
+  const onDataLoaded = useCallback((info: MarketMapLoadedInfo) => {
     setLastRefreshedAt(Date.now());
+    setDataAsOf(info.asOf);
+    setStaleTickerCount(info.staleTickerCount);
+    setActiveTickerCount(info.activeTickerCount);
   }, []);
 
   const onApplied = useCallback(() => {
@@ -192,30 +257,68 @@ export function MarketMapPageInner() {
       <div style={topBar}>
         <h1 style={pageTitle}>Performance</h1>
         <div style={topRight}>
-          <button
-            type="button"
-            onClick={() => setModalOpen(true)}
-            style={btnPrimary}
-          >
-            Manage Tickers
-          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => setModalOpen(true)}
+              style={btnPrimary}
+            >
+              Manage Tickers
+            </button>
+          )}
           <span style={dot(marketStatus.color)} aria-hidden="true" />
           <span style={statusText}>{marketStatus.label}</span>
+          {marketStatus.label === "Open" && (
+            <span
+              style={liveBadge}
+              title={`Live tail-refresh every ${LIVE_REFRESH_MS / 1000}s during market hours`}
+            >
+              LIVE
+            </span>
+          )}
           <span style={separator} aria-hidden="true">
             ·
           </span>
           <span style={statusText}>
             {ingesting ? "Updating prices…" : `Auto · ${refreshLabel}`}
           </span>
-          <button
-            type="button"
-            onClick={onForceRefresh}
-            style={btnGhost}
-            disabled={!resolvedUniverseId || ingesting}
-            title="Force a full price refresh now"
-          >
-            ↻
-          </button>
+          {dataAsOf && (
+            <>
+              <span style={separator} aria-hidden="true">
+                ·
+              </span>
+              <span
+                style={{
+                  ...statusText,
+                  color:
+                    staleTickerCount > 0
+                      ? "var(--color-negative)"
+                      : statusText.color,
+                }}
+                title={
+                  staleTickerCount > 0
+                    ? `${staleTickerCount} of ${activeTickerCount} tickers have not refreshed (likely delisted / acquired). Click ↻ to force a full refresh; the next ingest will auto-deactivate any ticker still > 21d behind.`
+                    : "Most recent trading-date represented in the grid."
+                }
+              >
+                Bars through {dataAsOf}
+                {staleTickerCount > 0
+                  ? ` (${staleTickerCount} of ${activeTickerCount} tickers stale)`
+                  : ""}
+              </span>
+            </>
+          )}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={onForceRefresh}
+              style={btnGhost}
+              disabled={!resolvedUniverseId || ingesting}
+              title="Force a full price refresh now"
+            >
+              ↻ Refresh
+            </button>
+          )}
         </div>
       </div>
 
@@ -243,14 +346,16 @@ export function MarketMapPageInner() {
         ) : null}
       </div>
 
-      <ManageTickersModal
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        onApplied={() => {
-          onApplied();
-          router.refresh();
-        }}
-      />
+      {isAdmin && (
+        <ManageTickersModal
+          open={modalOpen}
+          onClose={() => setModalOpen(false)}
+          onApplied={() => {
+            onApplied();
+            router.refresh();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -345,6 +450,20 @@ const statusText: CSSProperties = {
 const separator: CSSProperties = {
   color: "var(--text-secondary)",
   fontSize: "11px",
+};
+
+const liveBadge: CSSProperties = {
+  display: "inline-block",
+  padding: "0 4px",
+  marginLeft: "2px",
+  border: "1px solid var(--color-positive)",
+  color: "var(--color-positive)",
+  fontSize: "9px",
+  fontWeight: 700,
+  letterSpacing: "0.08em",
+  lineHeight: "12px",
+  fontFamily:
+    'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
 };
 
 const content: CSSProperties = {

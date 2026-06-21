@@ -5,6 +5,8 @@ export interface InfoTooltipProps {
   name: string;
   definition: string;
   formula?: string;
+  /** Underlying data/series the metric is computed from. */
+  dataUsed?: string;
   goodValue?: string;
   currentValue?: string;
   passing?: boolean;
@@ -18,6 +20,7 @@ export function InfoTooltip({
   name,
   definition,
   formula,
+  dataUsed,
   goodValue,
   currentValue,
   passing,
@@ -143,10 +146,20 @@ export function InfoTooltip({
                   background: "var(--bg-base)",
                   padding: "4px 8px",
                   borderRadius: 4,
-                  marginBottom: goodValue ? 8 : 0,
+                  marginBottom: dataUsed || goodValue ? 8 : 0,
                 }}
               >
                 {formula}
+              </div>
+            </>
+          )}
+          {dataUsed && (
+            <>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6, marginBottom: 2 }}>
+                Data used:
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-secondary)", lineHeight: 1.4, marginBottom: goodValue ? 8 : 0 }}>
+                {dataUsed}
               </div>
             </>
           )}

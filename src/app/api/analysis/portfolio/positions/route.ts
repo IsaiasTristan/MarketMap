@@ -7,11 +7,14 @@ import {
   replacePositions,
   type PositionInput,
 } from "@/server/services/position.service";
+import { requirePortfolioAccess, requirePositionAccess } from "@/lib/api/guards";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const portfolioId = searchParams.get("portfolioId");
   if (!portfolioId) return NextResponse.json({ error: "portfolioId required" }, { status: 400 });
+  const guard = await requirePortfolioAccess(req, portfolioId);
+  if (guard) return guard;
 
   const positions = await getPositions(portfolioId);
   return NextResponse.json(positions);
@@ -25,6 +28,8 @@ export async function POST(req: Request) {
     if (!portfolioId) {
       return NextResponse.json({ error: "portfolioId required" }, { status: 400 });
     }
+    const guard = await requirePortfolioAccess(req, portfolioId);
+    if (guard) return guard;
 
     // Bulk replace mode (used by the editor's "Save" button).
     if (replace && Array.isArray(positions)) {
@@ -64,6 +69,8 @@ export async function DELETE(req: Request) {
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
+  const guard = await requirePositionAccess(req, id);
+  if (guard) return guard;
   await deletePosition(id);
   return NextResponse.json({ ok: true });
 }
@@ -72,6 +79,8 @@ export async function PATCH(req: Request) {
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
+  const guard = await requirePositionAccess(req, id);
+  if (guard) return guard;
   const body = await req.json().catch(() => ({}));
   const { shares, isShort, sector } = body;
   const input: Parameters<typeof updatePosition>[1] = {};

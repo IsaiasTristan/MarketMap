@@ -54,7 +54,17 @@ export async function runFullRefresh(portfolioId?: string): Promise<RefreshResul
       for (const pos of positions) {
         try {
           const result = await ingestSecurityHistory(db, pos.security.ticker, 10);
-          pricesIngested += result.bars;
+          if (result.kind === "ok") {
+            pricesIngested += result.bars;
+          } else if (result.kind === "delisted-signal") {
+            errors.push(
+              `Price ingest ${pos.security.ticker}: delisted (${result.reason})`
+            );
+          } else if (result.kind === "throttled") {
+            errors.push(
+              `Price ingest ${pos.security.ticker}: throttled (${result.reason})`
+            );
+          }
         } catch (e) {
           errors.push(`Price ingest ${pos.security.ticker}: ${(e as Error).message}`);
         }

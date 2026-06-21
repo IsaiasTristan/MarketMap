@@ -14,22 +14,56 @@ function iso(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-async function loadRecentPrices(
+/** Most recent bars retained per security (covers the 1Y horizon ~252 td). */
+const RECENT_BARS = 320;
+/**
+ * Calendar-day lookback for the batched price load. ~600 days comfortably
+ * exceeds the 320 trading bars we keep (≈410 trading days), with margin for
+ * weekends/holidays. Bounding the query by date keeps the single findMany
+ * from scanning the full multi-year price history.
+ */
+const PRICE_LOOKBACK_DAYS = 600;
+
+/**
+ * Batch-load recent prices for many securities in ONE query, grouped by
+ * securityId and trimmed to the most recent {@link RECENT_BARS} bars each.
+ *
+ * Replaces the previous per-ticker loop that issued one DB round-trip per
+ * constituent (~1,220 sequential queries on the full universe). Mirrors the
+ * single-query pattern used by factor-per-stock.service.
+ */
+async function loadRecentPricesBatch(
   db: PrismaClient,
-  securityId: string,
-  take = 320
-): Promise<DateClose[]> {
+  securityIds: string[]
+): Promise<Map<string, DateClose[]>> {
+  const out = new Map<string, DateClose[]>();
+  if (securityIds.length === 0) return out;
+
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - PRICE_LOOKBACK_DAYS);
+
   const rows = await db.priceHistory.findMany({
-    where: { securityId },
-    orderBy: { tradeDate: "desc" },
-    take,
+    where: { securityId: { in: securityIds }, tradeDate: { gte: cutoff } },
+    orderBy: { tradeDate: "asc" },
+    select: { securityId: true, tradeDate: true, adjClose: true },
   });
-  return rows
-    .reverse()
-    .map((p) => ({ date: iso(p.tradeDate), adjClose: dec(p.adjClose) }));
+
+  for (const r of rows) {
+    let arr = out.get(r.securityId);
+    if (!arr) {
+      arr = [];
+      out.set(r.securityId, arr);
+    }
+    arr.push({ date: iso(r.tradeDate), adjClose: dec(r.adjClose) });
+  }
+  // Rows are ascending; keep only the most recent RECENT_BARS per security.
+  for (const [id, arr] of out) {
+    if (arr.length > RECENT_BARS) out.set(id, arr.slice(-RECENT_BARS));
+  }
+  return out;
 }
 
-async function loadBenchmarkSeries(
+export async function loadBenchmarkSeries(
   db: PrismaClient,
   code: BenchmarkCode
 ): Promise<DateClose[]> {
@@ -88,6 +122,8 @@ export type MarketMapApiRow = {
   subTheme?: string;
   ticker?: string;
   cells: Record<Horizon, number | null>;
+  /** Last trade-date represented in this row's underlying series (COMPANY only). */
+  lastDate?: string | null;
 };
 
 export async function computeMarketMap(
@@ -104,6 +140,10 @@ export async function computeMarketMap(
   const constituents = await db.universeConstituent.findMany({
     where: {
       universeId,
+      // Skip user-deactivated tickers (delisted / acquired / renamed). They
+      // remain in the universe in case the user wants to reactivate, but the
+      // grid never tries to render or price them.
+      security: { isActive: true },
       ...(filters.sector ? { sector: filters.sector } : {}),
       ...(filters.subTheme ? { subTheme: filters.subTheme } : {}),
     },
@@ -125,10 +165,15 @@ export async function computeMarketMap(
   const benchForStock =
     metric === "EXCESS_RETURN" && benchSeries.length >= 5 ? benchSeries : null;
 
+  const pricesBySecurity = await loadRecentPricesBatch(
+    db,
+    constituents.map((c) => c.securityId)
+  );
+
   const companies: CompanyRow[] = [];
 
   for (const c of constituents) {
-    const series = await loadRecentPrices(db, c.securityId);
+    const series = pricesBySecurity.get(c.securityId) ?? [];
     const lastDate = series.length ? series[series.length - 1]!.date : null;
     if (series.length < 5) {
       warnings.push(`Insufficient prices for ${c.security.ticker}`);
@@ -175,6 +220,7 @@ export async function computeMarketMap(
         subTheme: co.subTheme,
         ticker: co.ticker,
         cells: buildCells(co.metrics),
+        lastDate: co.lastDate,
       })),
     };
   }

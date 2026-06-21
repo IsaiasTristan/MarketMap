@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/infrastructure/db/client";
 import { portfolioPositionsBody } from "@/lib/api/schemas";
 import { replacePositions } from "@/server/services/position.service";
+import { requirePortfolioAccess } from "@/lib/api/guards";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -15,6 +16,8 @@ type Ctx = { params: Promise<{ id: string }> };
  */
 export async function PUT(req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
+  const guard = await requirePortfolioAccess(req, id);
+  if (guard) return guard;
   const json = await req.json().catch(() => null);
   const parsed = portfolioPositionsBody.safeParse(json);
   if (!parsed.success) {
@@ -26,7 +29,13 @@ export async function PUT(req: Request, ctx: Ctx) {
   const exists = await prisma.portfolio.findUnique({ where: { id } });
   if (!exists) return NextResponse.json({ error: "Not found" }, { status: 404 });
   try {
-    await replacePositions(id, parsed.data.positions);
+    // The payload schema allows `sector: null` (to clear it), but PositionInput
+    // uses `string | undefined`; normalize null -> undefined at the boundary.
+    const positions = parsed.data.positions.map((p) => ({
+      ...p,
+      sector: p.sector ?? undefined,
+    }));
+    await replacePositions(id, positions);
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json(

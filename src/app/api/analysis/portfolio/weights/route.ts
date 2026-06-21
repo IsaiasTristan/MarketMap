@@ -9,6 +9,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/infrastructure/db/client";
 import { loadPortfolioWeights } from "@/server/services/portfolio.service";
+import { requirePortfolioAccess } from "@/lib/api/guards";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -16,6 +17,8 @@ export async function GET(req: Request) {
   if (!portfolioId) {
     return NextResponse.json({ error: "portfolioId required" }, { status: 400 });
   }
+  const guard = await requirePortfolioAccess(req, portfolioId);
+  if (guard) return guard;
   const weights = await loadPortfolioWeights(prisma, portfolioId);
   return NextResponse.json({ weights });
 }

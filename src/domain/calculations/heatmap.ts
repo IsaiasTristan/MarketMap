@@ -75,6 +75,47 @@ export function heatTStatBloomberg(t: number): string {
   return heatSignedBloomberg(m, 1);
 }
 
+/**
+ * Cohort-percentile heat. `pct` is the value's percentile rank within its
+ * cohort, expressed as a fraction in [0, 1].
+ *
+ *   - "signed": pct=0.5 → neutral, pct=0 → red, pct=1 → green. Use for
+ *     symmetric metrics where the cohort spans both signs (factor betas,
+ *     return contributions, alpha, residual drift).
+ *   - "moreGreen": pct=0 → neutral, pct=1 → green. Use for one-sided
+ *     "more is better" metrics (R²).
+ *   - "moreRed": pct=0 → neutral, pct=1 → red. Use for one-sided "more
+ *     is worse" metrics (realised volatility).
+ *
+ * The cohort-percentile heat ramp replaces per-column-span shading: a
+ * cell's intensity now reflects how extreme it is *within its peers* —
+ * a "tight column" no longer dilutes a meaningful outlier.
+ */
+export function heatPercentileBloomberg(
+  pct: number,
+  direction: "signed" | "moreGreen" | "moreRed",
+): string {
+  const p = clamp01(pct);
+  if (direction === "signed") {
+    // Map pct ∈ [0, 1] to [-1, 1] and reuse the signed ramp.
+    return heatSignedBloomberg(p * 2 - 1, 1);
+  }
+  return lerpRgb(
+    HEAT_NEUTRAL,
+    direction === "moreGreen" ? HEAT_POS_END : HEAT_NEG_END,
+    p,
+  );
+}
+
+/**
+ * Desaturated/dim version of any heat color. Used to mute the row-level
+ * summary heat (R², Vol) on rows where every factor cell was masked by the
+ * sig gate — keeps the cell readable but takes the visual emphasis away.
+ */
+export function dimHeatColor(): string {
+  return "rgba(255,255,255,0.025)";
+}
+
 /** Signed heat with value clamped to column symmetric span (correlation grids). */
 export function divergingHeatColor(value: number, colMin: number, colMax: number): string {
   const span = Math.max(Math.abs(colMax), Math.abs(colMin), 1e-9);

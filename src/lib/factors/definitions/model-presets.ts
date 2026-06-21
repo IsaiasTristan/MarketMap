@@ -81,18 +81,15 @@ export function minObservations(k: number): number {
 }
 
 /**
- * Model presets shown in the UI. Trimmed to the institutional set per
- * product decision (Apr 2026): the MACRO14 macro+style default plus the
- * two academic Fama-French baselines. CAPM / Carhart4 / Extended remain
+ * Model presets shown in the UI. Trimmed to MACRO14 only per product
+ * decision (Jun 2026): the institutional macro+style model is the sole
+ * supported model, so the Model dropdown is removed entirely. The academic
+ * Fama-French presets (CAPM / FF3 / Carhart4 / FF5 / Extended) remain
  * defined in `MODEL_PRESETS` for backward compatibility with old persisted
- * snapshots and saved settings, but are intentionally hidden from the
- * Model dropdown.
+ * snapshots, saved settings, and the `model` API param, but are no longer
+ * selectable in the UI or precomputed.
  */
-export const MODEL_PRESET_NAMES: ModelPresetName[] = [
-  "MACRO14",
-  "FF5",
-  "FF3",
-];
+export const MODEL_PRESET_NAMES: ModelPresetName[] = ["MACRO14"];
 
 /** Factor codes that contribute to return attribution (excludes RF). */
 export function getAttributionFactors(model: ModelPreset): FactorCode[] {

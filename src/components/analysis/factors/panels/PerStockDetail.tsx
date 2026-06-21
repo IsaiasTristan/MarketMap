@@ -39,6 +39,8 @@ import type { PerStockResult } from "@/server/services/factor-per-stock.service"
 import { useAnalysisStore } from "@/store/analysis";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
 import { pickHeadlineValue } from "@/lib/factors/attribution/headline-picker";
+import { resolvePeriodSlice } from "@/lib/factors/attribution/period";
+import { StockPriceChart } from "./StockPriceChart";
 import type { FactorCode } from "@/types/factors";
 import { Waterfall, type WaterfallSegment } from "../shared/Waterfall";
 import { FactorInfoIcon } from "../shared/FactorInfoIcon";
@@ -121,6 +123,8 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
   const [tsMetric, setTsMetric] = useState<"return" | "risk" | "beta">("return");
   const factorTsRollingWindow = useAnalysisStore((s) => s.factorTsRollingWindow);
   const setFactorTsRollingWindow = useAnalysisStore((s) => s.setFactorTsRollingWindow);
+  const attributionMode = useAnalysisStore((s) => s.factorAttributionMode);
+  const attributionPeriod = useAnalysisStore((s) => s.factorPeriod);
 
   const row = selectedTicker ? data.rows.find((r) => r.ticker === selectedTicker) : null;
   const factors = data.usableFactors;
@@ -183,8 +187,15 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
         windowEndDate: "",
       };
     }
-    const startIdx = tsData.displayStartIndex ?? 0;
+    const displayStartIdx = tsData.displayStartIndex ?? 0;
     const n = tsData.dates.length;
+    // Attribution Period slice: restrict the waterfall sums to a trailing
+    // sub-window of the visible (post burn-in) range. resolvePeriodSlice over
+    // the full chart dates can return an index before the burn-in cut for long
+    // periods, so we clamp to displayStartIndex.
+    const periodSlice = resolvePeriodSlice(tsData.dates, attributionPeriod);
+    const startIdx = Math.max(displayStartIdx, periodSlice.startIndex < 0 ? displayStartIdx : periodSlice.startIndex);
+    const isFullVisibleWindow = startIdx === displayStartIdx;
     const factorContrib = useLog ? tsData.log!.factorLogContrib : tsData.factorContrib;
     const alphaSeries = useLog ? tsData.log!.alphaLog : tsData.alpha;
     const residSeries = useLog ? tsData.log!.residualLog : tsData.residual;
@@ -208,6 +219,7 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
         value: sum,
         color: def.color,
         sub: `Latest rolling β = ${lastBeta >= 0 ? "+" : ""}${lastBeta.toFixed(2)}`,
+        info: { name: def.label, definition: def.description, howCalculated: def.howCalculated },
       });
     }
     segs.sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
@@ -239,6 +251,12 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
       sub: useLog
         ? "Σ ε_log_t = Σ (y_log − ŷ_log) over post burn-in"
         : "Σ ε_t = Σ (actual − predicted) over post burn-in",
+      info: {
+        name: "Unexplained Residual",
+        definition:
+          "The part of the stock's return not explained by any factor — the regression residual summed over the window. Large unexplained residual means the factor model captures little of this stock's behavior.",
+        howCalculated: "Σ (actual return − predicted return) over the post-burn-in window.",
+      },
     };
 
     const ratio = Math.abs(innerSum) > 1e-9 ? Math.abs(alphaSum) / Math.abs(innerSum) : 0;
@@ -255,8 +273,15 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
     // (where the server populated `sumLogTotalVisible` over the same
     // [displayStartIndex, n) window we sum here). Null in fallback Path A
     // where mixing arithmetic excess with RF would not be a valid identity.
+    // `sumLogTotalVisible` is precomputed over the FULL visible window only,
+    // so the RF-inclusive total is valid only when the period slice spans that
+    // whole window. For shorter periods we can't reconstruct the per-day RF
+    // here, so we suppress the Total ≈ sub-line.
     const geomTotalIncRf =
-      useLog && tsData.log != null && Number.isFinite(tsData.log.sumLogTotalVisible)
+      isFullVisibleWindow &&
+      useLog &&
+      tsData.log != null &&
+      Number.isFinite(tsData.log.sumLogTotalVisible)
         ? Math.exp(tsData.log.sumLogTotalVisible) - 1
         : null;
 
@@ -273,7 +298,7 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
       windowStartDate: tsData.dates[startIdx] ?? "",
       windowEndDate: tsData.dates[n - 1] ?? "",
     };
-  }, [tsData, factors, useLog]);
+  }, [tsData, factors, useLog, attributionPeriod]);
 
   const riskSegments: WaterfallSegment[] = useMemo(() => {
     if (!row) return [];
@@ -504,14 +529,32 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
             style={{
               padding: "6px 14px",
             }}
-            title={
-              `Daily intercept × 252 from the snapshot OLS. t = ${row.alphaTStat.toFixed(2)}.\n` +
-              `STATIC (whole-window) — distinct from Σ rolling α_t shown in the return waterfall residual.\n\n` +
-              `95 % CI = α ± 1.96 × SE(α) × 252 = ` +
-              `${(row.alphaAnnualized * 100).toFixed(2)}% ± ${(row.alphaCi95Half * 100).toFixed(2)}%.\n` +
-              `Factor z-scoring does not affect this band — α and SE(α) are in y-units (excess return), and the studentised statistic is invariant to factor reparameterisation. With our typical DOF (≈ 250–365) the exact t-critical ≈ 1.97, so z = 1.96 is essentially equivalent.\n\n` +
-              `LARGE α may reflect model misspecification rather than skill — check residual scatter for systematic patterns.`
-            }
+            title={(() => {
+              // Static alpha pill is mode-aware. Log mode reads the parallel
+              // log-space snapshot OLS; simple stays on the original. For
+              // high-vol stocks the two can disagree by hundreds of percent
+              // (Jensen's inequality on each day's residual).
+              const modeAnn =
+                attributionMode === "log" ? row.alphaAnnualizedLog : row.alphaAnnualized;
+              const modeT =
+                attributionMode === "log" ? row.alphaTStatLog : row.alphaTStat;
+              const modeCi =
+                attributionMode === "log" ? row.alphaCi95HalfLog : row.alphaCi95Half;
+              const annNum = modeAnn ?? Number.NaN;
+              const tNum = modeT ?? Number.NaN;
+              const ciNum = modeCi ?? Number.NaN;
+              return (
+                `Daily intercept × 252 from the snapshot OLS in ${attributionMode} space. t = ${Number.isFinite(tNum) ? tNum.toFixed(2) : "—"}.\n` +
+                `STATIC (whole-window) — distinct from Σ rolling α_t shown in the waterfall residual.\n\n` +
+                `95 % CI = α ± 1.96 × SE(α) × 252 = ` +
+                `${Number.isFinite(annNum) ? (annNum * 100).toFixed(2) : "—"}% ± ${Number.isFinite(ciNum) ? (ciNum * 100).toFixed(2) : "—"}%.\n` +
+                `Factor z-scoring does not affect this band — α and SE(α) are in y-units (excess return), and the studentised statistic is invariant to factor reparameterisation. With our typical DOF (≈ 250–365) the exact t-critical ≈ 1.97, so z = 1.96 is essentially equivalent.\n\n` +
+                (attributionMode === "log"
+                  ? `Log space: matches the waterfall's Σ α_t (log) segment in scale (rolling sum vs annualised intercept differ by horizon).`
+                  : `Simple space: for high-vol stocks this can be wildly larger than the log-space static-α (Jensen's inequality on daily residuals). Switch attribution mode to log to align with the waterfall.`) +
+                `\n\nLARGE α may reflect model misspecification rather than skill — check residual scatter for systematic patterns.`
+              );
+            })()}
           >
             <div
               style={{
@@ -521,21 +564,44 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
                 letterSpacing: "0.06em",
               }}
             >
-              Static alpha (ann.)
+              Static alpha (ann., {attributionMode})
             </div>
             <div
               style={{
                 fontSize: 13,
                 fontWeight: 600,
                 fontFamily: "var(--font-mono, monospace)",
-                color: row.alphaAnnualized >= 0 ? "var(--color-positive)" : "var(--color-negative)",
+                color:
+                  (attributionMode === "log" ? row.alphaAnnualizedLog : row.alphaAnnualized) ?? 0 >= 0
+                    ? "var(--color-positive)"
+                    : "var(--color-negative)",
                 marginTop: 1,
               }}
             >
-              {row.alphaAnnualized >= 0 ? "+" : ""}{(row.alphaAnnualized * 100).toFixed(2)}%
-              <span style={{ color: "var(--text-muted)", marginLeft: 6, fontSize: 10 }}>
-                ± {(row.alphaCi95Half * 100).toFixed(2)}% (95%) · t = {row.alphaTStat.toFixed(2)}
-              </span>
+              {(() => {
+                const ann =
+                  attributionMode === "log"
+                    ? row.alphaAnnualizedLog
+                    : row.alphaAnnualized;
+                const t =
+                  attributionMode === "log" ? row.alphaTStatLog : row.alphaTStat;
+                const ci =
+                  attributionMode === "log" ? row.alphaCi95HalfLog : row.alphaCi95Half;
+                if (ann == null || !Number.isFinite(ann)) return "—";
+                const tStr = t != null && Number.isFinite(t) ? t.toFixed(2) : "—";
+                const ciStr =
+                  ci != null && Number.isFinite(ci) ? `${(ci * 100).toFixed(2)}%` : "—";
+                return (
+                  <>
+                    {ann >= 0 ? "+" : ""}{(ann * 100).toFixed(2)}%
+                    <span
+                      style={{ color: "var(--text-muted)", marginLeft: 6, fontSize: 10 }}
+                    >
+                      ± {ciStr} (95%) · t = {tStr}
+                    </span>
+                  </>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -647,6 +713,9 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
       })()}
 
       <div style={{ flex: 1, overflowY: "auto" }}>
+        <div style={{ padding: "12px 14px 0" }}>
+          <StockPriceChart ticker={row.ticker} />
+        </div>
         {tsLoading && !tsData && (
           <div style={{ padding: "16px 14px", fontSize: 11, color: "var(--text-muted)" }}>
             Loading return decomposition (aligned to rolling factor time series)…
@@ -712,7 +781,7 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
               }
               titleSub={
                 windowStartDate && windowEndDate
-                  ? `${windowStartDate} — ${windowEndDate}`
+                  ? `${windowStartDate} — ${windowEndDate} · ${attributionPeriod}`
                   : undefined
               }
               total={sumLogInner}

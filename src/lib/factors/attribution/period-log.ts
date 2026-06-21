@@ -13,19 +13,44 @@ import type {
 import { getFactorDef } from "../definitions/factor-codes";
 import { expSumMinus1 } from "./log-returns";
 
-type PeriodLabel = "1D" | "5D" | "MTD" | "QTD" | "1M" | "3M" | "6M" | "YTD" | "1Y" | "ITD";
+type PeriodLabel = "1D" | "5D" | "1M" | "3M" | "6M" | "1Y";
+
+const PERIODS: PeriodLabel[] = ["1D", "5D", "1M", "3M", "6M", "1Y"];
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-function quarterStart(d: Date): Date {
-  const q = Math.floor(d.getMonth() / 3);
-  return new Date(d.getFullYear(), q * 3, 1);
-}
-
-function monthStart(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
+/**
+ * Calendar start date for a date-based period, or `null` for the count-based
+ * trailing-day periods (1D/5D) which are sliced by observation count instead.
+ */
+function periodStartDate(label: PeriodLabel, ref: Date): string | null {
+  switch (label) {
+    case "1D":
+    case "5D":
+      return null;
+    case "1M": {
+      const d = new Date(ref);
+      d.setMonth(d.getMonth() - 1);
+      return isoDate(d);
+    }
+    case "3M": {
+      const d = new Date(ref);
+      d.setMonth(d.getMonth() - 3);
+      return isoDate(d);
+    }
+    case "6M": {
+      const d = new Date(ref);
+      d.setMonth(d.getMonth() - 6);
+      return isoDate(d);
+    }
+    case "1Y": {
+      const d = new Date(ref);
+      d.setFullYear(d.getFullYear() - 1);
+      return isoDate(d);
+    }
+  }
 }
 
 export function computePeriodLogAttribution(
@@ -35,65 +60,16 @@ export function computePeriodLogAttribution(
 ): PeriodAttributionSummaryLog[] {
   if (!daily.length) return [];
 
-  const ref = refDate ?? new Date();
   const lastDate = daily[daily.length - 1]!.date;
-  const firstDate = daily[0]!.date;
-
-  function periodStart(label: PeriodLabel): string {
-    switch (label) {
-      case "1D":
-        return lastDate;
-      case "5D": {
-        const slice = daily.slice(-5);
-        return slice[0]?.date ?? lastDate;
-      }
-      case "MTD":
-        return isoDate(monthStart(ref));
-      case "QTD":
-        return isoDate(quarterStart(ref));
-      case "1M": {
-        const d = new Date(ref);
-        d.setMonth(d.getMonth() - 1);
-        return isoDate(d);
-      }
-      case "3M": {
-        const d = new Date(ref);
-        d.setMonth(d.getMonth() - 3);
-        return isoDate(d);
-      }
-      case "6M": {
-        const d = new Date(ref);
-        d.setMonth(d.getMonth() - 6);
-        return isoDate(d);
-      }
-      case "YTD":
-        return `${ref.getFullYear()}-01-01`;
-      case "1Y": {
-        const d = new Date(ref);
-        d.setFullYear(d.getFullYear() - 1);
-        return isoDate(d);
-      }
-      case "ITD":
-        return firstDate;
-    }
-  }
-
-  const PERIODS: PeriodLabel[] = [
-    "1D",
-    "5D",
-    "MTD",
-    "QTD",
-    "1M",
-    "3M",
-    "6M",
-    "YTD",
-    "1Y",
-    "ITD",
-  ];
+  const ref = refDate ?? new Date(`${lastDate}T12:00:00Z`);
 
   return PERIODS.map((label) => {
-    const start = periodStart(label);
-    const slice = daily.filter((d) => d.date >= start);
+    const start = periodStartDate(label, ref);
+    const slice =
+      start != null
+        ? daily.filter((d) => d.date >= start)
+        : daily.slice(-(label === "1D" ? 1 : 5));
+    const startDate = start ?? (slice.length ? slice[0]!.date : lastDate);
 
     let totalLogReturn = 0;
     let factorLogReturn = 0;
@@ -123,7 +99,7 @@ export function computePeriodLogAttribution(
 
     return {
       label,
-      startDate: start,
+      startDate,
       endDate: lastDate,
       totalLogReturn,
       totalGeometricReturn: expSumMinus1(totalLogReturn),

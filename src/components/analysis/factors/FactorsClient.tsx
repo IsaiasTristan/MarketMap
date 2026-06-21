@@ -1,9 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAnalysisStore } from "@/store/analysis";
+import { useAnalysisStore, type FactorPeriod } from "@/store/analysis";
 import { MODEL_PRESET_NAMES as VISIBLE_MODELS } from "@/lib/factors/definitions/model-presets";
-import { ControlsBar } from "./panels/ControlsBar";
+import { FactorToolbar } from "./shared/FactorToolbar";
 import { HeaderSummary } from "./panels/HeaderSummary";
 import { TimeSeriesPanel } from "./panels/TimeSeriesPanel";
 import { DriversPanel } from "./panels/DriversPanel";
@@ -18,8 +18,6 @@ import { PortfolioTotalsPanel } from "./panels/PortfolioTotalsPanel";
 import { PortfolioFactorGrid } from "./panels/PortfolioFactorGrid";
 import { FloatingPortfolioDetail } from "./panels/FloatingPortfolioDetail";
 import { FloatingPerStockDetail } from "./panels/FloatingPerStockDetail";
-import { MetricToggle } from "./shared/MetricToggle";
-import { SectorSubThemeFilter } from "./shared/SectorSubThemeFilter";
 import { BloombergTabStrip } from "@/components/analysis/BloombergTabStrip";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
 import type { FactorExposureSnapshot, AttributionResult, DriversResult, RiskDecomposition, FactorAlert } from "@/types/factors";
@@ -91,13 +89,19 @@ export function FactorsClient() {
     staleTime: 2 * 60_000,
   });
 
-  // Attribution (tab)
-  const { data: attribution } = useQuery<AttributionResult>({
+  // Attribution — fetched for the whole portfolio view (the Total Return
+  // decomposition panel + the Attribution Period selector sit above the tab
+  // strip, so they need this regardless of the active sub-tab). A non-200
+  // (e.g. 422 INSUFFICIENT_DATA when there isn't enough overlapping history
+  // for the regression window) resolves to null instead of being stored as a
+  // bogus AttributionResult, so the UI can fall back cleanly.
+  const { data: attribution } = useQuery<AttributionResult | null>({
     queryKey: ["factor-attribution", activePortfolioId, factorModel, factorWindow],
     queryFn: () =>
-      fetch(`${baseUrl}/attribution?portfolioId=${activePortfolioId}&${params}`)
-        .then((r) => r.json()),
-    enabled: portfolioEnabled && (activeTab === "attribution" || activeTab === "exposure"),
+      fetch(`${baseUrl}/attribution?portfolioId=${activePortfolioId}&${params}`).then((r) =>
+        r.ok ? (r.json() as Promise<AttributionResult>) : null,
+      ),
+    enabled: portfolioEnabled,
     staleTime: 5 * 60_000,
   });
 
@@ -112,12 +116,16 @@ export function FactorsClient() {
   });
 
   // Risk — always loaded in portfolio mode so the Total Risk waterfall above
-  // the tabs can render before the user clicks into the Risk tab.
-  const { data: risk } = useQuery<RiskDecomposition>({
+  // the tabs can render before the user clicks into the Risk tab. A non-200
+  // (403 not-owned, 422 INSUFFICIENT_DATA, etc.) resolves to null instead of
+  // storing a bogus `{ error }` object, mirroring the attribution query above
+  // so consumers fall back cleanly instead of crashing on `risk.factors`.
+  const { data: risk } = useQuery<RiskDecomposition | null>({
     queryKey: ["factor-risk", activePortfolioId, factorModel, factorWindow],
     queryFn: () =>
-      fetch(`${baseUrl}/risk?portfolioId=${activePortfolioId}&${params}`)
-        .then((r) => r.json()),
+      fetch(`${baseUrl}/risk?portfolioId=${activePortfolioId}&${params}`).then((r) =>
+        r.ok ? (r.json() as Promise<RiskDecomposition>) : null,
+      ),
     enabled: portfolioEnabled,
     staleTime: 5 * 60_000,
   });
@@ -136,11 +144,11 @@ export function FactorsClient() {
   // heatmap-style grid). Per-stock is cached across the rest of the app —
   // reusing the same query key so the cache is shared with PerStockView.
   const { data: perStockData } = useQuery<PerStockResult>({
-    queryKey: ["factor-per-stock", factorModel, factorWindow],
+    queryKey: ["factor-per-stock", factorModel, factorWindow, factorPeriod],
     queryFn: () =>
-      fetch(`/api/analysis/factors/per-stock?model=${factorModel}&window=${factorWindow}`).then(
-        (r) => r.json(),
-      ),
+      fetch(
+        `/api/analysis/factors/per-stock?model=${factorModel}&window=${factorWindow}&period=${factorPeriod}`,
+      ).then((r) => r.json()),
     enabled: portfolioEnabled && activeTab === "exposure",
     staleTime: 5 * 60_000,
   });
@@ -190,26 +198,28 @@ export function FactorsClient() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {/* Page header */}
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: "var(--text-primary)", margin: "0 0 4px" }}>
-          Factor Analysis
-        </h1>
-        <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: 0 }}>
-          Macro + style factor exposure, attribution, and risk — for the portfolio in aggregate or
-          for every saved stock individually.
-        </p>
-      </div>
+      <h1 style={{ fontSize: 20, fontWeight: 700, color: "var(--text-primary)", margin: 0 }}>
+        Factor Analysis
+      </h1>
 
       {/* Top-level Portfolio | Per-stock toggle */}
       <PortfolioPerStockToggle value={factorView} onChange={setFactorView} />
 
-      {/* Controls */}
-      <ControlsBar
-        showPipeline
-        onRefreshPipeline={handleRefreshPipeline}
-        pipelineLoading={pipelineLoading}
-        hidePeriod={factorView !== "portfolio"}
-      />
+      {/* Top-level controls — per-stock renders its own toolbar internally,
+          so we only show the shared bar for portfolio + correlations. */}
+      {factorView !== "per_stock" && (
+        <FactorToolbar
+          sectors={[]}
+          subThemesBySector={{}}
+          hideStat
+          hideMetric
+          hideFilters
+          hideScreener
+          showPeriod={factorView === "portfolio" && !showPortfolioEmptyState}
+          onRefresh={handleRefreshPipeline}
+          refreshing={pipelineLoading}
+        />
+      )}
 
       {/* Per-stock view */}
       {factorView === "per_stock" && <PerStockView />}
@@ -266,6 +276,7 @@ export function FactorsClient() {
               attribution={attribution}
               risk={risk}
               selectedPeriod={factorPeriod}
+              regressionWindow={factorWindow}
             />
           )}
 
@@ -287,12 +298,11 @@ export function FactorsClient() {
                 perStock={perStockData}
                 holdings={portfolioWeights}
                 exposure={exposure && !("error" in (exposure as unknown as Record<string, unknown>)) ? (exposure as FactorExposureSnapshot) : null}
+                attribution={attribution}
+                selectedPeriod={factorPeriod}
                 metric={factorGridMetric}
-                onMetricChange={setFactorGridMetric}
                 sectorFilter={factorGridSectorFilter}
                 subThemeFilter={factorGridSubThemeFilter}
-                onSectorFilterChange={setFactorGridSectorFilter}
-                onSubThemeFilterChange={setFactorGridSubThemeFilter}
                 openTickers={openFactorDetailPanels.map((p) => p.ticker)}
                 onOpenTicker={openFactorDetailPanel}
                 onCloseTicker={closeFactorDetailPanel}
@@ -332,6 +342,7 @@ export function FactorsClient() {
               risk={risk}
               history={history as Parameters<typeof TimeSeriesPanel>[0]["history"]}
               selectedPeriod={factorPeriod}
+              regressionWindow={factorWindow}
               onClose={() => setPortfolioDetailOpen(false)}
             />
           )}
@@ -351,12 +362,11 @@ interface PortfolioExposureGridSectionProps {
   perStock: PerStockResult | undefined;
   holdings: PortfolioWeight[];
   exposure: FactorExposureSnapshot | null;
+  attribution: AttributionResult | null | undefined;
+  selectedPeriod: FactorPeriod;
   metric: "beta" | "return" | "risk";
-  onMetricChange: (m: "beta" | "return" | "risk") => void;
   sectorFilter: string | null;
   subThemeFilter: string | null;
-  onSectorFilterChange: (s: string | null) => void;
-  onSubThemeFilterChange: (s: string | null) => void;
   openTickers: string[];
   onOpenTicker: (t: string) => void;
   onCloseTicker: (t: string) => void;
@@ -367,17 +377,17 @@ function PortfolioExposureGridSection({
   perStock,
   holdings,
   exposure,
+  attribution,
+  selectedPeriod,
   metric,
-  onMetricChange,
   sectorFilter,
   subThemeFilter,
-  onSectorFilterChange,
-  onSubThemeFilterChange,
   openTickers,
   onOpenTicker,
   onCloseTicker,
   onOpenPortfolioDetail,
 }: PortfolioExposureGridSectionProps) {
+  const { factorGridStat } = useAnalysisStore();
   // Empty / loading states.
   if (!perStock) {
     return <SkeletonCard height={420} />;
@@ -427,35 +437,26 @@ function PortfolioExposureGridSection({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div
-        style={{
-          display: "flex",
-          gap: 16,
-          alignItems: "flex-end",
-          flexWrap: "wrap",
-          padding: "10px 14px",
-          background: "var(--bg-surface)",
-          border: "1px solid var(--bg-border)",
-          borderRadius: 2,
-        }}
-      >
-        <SectorSubThemeFilter
-          sectors={sectors}
-          subThemesBySector={subThemesBySector}
-          selectedSector={sectorFilter}
-          selectedSubTheme={subThemeFilter}
-          onSectorChange={onSectorFilterChange}
-          onSubThemeChange={onSubThemeFilterChange}
-        />
-        <div style={{ flex: 1 }} />
-        <MetricToggle value={metric} onChange={onMetricChange} />
-      </div>
+      {/* Tab-scoped controls — Model + Window already live in the page-level
+          toolbar, so this row only needs the per-tab filters and Metric/Stat
+          lens. Same component as PerStockView for visual + behavioural
+          consistency. */}
+      <FactorToolbar
+        sectors={sectors}
+        subThemesBySector={subThemesBySector}
+        hideWindow
+        hideRefresh
+        hideScreener
+      />
 
       <PortfolioFactorGrid
         data={perStock}
         holdings={matchingHoldings}
         exposure={exposure}
+        attribution={attribution}
+        selectedPeriod={selectedPeriod}
         metric={metric}
+        stat={factorGridStat}
         openTickers={openTickers}
         onOpenTicker={onOpenTicker}
         onCloseTicker={onCloseTicker}

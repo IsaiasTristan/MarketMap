@@ -247,12 +247,29 @@ export async function runFactorEngine(
   const endWeights = exponentialWeights(windowN, ewHalfLife);
   const endFit = multivariateOls(yEnd, xEnd, endWeights);
 
-  // Rolling fits
+  // Rolling fits.
+  //
+  // Cap the rolling window to the actually-available aligned history so that
+  // a requested HORIZON preset (e.g. 504d) doesn't produce an empty
+  // `rollingFits` array when the factor matrix is short by a handful of days
+  // (typical: AQR/KF publish lag, holidays). The end-fit + risk Σ already
+  // use `Math.min(regressionWindow, n)`, so this mirrors that behaviour and
+  // unblocks `computeFactorAttribution` for the common ~10–25 day shortfall.
+  // Mirrors the per-stock timeseries `windowFallback` contract.
+  const effectiveRollingWindow = Math.min(regressionWindow, n);
+  const windowFallback =
+    n < regressionWindow
+      ? {
+          requestedWindow: regressionWindow,
+          effectiveWindow: effectiveRollingWindow,
+          availableObservations: n,
+        }
+      : null;
   const rollingFits = rollingMultivariateOls(
     finalDates,
     portExcessReturns,
     finalFactorRowsNorm,
-    regressionWindow,
+    effectiveRollingWindow,
     ewHalfLife,
   );
 
@@ -320,7 +337,7 @@ export async function runFactorEngine(
       finalDates,
       portExcessLogReturns,
       factorLogRows,
-      regressionWindow,
+      effectiveRollingWindow,
       ewHalfLife,
     );
   } else {
@@ -346,6 +363,7 @@ export async function runFactorEngine(
     rfLogReturns,
     endFitLog,
     rollingFitsLog,
+    windowFallback,
   };
 }
 

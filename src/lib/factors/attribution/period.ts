@@ -6,30 +6,109 @@ import type { AttributionDayPoint, PeriodAttributionSummary } from "@/types/fact
 import type { FactorCode } from "@/types/factors";
 import { getFactorDef } from "../definitions/factor-codes";
 
-export type PeriodLabel = "1D" | "5D" | "MTD" | "QTD" | "1M" | "3M" | "6M" | "YTD" | "1Y" | "ITD";
+export type PeriodLabel = "1D" | "5D" | "1M" | "3M" | "6M" | "1Y";
 
-interface PeriodSpec {
-  label: PeriodLabel;
-  startDate: (refDate: Date) => Date;
-}
-
-function addTradingDays(d: Date, n: number): Date {
-  const out = new Date(d);
-  out.setDate(out.getDate() - n * 1.4); // rough calendar approximation for start
-  return out;
-}
+const PERIODS: PeriodLabel[] = ["1D", "5D", "1M", "3M", "6M", "1Y"];
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-function quarterStart(d: Date): Date {
-  const q = Math.floor(d.getMonth() / 3);
-  return new Date(d.getFullYear(), q * 3, 1);
+/**
+ * Calendar start date for a date-based period, or `null` for the count-based
+ * trailing-day periods (1D/5D) which are sliced by observation count instead
+ * (calendar-day math is wrong across weekends/holidays for tiny windows).
+ */
+export function periodStartDate(label: PeriodLabel, ref: Date): string | null {
+  switch (label) {
+    case "1D":
+    case "5D":
+      return null;
+    case "1M": {
+      const d = new Date(ref);
+      d.setMonth(d.getMonth() - 1);
+      return isoDate(d);
+    }
+    case "3M": {
+      const d = new Date(ref);
+      d.setMonth(d.getMonth() - 3);
+      return isoDate(d);
+    }
+    case "6M": {
+      const d = new Date(ref);
+      d.setMonth(d.getMonth() - 6);
+      return isoDate(d);
+    }
+    case "1Y": {
+      const d = new Date(ref);
+      d.setFullYear(d.getFullYear() - 1);
+      return isoDate(d);
+    }
+  }
 }
 
-function monthStart(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
+/** Trailing observation count for the count-based periods (1D/5D). */
+function periodTrailingCount(label: PeriodLabel): number | null {
+  if (label === "1D") return 1;
+  if (label === "5D") return 5;
+  return null;
+}
+
+export interface PeriodSlice {
+  /** First index of the slice (inclusive). -1 when `dates` is empty. */
+  startIndex: number;
+  /** Last index of the slice (inclusive) = dates.length - 1. -1 when empty. */
+  endIndex: number;
+  /** ISO date at `startIndex`, or "" when empty. */
+  startDate: string;
+  /** ISO date at `endIndex`, or "" when empty. */
+  endDate: string;
+}
+
+/**
+ * Resolve the `[startIndex, endIndex]` slice of a sorted-ascending date array
+ * that belongs to a trailing reporting period.
+ *
+ * Rules (single source of truth, shared by portfolio + per-stock paths):
+ *   - 1D / 5D  → trailing observation COUNT (1 or 5 days), because calendar
+ *                math is wrong across weekends/holidays for tiny windows.
+ *   - 1M..1Y   → calendar offset from the reference date (last date by
+ *                default), inclusive of the first trading day on/after it.
+ *
+ * @param dates    Sorted-ascending ISO date strings (YYYY-MM-DD or ISO datetime).
+ * @param label    Reporting-period label.
+ * @param refDate  Reference date for calendar offsets; defaults to the last date.
+ */
+export function resolvePeriodSlice(
+  dates: string[],
+  label: PeriodLabel,
+  refDate?: string,
+): PeriodSlice {
+  if (dates.length === 0) {
+    return { startIndex: -1, endIndex: -1, startDate: "", endDate: "" };
+  }
+  const endIndex = dates.length - 1;
+  const endDate = dates[endIndex]!;
+
+  const count = periodTrailingCount(label);
+  let startIndex: number;
+  if (count != null) {
+    startIndex = Math.max(0, dates.length - count);
+  } else {
+    const ref = refDate ? new Date(refDate) : new Date(endDate);
+    const start = periodStartDate(label, ref)!;
+    // First index whose date is on/after the calendar start.
+    let i = dates.findIndex((d) => d >= start);
+    if (i < 0) i = 0;
+    startIndex = i;
+  }
+
+  return {
+    startIndex,
+    endIndex,
+    startDate: dates[startIndex]!,
+    endDate,
+  };
 }
 
 /**
@@ -46,54 +125,21 @@ export function computePeriodAttribution(
 ): PeriodAttributionSummary[] {
   if (!daily.length) return [];
 
-  const ref = refDate ?? new Date();
+  // Default ref date to the LAST daily attribution date (not today). Calendar
+  // periods (1M…1Y) anchor to the data's most recent observation, so the
+  // bucket boundaries line up with the realised series even when the series
+  // is a day or two stale (typical Yahoo / KF publish lag). Matches the
+  // anchor semantics in `resolvePeriodSlice` used by the per-stock path.
   const lastDate = daily[daily.length - 1]!.date;
-  const firstDate = daily[0]!.date;
-
-  function periodStart(label: PeriodLabel): string {
-    switch (label) {
-      case "1D":
-        return lastDate;
-      case "5D": {
-        const slice = daily.slice(-5);
-        return slice[0]?.date ?? lastDate;
-      }
-      case "MTD":
-        return isoDate(monthStart(ref));
-      case "QTD":
-        return isoDate(quarterStart(ref));
-      case "1M": {
-        const d = new Date(ref);
-        d.setMonth(d.getMonth() - 1);
-        return isoDate(d);
-      }
-      case "3M": {
-        const d = new Date(ref);
-        d.setMonth(d.getMonth() - 3);
-        return isoDate(d);
-      }
-      case "6M": {
-        const d = new Date(ref);
-        d.setMonth(d.getMonth() - 6);
-        return isoDate(d);
-      }
-      case "YTD":
-        return `${ref.getFullYear()}-01-01`;
-      case "1Y": {
-        const d = new Date(ref);
-        d.setFullYear(d.getFullYear() - 1);
-        return isoDate(d);
-      }
-      case "ITD":
-        return firstDate;
-    }
-  }
-
-  const PERIODS: PeriodLabel[] = ["1D", "5D", "MTD", "QTD", "1M", "3M", "6M", "YTD", "1Y", "ITD"];
+  const ref = refDate ?? new Date(`${lastDate}T12:00:00Z`);
 
   return PERIODS.map((label) => {
-    const start = periodStart(label);
-    const slice = daily.filter((d) => d.date >= start);
+    const start = periodStartDate(label, ref);
+    const slice =
+      start != null
+        ? daily.filter((d) => d.date >= start)
+        : daily.slice(-(label === "1D" ? 1 : 5));
+    const startDate = start ?? (slice.length ? slice[0]!.date : lastDate);
 
     let totalReturn = 0;
     let factorReturn = 0;
@@ -123,7 +169,7 @@ export function computePeriodAttribution(
 
     return {
       label,
-      startDate: start,
+      startDate,
       endDate: lastDate,
       totalReturn,
       factorReturn,

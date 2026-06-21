@@ -199,3 +199,150 @@ export async function replaceUniverseConstituents(
     duplicatesDropped,
   };
 }
+
+export type AddUniverseResult = {
+  applied: number;
+  created: number;
+  reactivated: number;
+  renamed: number;
+  updated: number;
+  duplicatesDropped: number;
+};
+
+/**
+ * Append `rows` to a universe WITHOUT removing existing constituents.
+ *
+ * Unlike `replaceUniverseConstituents`, this never deletes — it is the
+ * single-ticker / handful add path. A ticker already in the universe has its
+ * `sector` / `subTheme` updated in place (counted as `updated`); a ticker not
+ * yet present is appended after the current max `sortOrder`. The underlying
+ * Security is created / reactivated / renamed using the same rules as the
+ * replace path so name and active-state stay consistent.
+ */
+export async function addUniverseConstituents(
+  db: PrismaClient,
+  universeId: string,
+  rows: ParsedUniverseRow[]
+): Promise<AddUniverseResult> {
+  // De-dupe by uppercased ticker (last-write wins for metadata) so a repeated
+  // ticker in the same payload never violates the unique constraint.
+  const byTicker = new Map<string, ParsedUniverseRow>();
+  for (const r of rows) {
+    const ticker = r.ticker.trim().toUpperCase();
+    if (!ticker) continue;
+    byTicker.set(ticker, { ...r, ticker });
+  }
+  const ordered = [...byTicker.values()];
+  const duplicatesDropped = rows.length - ordered.length;
+
+  if (ordered.length === 0) {
+    return {
+      applied: 0,
+      created: 0,
+      reactivated: 0,
+      renamed: 0,
+      updated: 0,
+      duplicatesDropped,
+    };
+  }
+
+  const tickers = ordered.map((r) => r.ticker);
+
+  const existing = await db.security.findMany({
+    where: { ticker: { in: tickers } },
+    select: { id: true, ticker: true, name: true, isActive: true },
+  });
+  const existingByTicker = new Map(existing.map((s) => [s.ticker, s]));
+
+  const toCreate: { ticker: string; name: string }[] = [];
+  const toRename: { id: string; name: string }[] = [];
+  const toReactivate: string[] = [];
+  for (const r of ordered) {
+    const e = existingByTicker.get(r.ticker);
+    if (!e) {
+      toCreate.push({ ticker: r.ticker, name: r.companyName });
+      continue;
+    }
+    if (e.name !== r.companyName) {
+      toRename.push({ id: e.id, name: r.companyName });
+    }
+    if (!e.isActive) toReactivate.push(e.ticker);
+  }
+
+  // Which securities are ALREADY constituents of this universe — drives the
+  // update-vs-append decision deterministically (a new security can never be
+  // an existing constituent, so we only need to check the ones that exist).
+  const existingSecurityIds = existing.map((s) => s.id);
+  const existingConstituents =
+    existingSecurityIds.length > 0
+      ? await db.universeConstituent.findMany({
+          where: { universeId, securityId: { in: existingSecurityIds } },
+          select: { securityId: true },
+        })
+      : [];
+  const alreadyMember = new Set(existingConstituents.map((c) => c.securityId));
+
+  // Append after the existing tail so added rows sort below current members.
+  const maxOrder = await db.universeConstituent.aggregate({
+    where: { universeId },
+    _max: { sortOrder: true },
+  });
+  let nextOrder = (maxOrder._max.sortOrder ?? -1) + 1;
+
+  let updated = 0;
+  await db.$transaction(
+    async (tx) => {
+      if (toCreate.length > 0) {
+        await tx.security.createMany({ data: toCreate, skipDuplicates: true });
+      }
+      if (toReactivate.length > 0) {
+        await tx.security.updateMany({
+          where: { ticker: { in: toReactivate } },
+          data: { isActive: true },
+        });
+      }
+      for (const u of toRename) {
+        await tx.security.update({ where: { id: u.id }, data: { name: u.name } });
+      }
+
+      const allSec = await tx.security.findMany({
+        where: { ticker: { in: tickers } },
+        select: { id: true, ticker: true },
+      });
+      const idByTicker = new Map(allSec.map((s) => [s.ticker, s.id]));
+
+      for (const r of ordered) {
+        const securityId = idByTicker.get(r.ticker);
+        if (!securityId) continue;
+        if (alreadyMember.has(securityId)) {
+          await tx.universeConstituent.update({
+            where: { universeId_securityId: { universeId, securityId } },
+            data: { sector: r.sector, subTheme: r.subTheme },
+          });
+          updated += 1;
+        } else {
+          await tx.universeConstituent.create({
+            data: {
+              universeId,
+              securityId,
+              sector: r.sector,
+              subTheme: r.subTheme,
+              sortOrder: nextOrder,
+            },
+          });
+          nextOrder += 1;
+        }
+      }
+    },
+    { timeout: 30_000, maxWait: 10_000 }
+  );
+
+  return {
+    applied: ordered.length,
+    created: toCreate.length,
+    reactivated: toReactivate.length,
+    renamed: toRename.length,
+    updated,
+    duplicatesDropped,
+  };
+}

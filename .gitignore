@@ -32,5 +32,8 @@ prisma/migrations/*_migration_lock.toml
 coverage
 .vitest
 
+# Scheduled job logs (scripts/daily-precompute.ps1)
+logs
+
 # TypeScript
 *.tsbuildinfo

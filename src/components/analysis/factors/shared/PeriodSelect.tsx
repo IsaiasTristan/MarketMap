@@ -1,7 +1,7 @@
 "use client";
 import type { FactorPeriod } from "@/store/analysis";
 
-const PERIODS: FactorPeriod[] = ["1D", "5D", "MTD", "QTD", "1M", "3M", "6M", "YTD", "1Y", "ITD"];
+const PERIODS: FactorPeriod[] = ["1D", "5D", "1M", "3M", "6M", "1Y"];
 
 interface PeriodSelectProps {
   value: FactorPeriod;

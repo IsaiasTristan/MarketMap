@@ -90,6 +90,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Sensitivity of the portfolio to broad market movements, measured as excess return of the market over the risk-free rate. A beta of 1.2 means the portfolio tends to move 1.2× the market.",
     whyItMatters:
       "The single largest driver of equity portfolio risk. High market beta amplifies both gains and losses in bull/bear cycles.",
+    howCalculated: "Market excess return over the risk-free rate (Ken French daily).",
+    dataSource: "Daily market excess return (Mkt-RF), Kenneth French data library.",
     units: "beta",
     color: "var(--chart-1)",
   },
@@ -101,6 +103,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Exposure to the small-minus-big factor. Positive loading means the portfolio behaves like small-cap stocks relative to large-caps.",
     whyItMatters:
       "Small-cap stocks have historically earned a size premium but carry higher liquidity risk and greater volatility in down markets.",
+    howCalculated: "Small-minus-Big: long small-cap, short large-cap (Ken French daily).",
+    dataSource: "Daily SMB long-short return, Kenneth French data library.",
     units: "beta",
     color: "#22c55e",
   },
@@ -112,6 +116,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Exposure to the high-minus-low factor. Positive loading means the portfolio tilts toward high book-to-price (value) stocks over growth stocks.",
     whyItMatters:
       "Value stocks have historically outperformed over long horizons but can significantly underperform during growth rallies (e.g. 2017–2020).",
+    howCalculated: "High-minus-Low: long high book/price (value), short low (growth) — Ken French daily.",
+    dataSource: "Daily HML long-short return, Kenneth French data library.",
     units: "beta",
     color: "#f59e0b",
   },
@@ -123,6 +129,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Exposure to the robust-minus-weak profitability factor. Positive loading means the portfolio leans toward companies with strong operating profitability.",
     whyItMatters:
       "Profitability is a quality indicator. High-RMW portfolios tend to hold up better in downturns and deliver more consistent returns.",
+    howCalculated: "Robust-minus-Weak: long high-profitability, short low (Ken French daily).",
+    dataSource: "Daily RMW long-short return, Kenneth French data library.",
     units: "beta",
     color: "var(--chart-4)",
   },
@@ -134,6 +142,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Exposure to the conservative-minus-aggressive investment factor. Positive loading means the portfolio favors companies with conservative (low) asset growth.",
     whyItMatters:
       "Aggressive capital expenditure often signals overinvestment or value destruction. Low-investment firms tend to have better risk-adjusted returns.",
+    howCalculated: "Conservative-minus-Aggressive: long low asset-growth, short high (Ken French daily).",
+    dataSource: "Daily CMA long-short return, Kenneth French data library.",
     units: "beta",
     color: "#e879f9",
   },
@@ -145,6 +155,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Exposure to the momentum factor (winners minus losers over the past 12 months, skipping the most recent month). Positive loading means the portfolio tilts toward recent outperformers.",
     whyItMatters:
       "Momentum is one of the most persistent return anomalies but is subject to sharp reversals ('momentum crashes') during market recoveries.",
+    howCalculated: "12-month-minus-1-month momentum: long winners, short losers (Ken French daily).",
+    dataSource: "Daily momentum (UMD) long-short return, Kenneth French data library.",
     units: "beta",
     color: "#fb923c",
   },
@@ -156,6 +168,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "The daily risk-free rate (3-month T-bill annualized, divided by 252). Used to convert total returns to excess returns for regression.",
     whyItMatters:
       "Return above the risk-free rate represents the compensation investors receive for taking equity risk.",
+    howCalculated: "1-month T-bill rate as a daily simple decimal (Ken French; FRED DGS1MO back-fill for the recent tail).",
+    dataSource: "1-month T-bill daily rate, Kenneth French data library (FRED DGS1MO back-fill for the recent tail).",
     units: "pct",
     color: "#94a3b8",
   },
@@ -171,6 +185,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Exposure to broad global equity beta (ACWI excess of risk-free rate). Captures the global equity risk premium across developed and emerging markets.",
     whyItMatters:
       "Global equity beta is the dominant macro risk in any equity portfolio. Sensitivity to ACWI tracks systemic 'risk-on / risk-off' regime changes.",
+    howCalculated: "ACWI total return minus the risk-free rate (Yahoo).",
+    dataSource: "ACWI ETF daily adjusted-close total return (Yahoo), minus RF.",
     units: "beta",
     color: "#60a5fa",
   },
@@ -182,6 +198,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "US equity premium over global equity (SPY − ACWI). Isolates the US-specific equity risk after controlling for global beta.",
     whyItMatters:
       "Captures home-bias and US-versus-rest-of-world performance dispersion. Often elevated during US tech outperformance.",
+    howCalculated: "SPY minus ACWI return spread (Yahoo).",
+    dataSource: "SPY and ACWI ETF daily total returns (Yahoo); spread = SPY − ACWI.",
     units: "beta",
     color: "#3b82f6",
   },
@@ -193,6 +211,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Duration premium from intermediate-term Treasuries (IEF excess of risk-free rate). Positive beta means the position behaves like long-duration bonds.",
     whyItMatters:
       "Long-duration tilts amplify gains in falling-rate regimes and amplify losses when rates rise (e.g. 2022). Negative loading suggests rate-sensitive shorts.",
+    howCalculated: "IEF (7-10y Treasuries) total return minus the risk-free rate (Yahoo).",
+    dataSource: "IEF (7–10y Treasury) ETF daily total return (Yahoo), minus RF.",
     units: "beta",
     color: "#a78bfa",
   },
@@ -204,6 +224,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Exposure to broad commodity prices (DBC excess of risk-free rate). Captures energy, metals, and agricultural complex.",
     whyItMatters:
       "Commodity beta is a partial inflation hedge and often spikes during supply shocks or geopolitical stress.",
+    howCalculated: "DBC (broad commodities) total return minus the risk-free rate (Yahoo).",
+    dataSource: "DBC (broad commodities) ETF daily total return (Yahoo), minus RF.",
     units: "beta",
     color: "#facc15",
   },
@@ -215,6 +237,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Emerging-market equity premium over US equity (EEM − SPY). Isolates the EM-specific risk after controlling for US beta.",
     whyItMatters:
       "EM exposure adds beta to global growth, EM currency moves, and commodity demand. Sensitive to USD strength and risk appetite.",
+    howCalculated: "EEM minus SPY return spread (Yahoo).",
+    dataSource: "EEM and SPY ETF daily total returns (Yahoo); spread = EEM − SPY.",
     units: "beta",
     color: "#f472b6",
   },
@@ -226,6 +250,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "USD strength vs basket of major currencies (UUP excess of risk-free rate). Positive loading means the position benefits from a stronger dollar.",
     whyItMatters:
       "USD strength compresses USD returns of international assets, weighs on commodities, and tightens global financial conditions.",
+    howCalculated: "UUP (US dollar index ETF) total return minus the risk-free rate (Yahoo).",
+    dataSource: "UUP (US dollar bullish) ETF daily total return (Yahoo), minus RF.",
     units: "beta",
     color: "#34d399",
   },
@@ -237,6 +263,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Breakeven inflation expectations from TIPS minus nominal Treasuries (TIP − IEF). Positive beta means the position benefits when inflation expectations rise.",
     whyItMatters:
       "Inflation regime shifts re-price discount rates and reshape sector leadership (energy, financials benefit; long-duration tech suffers).",
+    howCalculated: "TIP minus IEF return spread (breakeven inflation proxy) — Yahoo.",
+    dataSource: "TIP and IEF ETF daily total returns (Yahoo); spread = TIP − IEF.",
     units: "beta",
     color: "#fb7185",
   },
@@ -252,6 +280,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Daily excess return of SVXY (ProShares Short VIX Short-Term Futures ETF) over the risk-free rate. SVXY is short the front-month VIX futures roll — positive loading harvests futures roll-down in contango but suffers tail losses in vol spikes. NOTE: ProShares cut SVXY's effective leverage from −1.0x to −0.5x on 2018-02-27 after the XIV blow-up, so pre- and post-2018 series are structurally different short-vol exposures; β interpretation should account for the regime break.",
     whyItMatters:
       "Short-vol exposure carries steady carry in calm regimes but suffers severe drawdowns in events like Feb 2018, COVID-19, or any sharp VIX spike. The 2018 leverage cut roughly halved SVXY's daily move magnitude, so a single regression β masks the regime change.",
+    howCalculated: "SVXY (short VIX short-term futures ETF) total return minus the risk-free rate (Yahoo).",
+    dataSource: "SVXY (short VIX short-term futures) ETF daily total return (Yahoo), minus RF. Leverage cut from −1.0x to −0.5x on 2018-02-27.",
     units: "beta",
     color: "#f87171",
   },
@@ -263,6 +293,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Diversified CTA-style trend premium (DBMF managed futures, excess of risk-free rate). Captures systematic trend-following across asset classes.",
     whyItMatters:
       "Trend-following is one of the best historical equity-bear-market hedges (positive in 2008, 2022). Tends to lose in sharp reversals.",
+    howCalculated: "DBMF (managed-futures ETF) total return minus the risk-free rate (Yahoo).",
+    dataSource: "DBMF (managed futures) ETF daily total return (Yahoo), minus RF.",
     units: "beta",
     color: "#10b981",
   },
@@ -274,6 +306,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Betting-Against-Beta factor (long leveraged low-beta, short high-beta). From AQR's published US daily series.",
     whyItMatters:
       "Low-beta stocks have historically outperformed on a risk-adjusted basis. Positive Betting-Against-Beta loading indicates a defensive, low-vol tilt.",
+    howCalculated: "Betting-Against-Beta long-short portfolio: long leveraged low-beta, short high-beta (AQR daily series).",
+    dataSource: "AQR Betting-Against-Beta US daily series (AQR data library); USMV−SPY proxy splice for the recent publish gap.",
     units: "beta",
     color: "#84cc16",
   },
@@ -285,6 +319,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Quality-Minus-Junk factor (long high-quality, short low-quality). From AQR's published US daily series.",
     whyItMatters:
       "Quality companies (profitable, stable, well-managed) are more defensive and tend to compound steadily through cycles.",
+    howCalculated: "Quality-Minus-Junk long-short portfolio: long high-quality, short low-quality (AQR daily series).",
+    dataSource: "AQR Quality-Minus-Junk US daily series (AQR data library); QUAL−SPY proxy splice for the recent publish gap.",
     units: "beta",
     color: "#06b6d4",
   },
@@ -296,6 +332,8 @@ const FACTOR_DEFS_BASE: Record<FactorCode, Omit<FactorDef, "inputType">> = {
       "Hedge-fund crowding via the Goldman Sachs Hedge Fund VIP basket (GVIP − SPY). Positive loading means the position overlaps with hedge fund consensus longs.",
     whyItMatters:
       "Crowded positions are vulnerable to fast deleveraging events when hedge funds unwind together (e.g. Jan 2021, Feb 2024 momentum unwinds).",
+    howCalculated: "GVIP (Goldman Sachs hedge-fund VIP basket) minus SPY return spread (Yahoo).",
+    dataSource: "GVIP (GS hedge-fund VIP) and SPY ETF daily total returns (Yahoo); spread = GVIP − SPY.",
     units: "beta",
     color: "#c084fc",
   },
@@ -344,6 +382,7 @@ export function getFactorDef(code: FactorCode): FactorDef {
     shortLabel: code,
     description: code,
     whyItMatters: "",
+    howCalculated: "",
     units: "beta",
     color: "#94a3b8",
     inputType: "AMBIGUOUS",

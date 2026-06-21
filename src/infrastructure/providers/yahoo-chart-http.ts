@@ -64,25 +64,52 @@ export function toYahooSymbol(ticker: string): string {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
+ * Result kind for a Yahoo chart fetch:
+ *  - `ok`        — Yahoo returned bars (possibly zero, but the symbol is alive
+ *                  enough to answer; the date window may simply not include any
+ *                  trading days, e.g. a tail pull on a weekend).
+ *  - `delisted`  — Yahoo answered explicitly that the symbol is unknown:
+ *                  `chart.error.description` says "No data found, symbol may
+ *                  be delisted", or HTTP 404, or HTTP 200 with zero timestamps
+ *                  over a >1-year window. Strong delist signal.
+ *  - `throttled` — HTTP 401/429/5xx after retries, or fetch threw. Transient.
+ */
+export type YahooChartResult =
+  | { kind: "ok"; bars: Bar[] }
+  | { kind: "delisted"; reason: string; bars: [] }
+  | { kind: "throttled"; reason: string; bars: [] };
+
+/** Years (rough) covered by the requested window — used to decide whether 0
+ *  bars is a hard delist signal vs. a normal short-window pull. */
+function windowYears(startIso: string, endIso: string): number {
+  const a = new Date(`${startIso}T00:00:00Z`).getTime();
+  const b = new Date(`${endIso}T00:00:00Z`).getTime();
+  return Math.max(0, (b - a) / (365.25 * 86_400_000));
+}
+
+/**
  * Yahoo Finance v8 chart endpoint (EOD, adjusted series when available).
  *
  * Yahoo aggressively rate-limits anonymous traffic (HTTP 401/429 and sometimes
  * a 5xx). We retry a small number of times with exponential backoff so a
  * batch ingest of a few hundred tickers doesn't lose half its results to
  * transient throttling.
+ *
+ * Returns a typed result so callers can distinguish "ticker is dead" from
+ * "Yahoo is being grumpy right now". See `YahooChartResult`.
  */
-export async function fetchYahooChartDaily(
+export async function fetchYahooChartDailyResult(
   ticker: string,
   startIso: string,
   endIso: string
-): Promise<Bar[]> {
+): Promise<YahooChartResult> {
   const p1 = Math.floor(new Date(`${startIso}T00:00:00Z`).getTime() / 1000);
   const p2 = Math.floor(new Date(`${endIso}T23:59:59Z`).getTime() / 1000);
   const sym = encodeURIComponent(toYahooSymbol(ticker));
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?period1=${p1}&period2=${p2}&interval=1d`;
 
   const MAX_ATTEMPTS = 4;
-  let lastErr: unknown;
+  let lastReason = "";
   let res: Response | undefined;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
@@ -93,35 +120,67 @@ export async function fetchYahooChartDaily(
         },
       });
     } catch (e) {
-      lastErr = e;
-      if (attempt === MAX_ATTEMPTS) throw e;
+      lastReason = e instanceof Error ? e.message : String(e);
+      if (attempt === MAX_ATTEMPTS) {
+        return { kind: "throttled", reason: lastReason, bars: [] };
+      }
       await sleep(250 * 2 ** (attempt - 1));
       continue;
     }
     // 401 here is Yahoo's throttle response, not a real auth failure.
     if (res.status === 401 || res.status === 429 || res.status >= 500) {
-      lastErr = new Error(`Yahoo chart HTTP ${res.status} for ${ticker}`);
-      if (attempt === MAX_ATTEMPTS) break;
+      lastReason = `HTTP ${res.status}`;
+      if (attempt === MAX_ATTEMPTS) {
+        return { kind: "throttled", reason: lastReason, bars: [] };
+      }
       await sleep(400 * 2 ** (attempt - 1));
       continue;
     }
     break;
   }
-  if (!res) throw lastErr ?? new Error(`Yahoo chart fetch failed for ${ticker}`);
+  if (!res) {
+    return { kind: "throttled", reason: lastReason || "no response", bars: [] };
+  }
+  // 404: Yahoo doesn't recognize the symbol — that's a hard delist signal.
+  if (res.status === 404) {
+    return { kind: "delisted", reason: "HTTP 404", bars: [] };
+  }
   if (!res.ok) {
-    throw new Error(`Yahoo chart HTTP ${res.status} for ${ticker}`);
+    return { kind: "throttled", reason: `HTTP ${res.status}`, bars: [] };
   }
   const json = (await res.json()) as {
-    chart?: { result?: ChartResult[]; error?: { description?: string } };
+    chart?: { result?: ChartResult[]; error?: { description?: string; code?: string } };
   };
-  const err = json.chart?.error?.description;
-  if (err) throw new Error(err);
+  const errMsg = json.chart?.error?.description ?? "";
+  const errCode = json.chart?.error?.code ?? "";
+  if (errMsg || errCode) {
+    // "No data found, symbol may be delisted" / "Not Found" → delisted.
+    // Anything else from Yahoo's error frame is unusual; treat as throttled.
+    const lc = errMsg.toLowerCase();
+    if (
+      lc.includes("delisted") ||
+      lc.includes("no data found") ||
+      lc.includes("not found") ||
+      errCode === "Not Found"
+    ) {
+      return { kind: "delisted", reason: errMsg || errCode, bars: [] };
+    }
+    return { kind: "throttled", reason: errMsg || errCode, bars: [] };
+  }
   const r0 = json.chart?.result?.[0];
-  if (!r0?.timestamp?.length) return [];
+  const ts = r0?.timestamp ?? [];
 
-  const ts = r0.timestamp;
-  const adjRow = r0.indicators?.adjclose?.[0]?.adjclose;
-  const q = r0.indicators?.quote?.[0];
+  if (ts.length === 0) {
+    // Empty return over a long history window (>1y) is a hard delist signal;
+    // empty over a short tail is not (could just be a holiday week).
+    if (windowYears(startIso, endIso) >= 1) {
+      return { kind: "delisted", reason: "zero bars in multi-year window", bars: [] };
+    }
+    return { kind: "ok", bars: [] };
+  }
+
+  const adjRow = r0!.indicators?.adjclose?.[0]?.adjclose;
+  const q = r0!.indicators?.quote?.[0];
   const closes = q?.close;
   const qAdj = q?.adjclose;
 
@@ -141,5 +200,134 @@ export async function fetchYahooChartDaily(
       close: close != null && Number.isFinite(close) ? close : undefined,
     });
   }
-  return out.sort((a, b) => a.date.localeCompare(b.date));
+  return { kind: "ok", bars: out.sort((a, b) => a.date.localeCompare(b.date)) };
+}
+
+// ---------------------------------------------------------------------------
+// Intraday (1m / 5m) — used by the per-stock detail chart for the short 1D/5D
+// ranges, which the daily PriceHistory table cannot serve. Not persisted; the
+// API fetches live and the client caches it briefly via react-query.
+// ---------------------------------------------------------------------------
+
+export interface IntradayPoint {
+  /** ISO datetime (UTC) of the bar. */
+  t: string;
+  /** Close price for the bar (raw — Yahoo does not adjust intraday). */
+  price: number;
+}
+
+export type YahooIntradayResult =
+  | { kind: "ok"; points: IntradayPoint[]; previousClose: number | null }
+  | { kind: "delisted"; reason: string; points: []; previousClose: null }
+  | { kind: "throttled"; reason: string; points: []; previousClose: null };
+
+type IntradayChartResult = {
+  timestamp?: number[];
+  meta?: { chartPreviousClose?: number; previousClose?: number };
+  indicators?: { quote?: { close?: (number | null)[] }[] };
+};
+
+/**
+ * Fetch intraday bars from Yahoo's v8 chart endpoint using a relative `range`
+ * + sub-daily `interval`. Mirrors the retry/backoff policy of the daily fetch.
+ *
+ *   1D → range=1d, interval=1m
+ *   5D → range=5d, interval=5m
+ */
+export async function fetchYahooIntraday(
+  ticker: string,
+  range: "1d" | "5d",
+): Promise<YahooIntradayResult> {
+  const interval = range === "1d" ? "1m" : "5m";
+  const sym = encodeURIComponent(toYahooSymbol(ticker));
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=${range}&interval=${interval}&includePrePost=false`;
+
+  const MAX_ATTEMPTS = 4;
+  let lastReason = "";
+  let res: Response | undefined;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      res = await fetch(url, {
+        headers: {
+          "User-Agent": "MarketMap/1.0 (+https://localhost)",
+          Accept: "application/json",
+        },
+      });
+    } catch (e) {
+      lastReason = e instanceof Error ? e.message : String(e);
+      if (attempt === MAX_ATTEMPTS) {
+        return { kind: "throttled", reason: lastReason, points: [], previousClose: null };
+      }
+      await sleep(250 * 2 ** (attempt - 1));
+      continue;
+    }
+    if (res.status === 401 || res.status === 429 || res.status >= 500) {
+      lastReason = `HTTP ${res.status}`;
+      if (attempt === MAX_ATTEMPTS) {
+        return { kind: "throttled", reason: lastReason, points: [], previousClose: null };
+      }
+      await sleep(400 * 2 ** (attempt - 1));
+      continue;
+    }
+    break;
+  }
+  if (!res) {
+    return { kind: "throttled", reason: lastReason || "no response", points: [], previousClose: null };
+  }
+  if (res.status === 404) {
+    return { kind: "delisted", reason: "HTTP 404", points: [], previousClose: null };
+  }
+  if (!res.ok) {
+    return { kind: "throttled", reason: `HTTP ${res.status}`, points: [], previousClose: null };
+  }
+
+  const json = (await res.json()) as {
+    chart?: { result?: IntradayChartResult[]; error?: { description?: string; code?: string } };
+  };
+  const errMsg = json.chart?.error?.description ?? "";
+  const errCode = json.chart?.error?.code ?? "";
+  if (errMsg || errCode) {
+    const lc = errMsg.toLowerCase();
+    if (lc.includes("delisted") || lc.includes("no data found") || lc.includes("not found") || errCode === "Not Found") {
+      return { kind: "delisted", reason: errMsg || errCode, points: [], previousClose: null };
+    }
+    return { kind: "throttled", reason: errMsg || errCode, points: [], previousClose: null };
+  }
+
+  const r0 = json.chart?.result?.[0];
+  const ts = r0?.timestamp ?? [];
+  const closes = r0?.indicators?.quote?.[0]?.close ?? [];
+  const previousClose =
+    r0?.meta?.chartPreviousClose ?? r0?.meta?.previousClose ?? null;
+
+  const points: IntradayPoint[] = [];
+  for (let i = 0; i < ts.length; i++) {
+    const c = closes[i];
+    if (c == null || !Number.isFinite(c)) continue;
+    points.push({ t: new Date(ts[i]! * 1000).toISOString(), price: c });
+  }
+  return {
+    kind: "ok",
+    points,
+    previousClose: previousClose != null && Number.isFinite(previousClose) ? previousClose : null,
+  };
+}
+
+/**
+ * Throwing wrapper kept for legacy callers (benchmarks etc.) that don't yet
+ * care about the typed result. New code should call
+ * `fetchYahooChartDailyResult` directly.
+ */
+export async function fetchYahooChartDaily(
+  ticker: string,
+  startIso: string,
+  endIso: string
+): Promise<Bar[]> {
+  const r = await fetchYahooChartDailyResult(ticker, startIso, endIso);
+  if (r.kind === "throttled") {
+    throw new Error(`Yahoo chart throttled for ${ticker}: ${r.reason}`);
+  }
+  // For `delisted` we return [] rather than throw — benchmarks should never
+  // be delisted; equity callers use the typed variant.
+  return r.bars;
 }

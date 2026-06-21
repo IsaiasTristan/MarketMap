@@ -1,6 +1,5 @@
-"use client";
-import { StressClient } from "@/components/analysis/stress/StressClient";
+import { redirect } from "next/navigation";
 
 export default function StressPage() {
-  return <StressClient />;
+  redirect("/overview");
 }

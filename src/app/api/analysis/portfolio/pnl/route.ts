@@ -7,6 +7,7 @@ import {
   getAllocationByGeography,
   getContributors,
 } from "@/server/services/pnl.service";
+import { requirePortfolioAccess } from "@/lib/api/guards";
 
 export const maxDuration = 30;
 
@@ -14,6 +15,8 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const portfolioId = searchParams.get("portfolioId");
   if (!portfolioId) return NextResponse.json({ error: "portfolioId required" }, { status: 400 });
+  const guard = await requirePortfolioAccess(req, portfolioId);
+  if (guard) return guard;
 
   const positions = await getPositions(portfolioId);
   const { summary, positionsWithPnl } = await getPortfolioPnl(positions);

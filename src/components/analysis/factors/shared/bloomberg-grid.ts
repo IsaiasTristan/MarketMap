@@ -23,6 +23,23 @@ export const BB_GRID_HEADER_LETTER_SPACING = "0.06em";
 /** Standard 1px border between cells. */
 export const BB_GRID_BORDER = "1px solid var(--bg-border)";
 
+/**
+ * Single uniform column width applied to every column in the per-stock
+ * factor grid (ticker, sector/sub-theme, summary, factor heatmap). Pairs
+ * with `tableLayout: "fixed"` to force consistent rhythm across the table —
+ * long header labels (e.g. "Betting-Against-Beta") wrap onto two lines via
+ * the BB_GRID_HEADER_WRAP_FONT_SIZE override below rather than blowing the
+ * column out.
+ */
+export const BB_GRID_COL_WIDTH = 78;
+
+/** Header font size for long labels that need to wrap inside BB_GRID_COL_WIDTH. */
+export const BB_GRID_HEADER_WRAP_FONT_SIZE = 10;
+
+/** Body font size for the sector / sub-theme cell — slightly smaller so two
+ * lines of meta fit cleanly inside ROW_HEIGHT without crowding the ticker. */
+export const BB_GRID_META_FONT_SIZE = 10;
+
 /** Graduated row backgrounds by hierarchy level (matches MarketMapClient). */
 export const BB_ROW_BG = {
   sector: "#0a0a0a",

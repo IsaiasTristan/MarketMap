@@ -16,6 +16,8 @@ import {
   expSumMinus1,
   factorRowLog,
   logOnePlus,
+  logOnePlusClipped,
+  LOG_ONE_PLUS_CLIP_FLOOR,
   stockExcessLog,
 } from "../../src/lib/factors/attribution/log-returns";
 
@@ -104,6 +106,26 @@ describe("log-return cumulative attribution (Path B identity)", () => {
     expect(stockExcessLog(-1.1, 0.0001)).toBeNull();
     expect(stockExcessLog(0.01, -2)).toBeNull();
     expect(logOnePlus(0)).toBe(0);
+  });
+
+  it("logOnePlusClipped returns ln(1+x) cleanly when above the floor", () => {
+    const r = logOnePlusClipped(0.05);
+    expect(r.clipped).toBe(false);
+    expect(Math.abs(r.value - Math.log(1.05))).toBeLessThan(1e-15);
+  });
+
+  it("logOnePlusClipped clips and flags when 1+x falls below the floor", () => {
+    // Daily simple return below -99.9999% would push 1+x under the floor
+    // (e.g. delisting at zero or worse).
+    const r = logOnePlusClipped(-1);
+    expect(r.clipped).toBe(true);
+    expect(Math.abs(r.value - Math.log(LOG_ONE_PLUS_CLIP_FLOOR))).toBeLessThan(1e-15);
+  });
+
+  it("logOnePlusClipped returns NaN for non-finite input without clipping", () => {
+    const r = logOnePlusClipped(Number.NaN);
+    expect(Number.isNaN(r.value)).toBe(true);
+    expect(r.clipped).toBe(false);
   });
 
   it("excess log identity: ln(1+r_stock) − ln(1+r_f) matches stockExcessLog", () => {

@@ -9,10 +9,16 @@
 import { prisma as db } from "@/infrastructure/db/client";
 import { computeTradeStats } from "@/domain/calculations/attribution";
 import { runFactorEngine } from "./factor-engine.service";
-import { computeDailyAttribution } from "@/lib/factors/attribution/daily";
+import {
+  computeDailyAttribution,
+  computeStaticBetaDailyAttribution,
+} from "@/lib/factors/attribution/daily";
 import { computeCumulativeAttribution } from "@/lib/factors/attribution/cumulative";
 import { computePeriodAttribution } from "@/lib/factors/attribution/period";
-import { computeDailyLogAttribution } from "@/lib/factors/attribution/daily-log";
+import {
+  computeDailyLogAttribution,
+  computeStaticBetaDailyLogAttribution,
+} from "@/lib/factors/attribution/daily-log";
 import { computeCumulativeLogAttribution } from "@/lib/factors/attribution/cumulative-log";
 import { computePeriodLogAttribution } from "@/lib/factors/attribution/period-log";
 import type {
@@ -54,7 +60,10 @@ export async function computeFactorAttribution(
     }),
   );
 
-  const daily = computeDailyAttribution(
+  // Rolling daily — evolving per-day betas. Powers the cumulative time-series
+  // chart (AttributionClient / TimeSeriesPanel) which legitimately shows betas
+  // drifting over time.
+  const rollingDaily = computeDailyAttribution(
     rollingFits,
     factors,
     factorMap,
@@ -62,9 +71,24 @@ export async function computeFactorAttribution(
     rfMap,
   );
 
-  if (!daily.length) return null;
+  if (!rollingDaily.length) return null;
 
-  const cumulative = computeCumulativeAttribution(daily);
+  const cumulative = computeCumulativeAttribution(rollingDaily);
+
+  // Static-beta daily — the horizon end-fit loadings applied across the FULL
+  // aligned history (not gated by the rolling burn-in). This is the series the
+  // period panels slice, so trailing periods (1D…1Y) resolve at any horizon
+  // even when the window consumes most of the history. Returned as `daily` so
+  // the variance slicer (pickPeriodRiskSummary) and the return period buckets
+  // share one contribution series.
+  const daily = computeStaticBetaDailyAttribution(
+    dates,
+    engineResult.endFit.betas,
+    factors,
+    factorMap,
+    portTotalMap,
+    rfMap,
+  );
   const periods = computePeriodAttribution(daily, factors);
 
   // ---------------------------------------------------------------------
@@ -97,15 +121,26 @@ export async function computeFactorAttribution(
       }),
     );
 
-    dailyLog = computeDailyLogAttribution(
+    // Rolling log daily → cumulative log chart (evolving betas).
+    const rollingDailyLog = computeDailyLogAttribution(
       engineResult.rollingFitsLog,
       factors,
       factorLogMap,
       portExcessLogMap,
       rfLogMap,
     );
-    if (dailyLog.length) {
-      cumulativeLog = computeCumulativeLogAttribution(dailyLog);
+    if (rollingDailyLog.length && engineResult.endFitLog) {
+      cumulativeLog = computeCumulativeLogAttribution(rollingDailyLog);
+      // Static-beta log daily over the full history → shipped dailyLog +
+      // period buckets (mirrors the simple path).
+      dailyLog = computeStaticBetaDailyLogAttribution(
+        dates,
+        engineResult.endFitLog.betas,
+        factors,
+        factorLogMap,
+        portExcessLogMap,
+        rfLogMap,
+      );
       periodsLog = computePeriodLogAttribution(dailyLog, factors);
     } else {
       dailyLog = null;

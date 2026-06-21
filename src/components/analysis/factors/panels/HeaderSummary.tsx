@@ -1,8 +1,10 @@
 "use client";
 import { MetricCard } from "@/components/analysis/ui/MetricCard";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
+import { getMetricDef } from "@/lib/factors/definitions/metric-defs";
+import { pickPeriodSummary } from "@/lib/factors/attribution/pick-period-summary";
 import type { FactorExposureSnapshot, FactorCode } from "@/types/factors";
-import type { FactorPeriod } from "@/store/analysis";
+import { useAnalysisStore, type FactorPeriod } from "@/store/analysis";
 import type { AttributionResult } from "@/types/factors";
 
 interface HeaderSummaryProps {
@@ -21,6 +23,7 @@ function fmtBeta(v: number): string {
 }
 
 export function HeaderSummary({ exposure, attribution, selectedPeriod, loading }: HeaderSummaryProps) {
+  const attributionMode = useAnalysisStore((s) => s.factorAttributionMode);
   if (loading || !exposure) {
     return (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
@@ -42,9 +45,10 @@ export function HeaderSummary({ exposure, attribution, selectedPeriod, loading }
 
   const topTilt = [...exposure.factors].sort((a, b) => Math.abs(b.beta) - Math.abs(a.beta))[0];
 
-  // Alpha over selected period
-  const periodData = attribution?.periods?.find((p) => p.label === selectedPeriod);
-  const periodAlpha = periodData?.alpha;
+  // Alpha over selected period — mode-aware (log/simple), resolved via the
+  // shared picker so the card actually responds to the period + mode controls.
+  const picked = pickPeriodSummary(attribution, selectedPeriod, attributionMode);
+  const periodAlpha = picked?.alpha;
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
@@ -63,6 +67,8 @@ export function HeaderSummary({ exposure, attribution, selectedPeriod, loading }
           name: "Market Beta",
           definition:
             "Portfolio sensitivity to broad market moves. Beta = 1 means the portfolio tracks the market. Higher beta amplifies both gains and losses.",
+          formula: getMetricDef("marketBeta").howCalculated,
+          dataUsed: getMetricDef("marketBeta").dataUsed,
           goodValue: "0.8–1.2 for a market-tracking portfolio.",
         }}
       />
@@ -80,6 +86,8 @@ export function HeaderSummary({ exposure, attribution, selectedPeriod, loading }
           name: "Top Factor Tilt",
           definition:
             "The factor with the largest absolute beta. A strong tilt indicates systematic exposure that may drive returns in trending regimes.",
+          formula: getMetricDef("topFactorTilt").howCalculated,
+          dataUsed: getMetricDef("topFactorTilt").dataUsed,
         }}
       />
 
@@ -98,6 +106,8 @@ export function HeaderSummary({ exposure, attribution, selectedPeriod, loading }
           name: "Factor Concentration (HHI)",
           definition:
             "Herfindahl-Hirschman Index of absolute factor risk contributions. 0% = perfectly diversified across factors; 100% = one factor explains all risk.",
+          formula: "Σ sᵢ² where sᵢ is each factor's share of absolute risk contribution.",
+          dataUsed: getMetricDef("factorConcentration").dataUsed,
           goodValue: "< 30% for diversified multi-factor exposure.",
         }}
       />
@@ -112,30 +122,38 @@ export function HeaderSummary({ exposure, attribution, selectedPeriod, loading }
           definition:
             "Share of total portfolio variance explained by systematic factor tilts. "
             + "The remaining share is idiosyncratic (stock-specific).",
+          formula: getMetricDef("systematicRisk").howCalculated,
+          dataUsed: getMetricDef("systematicRisk").dataUsed,
           goodValue: "60–85% for diversified long-only equity.",
         }}
       />
 
       <MetricCard
         label={`Alpha (${selectedPeriod})`}
-        value={periodAlpha !== undefined ? fmt(periodAlpha, "%") : `${fmt(exposure.alphaAnnualized, "%")} ann.`}
+        value={periodAlpha !== undefined ? fmt(periodAlpha, "%") : "—"}
         subValue={
           periodAlpha !== undefined
-            ? undefined
-            : `t = ${exposure.alphaTStat.toFixed(1)} | R²=${(exposure.rSquared * 100).toFixed(0)}%`
+            ? picked?.isLog
+              ? "log-space residual"
+              : "simple residual"
+            : `needs attribution data · ann. α ${fmt(exposure.alphaAnnualized, "%")}`
         }
         valueColor={
-          (periodAlpha ?? exposure.alphaAnnualized) > 0
-            ? "positive"
-            : (periodAlpha ?? exposure.alphaAnnualized) < -0.02
-              ? "negative"
-              : "neutral"
+          periodAlpha === undefined
+            ? "neutral"
+            : periodAlpha > 0
+              ? "positive"
+              : periodAlpha < -0.02
+                ? "negative"
+                : "neutral"
         }
         tooltip={{
           name: "Residual Alpha",
           definition:
             "Return not explained by factor exposures — the potential skill component. "
             + "Interpret cautiously: short periods produce noisy estimates.",
+          formula: getMetricDef("alpha").howCalculated,
+          dataUsed: getMetricDef("alpha").dataUsed,
           goodValue: "Positive with |t| > 2.",
         }}
       />

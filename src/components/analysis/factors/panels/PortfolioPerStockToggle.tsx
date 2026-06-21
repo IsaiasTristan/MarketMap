@@ -6,50 +6,42 @@ interface PortfolioPerStockToggleProps {
   onChange: (v: FactorView) => void;
 }
 
-const OPTIONS: { value: FactorView; label: string; sub: string }[] = [
-  { value: "portfolio", label: "Portfolio", sub: "Aggregate factor decomposition" },
-  { value: "per_stock", label: "Per-stock", sub: "Grid for every saved stock" },
-  { value: "correlations", label: "Correlations", sub: "Factor × factor correlation matrix" },
+const OPTIONS: { value: FactorView; label: string }[] = [
+  { value: "portfolio", label: "Portfolio" },
+  { value: "per_stock", label: "Per stock" },
+  { value: "correlations", label: "Factor correlations" },
 ];
 
 export function PortfolioPerStockToggle({ value, onChange }: PortfolioPerStockToggleProps) {
   return (
     <div
       style={{
-        display: "inline-flex",
-        background: "var(--bg-surface)",
-        border: "1px solid var(--bg-border)",
-        borderRadius: 8,
-        overflow: "hidden",
+        display: "flex",
+        gap: 0,
+        borderBottom: "1px solid var(--bg-border)",
       }}
     >
-      {OPTIONS.map((o, i) => {
+      {OPTIONS.map((o) => {
         const active = value === o.value;
         return (
           <button
             key={o.value}
             onClick={() => onChange(o.value)}
             style={{
-              padding: "8px 18px",
-              background: active ? "var(--bb-chrome)" : "transparent",
-              color: active ? "#fff" : "var(--text-secondary)",
+              background: "transparent",
               border: "none",
-              borderRight: i < OPTIONS.length - 1 ? "1px solid var(--bg-border)" : "none",
+              borderBottom: active ? "2px solid var(--color-accent)" : "2px solid transparent",
+              color: active ? "var(--color-accent)" : "var(--text-secondary)",
+              padding: "10px 18px 8px",
+              fontSize: 11,
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
               cursor: "pointer",
-              textAlign: "left",
-              transition: "background 0.1s",
+              fontFamily: "inherit",
             }}
           >
-            <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.05em" }}>{o.label}</div>
-            <div
-              style={{
-                fontSize: 10,
-                color: active ? "rgba(255,255,255,0.7)" : "var(--text-muted)",
-                marginTop: 1,
-              }}
-            >
-              {o.sub}
-            </div>
+            {o.label}
           </button>
         );
       })}

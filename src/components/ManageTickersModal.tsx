@@ -51,6 +51,7 @@ export function ManageTickersModal({
   const [msg, setMsg] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [removingTicker, setRemovingTicker] = useState<string | null>(null);
+  const [addingStock, setAddingStock] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadUniverse = useCallback(async () => {
@@ -187,10 +188,10 @@ export function ManageTickersModal({
       // Kick off price ingestion for any newly-added tickers in the
       // background. The dashboard polls and will pick up bars as they land.
       void fetch(
-        `/api/universes/${universe.id}/ingest?onlyMissing=true`,
+        `/api/universes/${universe.id}/ingest?mode=missing`,
         { method: "POST", keepalive: true }
       ).catch(() => undefined);
-      void fetch(`/api/benchmarks/ingest?onlyMissing=true`, {
+      void fetch(`/api/benchmarks/ingest?mode=missing`, {
         method: "POST",
         keepalive: true,
       }).catch(() => undefined);
@@ -249,6 +250,55 @@ export function ManageTickersModal({
       }
     },
     [universe, onApplied]
+  );
+
+  const onAddStock = useCallback(
+    async (row: ParsedUniverseRow): Promise<boolean> => {
+      if (!universe) return false;
+      setAddingStock(true);
+      setMsg(null);
+      try {
+        const res = await fetch(
+          `/api/universes/${universe.id}/constituents?mode=append`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rows: [row] }),
+          }
+        );
+        const body = (await res.json().catch(() => null)) as
+          | { ok?: boolean; error?: string; created?: number; updated?: number }
+          | null;
+        if (!res.ok || !body?.ok) {
+          throw new Error(
+            body?.error ?? `Failed to add ${row.ticker} (HTTP ${res.status})`
+          );
+        }
+
+        // Pull prices for the newly-added ticker in the background; the
+        // dashboard polls and will pick up bars as they land.
+        void fetch(`/api/universes/${universe.id}/ingest?mode=missing`, {
+          method: "POST",
+          keepalive: true,
+        }).catch(() => undefined);
+
+        const wasUpdate = (body.updated ?? 0) > 0 && (body.created ?? 0) === 0;
+        setMsg(
+          wasUpdate
+            ? `Updated ${row.ticker} — pulling prices in the background.`
+            : `Added ${row.ticker} — pulling prices in the background.`
+        );
+        await loadUniverse();
+        onApplied?.();
+        return true;
+      } catch (e) {
+        setMsg(e instanceof Error ? e.message : String(e));
+        return false;
+      } finally {
+        setAddingStock(false);
+      }
+    },
+    [universe, loadUniverse, onApplied]
   );
 
   const onFile = async (file: File) => {
@@ -430,6 +480,8 @@ export function ManageTickersModal({
               onRefresh={() => void loadUniverse()}
               onRemove={(ticker) => void onRemoveTicker(ticker)}
               removingTicker={removingTicker}
+              onAdd={onAddStock}
+              adding={addingStock}
             />
           )}
         </div>
@@ -460,7 +512,7 @@ export function ManageTickersModal({
 }
 
 function isSuccessMessage(msg: string): boolean {
-  return /^(Applied|Removed)\b/.test(msg);
+  return /^(Applied|Removed|Added|Updated)\b/.test(msg);
 }
 
 function TabBtn({
@@ -532,12 +584,16 @@ function CurrentTab({
   onRefresh,
   onRemove,
   removingTicker,
+  onAdd,
+  adding,
 }: {
   rows: Constituent[];
   loading: boolean;
   onRefresh: () => void;
   onRemove: (ticker: string) => void;
   removingTicker: string | null;
+  onAdd: (row: ParsedUniverseRow) => Promise<boolean>;
+  adding: boolean;
 }) {
   const [ticker, setTicker] = useState("");
   const [name, setName] = useState("");
@@ -560,6 +616,7 @@ function CurrentTab({
 
   return (
     <div>
+      <AddStockForm rows={rows} onAdd={onAdd} adding={adding} />
       <div style={filterRow}>
         <FilterInput
           label="Ticker"
@@ -644,6 +701,172 @@ function CurrentTab({
         </button>
       </div>
     </div>
+  );
+}
+
+function AddStockForm({
+  rows,
+  onAdd,
+  adding,
+}: {
+  rows: Constituent[];
+  onAdd: (row: ParsedUniverseRow) => Promise<boolean>;
+  adding: boolean;
+}) {
+  const [ticker, setTicker] = useState("");
+  const [name, setName] = useState("");
+  const [sector, setSector] = useState("");
+  const [subTheme, setSubTheme] = useState("");
+  const [lookingUp, setLookingUp] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const sectorOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rows) if (r.sector) set.add(r.sector);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
+  // Sub-themes already used under the chosen sector (free typing still allowed
+  // via the datalist); fall back to all sub-themes when no sector is chosen.
+  const subThemeOptions = useMemo(() => {
+    const s = sector.trim().toLowerCase();
+    const set = new Set<string>();
+    for (const r of rows) {
+      if (!r.subTheme) continue;
+      if (s && r.sector.trim().toLowerCase() !== s) continue;
+      set.add(r.subTheme);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [rows, sector]);
+
+  const onTickerBlur = useCallback(async () => {
+    const t = ticker.trim().toUpperCase();
+    if (!t || name.trim()) return;
+    setLookingUp(true);
+    try {
+      const res = await fetch(
+        `/api/securities/lookup?ticker=${encodeURIComponent(t)}`,
+        { cache: "no-store" }
+      );
+      if (!res.ok) return;
+      const j = (await res.json().catch(() => null)) as
+        | { name?: string }
+        | null;
+      if (j?.name && !name.trim()) setName(j.name);
+    } catch {
+      // Best-effort; the user can type the name manually.
+    } finally {
+      setLookingUp(false);
+    }
+  }, [ticker, name]);
+
+  const canAdd =
+    !adding &&
+    ticker.trim().length > 0 &&
+    name.trim().length > 0 &&
+    sector.trim().length > 0 &&
+    subTheme.trim().length > 0;
+
+  const submit = useCallback(async () => {
+    setErr(null);
+    const t = ticker.trim().toUpperCase();
+    if (!t || !name.trim() || !sector.trim() || !subTheme.trim()) {
+      setErr("Ticker, name, theme and sub-theme are all required.");
+      return;
+    }
+    const ok = await onAdd({
+      ticker: t,
+      companyName: name.trim(),
+      sector: sector.trim(),
+      subTheme: subTheme.trim(),
+    });
+    if (ok) {
+      setTicker("");
+      setName("");
+      setSubTheme("");
+      // Keep the sector selected — adding several names to the same theme is
+      // the common case.
+    }
+  }, [ticker, name, sector, subTheme, onAdd]);
+
+  return (
+    <div style={addCard}>
+      <div style={addTitle}>Add a stock</div>
+      <div style={addGrid}>
+        <AddField label="Ticker">
+          <input
+            value={ticker}
+            onChange={(e) => setTicker(e.target.value)}
+            onBlur={() => void onTickerBlur()}
+            placeholder="NVDA"
+            style={input}
+            autoCapitalize="characters"
+          />
+        </AddField>
+        <AddField label={lookingUp ? "Name (looking up…)" : "Name"}>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="NVIDIA Corp."
+            style={input}
+          />
+        </AddField>
+        <AddField label="Theme">
+          <input
+            list="add-sector-options"
+            value={sector}
+            onChange={(e) => setSector(e.target.value)}
+            placeholder="Pick or type a theme"
+            style={input}
+          />
+          <datalist id="add-sector-options">
+            {sectorOptions.map((s) => (
+              <option key={s} value={s} />
+            ))}
+          </datalist>
+        </AddField>
+        <AddField label="Sub-Theme">
+          <input
+            list="add-subtheme-options"
+            value={subTheme}
+            onChange={(e) => setSubTheme(e.target.value)}
+            placeholder="Pick or type a sub-theme"
+            style={input}
+          />
+          <datalist id="add-subtheme-options">
+            {subThemeOptions.map((s) => (
+              <option key={s} value={s} />
+            ))}
+          </datalist>
+        </AddField>
+        <button
+          type="button"
+          onClick={() => void submit()}
+          disabled={!canAdd}
+          style={{ ...btnPrimary, opacity: canAdd ? 1 : 0.5, whiteSpace: "nowrap" }}
+        >
+          {adding ? "Adding…" : "Add"}
+        </button>
+      </div>
+      {err && <p style={{ ...errStyle, marginTop: "0.4rem" }}>{err}</p>}
+    </div>
+  );
+}
+
+function AddField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", flex: "1 1 0", minWidth: 0 }}>
+      <span style={{ color: "#8c99a8", fontSize: "0.75rem", marginBottom: 2 }}>
+        {label}
+      </span>
+      {children}
+    </label>
   );
 }
 
@@ -782,6 +1005,8 @@ const textarea: CSSProperties = {
   resize: "vertical",
 };
 const input: CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
   padding: "0.4rem 0.55rem",
   background: "#0f141d",
   border: "1px solid #2a3444",
@@ -793,6 +1018,25 @@ const filterRow: CSSProperties = {
   display: "flex",
   gap: "0.5rem",
   marginBottom: "0.6rem",
+};
+const addCard: CSSProperties = {
+  border: "1px solid #2a3444",
+  borderRadius: 8,
+  background: "#141a25",
+  padding: "0.65rem 0.75rem",
+  marginBottom: "0.75rem",
+};
+const addTitle: CSSProperties = {
+  color: "#c7d0dc",
+  fontSize: "0.8rem",
+  fontWeight: 600,
+  marginBottom: "0.45rem",
+};
+const addGrid: CSSProperties = {
+  display: "flex",
+  gap: "0.5rem",
+  alignItems: "flex-end",
+  flexWrap: "wrap",
 };
 const actionRow: CSSProperties = {
   display: "flex",

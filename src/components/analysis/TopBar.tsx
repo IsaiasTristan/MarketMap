@@ -1,13 +1,20 @@
 "use client";
 
-import { BloombergModuleTabs } from "@/components/analysis/BloombergModuleTabs";
+import { BloombergModuleTabs, isModulePathActive } from "@/components/analysis/BloombergModuleTabs";
 import { useAnalysisStore } from "@/store/analysis";
 import { useQuery } from "@tanstack/react-query";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
 
 export function TopBar() {
   const { activePortfolioId } = useAnalysisStore();
   const [refreshing, setRefreshing] = useState(false);
+  const pathname = usePathname() ?? "";
+  // Market Map has its own page-level refresh button that re-ingests the
+  // universe + benchmark prices. The TopBar refresh hits a different endpoint
+  // (portfolio holdings + benchmarks), so showing both reads as a duplicate
+  // control. Hide the TopBar refresh on /market-map and let the page own it.
+  const showRefresh = !isModulePathActive(pathname, "/market-map");
 
   const { data: pnl } = useQuery<{
     totalValue: number;
@@ -144,22 +151,24 @@ export function TopBar() {
 
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{today}</span>
 
-        <button
-          type="button"
-          onClick={handleRefresh}
-          disabled={refreshing || !activePortfolioId}
-          style={{
-            padding: "1px 8px",
-            border: "1px solid var(--chrome-border)",
-            background: "var(--bg-base)",
-            color: refreshing ? "var(--color-accent)" : "var(--text-secondary)",
-            cursor: activePortfolioId ? "pointer" : "not-allowed",
-            fontSize: 11,
-            fontFamily: "var(--font-sans, sans-serif)",
-          }}
-        >
-          {refreshing ? "…" : "↻ Refresh"}
-        </button>
+        {showRefresh && (
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing || !activePortfolioId}
+            style={{
+              padding: "1px 8px",
+              border: "1px solid var(--chrome-border)",
+              background: "var(--bg-base)",
+              color: refreshing ? "var(--color-accent)" : "var(--text-secondary)",
+              cursor: activePortfolioId ? "pointer" : "not-allowed",
+              fontSize: 11,
+              fontFamily: "var(--font-sans, sans-serif)",
+            }}
+          >
+            {refreshing ? "…" : "↻ Refresh"}
+          </button>
+        )}
       </div>
     </header>
   );

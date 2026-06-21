@@ -96,6 +96,15 @@ model Security {
   country   String?
   currency  String?
   assetClass String?
+  // Delist tracking. Yahoo signals "delisted" via chart.error / 404 / 0-bar
+  // pulls; we ratchet a counter here and only flag a candidate after a
+  // sustained miss window so transient throttles don't poison the universe.
+  firstMissedAt        DateTime?
+  lastMissedAt         DateTime?
+  consecutiveMisses    Int       @default(0)
+  delistCandidate      Boolean   @default(false)
+  delistedAt           DateTime?
+  suggestedReplacement String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -104,6 +113,9 @@ model Security {
   portfolioPositions PortfolioPosition[]
   factorSnapshots    FactorExposureSnapshot[]
   fundamentals       SecurityFundamentals[]
+
+  @@index([delistCandidate])
+  @@index([isActive])
 }
 
 model PriceHistory {
@@ -145,17 +157,44 @@ model BenchmarkPriceHistory {
   @@index([tradeDate])
 }
 
+// --- Users & roles (Cloudflare Access identity) ---
+
+enum UserRole {
+  ADMIN
+  USER
+}
+
+/// One row per authenticated email seen via Cloudflare Access. Role is derived
+/// from the ADMIN_EMAILS env allow-list at login and mirrored here. Normal
+/// users are auto-provisioned on first visit; only the admin controls the
+/// global universe / securities. `lastLoginAt` is throttled (<= 1 write/hour).
+model User {
+  id          String     @id @default(cuid())
+  email       String     @unique
+  role        UserRole   @default(USER)
+  createdAt   DateTime   @default(now())
+  lastLoginAt DateTime?
+
+  portfolios  Portfolio[]
+}
+
 // --- Portfolio ---
 
 model Portfolio {
   id        String   @id @default(cuid())
   name      String
+  /// Owning user. Nullable so a safe `db push` + backfill is possible; the
+  /// app always sets it on create and scopes reads/writes by the current user.
+  userId    String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  user               User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
   positions          PortfolioPosition[]
   factorSnapshots    FactorExposureSnapshot[]
   stressRuns         StressScenarioRun[]
+
+  @@index([userId])
 }
 
 /// Single source of truth for a portfolio's holdings.
@@ -359,6 +398,23 @@ model FactorExposureSnapshot {
   @@index([asOfDate])
   @@index([securityId])
   @@index([portfolioId])
+}
+
+/// Precomputed per-stock factor regression grid, keyed by (model, window).
+/// Lets the Factors tab load instantly: a daily pre-open job recomputes the
+/// full-universe grid via runPerStockFactors and upserts the JSON blob here;
+/// the API serves the cached row instead of recomputing ~300k regressions
+/// per request. One row per (model, regressionWindow), overwritten each run.
+model PerStockGridSnapshot {
+  id               String   @id @default(cuid())
+  model            String
+  regressionWindow Int
+  asOfDate         DateTime @db.Date
+  resultJson       Json
+  computedAt       DateTime @default(now())
+
+  @@unique([model, regressionWindow])
+  @@index([model, regressionWindow])
 }
 
 // --- Operations ---

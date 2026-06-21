@@ -9,7 +9,9 @@ import { runFactorEngine } from "@/server/services/factor-engine.service";
 import { persistFactorSnapshot } from "@/server/services/factor-snapshot.service";
 import { evaluateFactorAlerts } from "@/server/services/factor-alerts.service";
 import { computeFactorExposures } from "@/server/services/factor.service";
+import { computePortfolioResidualStats } from "@/server/services/factor-portfolio-residual.service";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
+import { requirePortfolioAccess } from "@/lib/api/guards";
 import type { FactorExposureSnapshot, FactorCode, ModelPresetName } from "@/types/factors";
 
 export const maxDuration = 60;
@@ -23,9 +25,22 @@ export async function GET(req: NextRequest) {
 
   const { portfolioId, model, window: win, ew } = parsed.data;
 
-  const [engineResult, holdingsResult] = await Promise.all([
+  const guard = await requirePortfolioAccess(req, portfolioId);
+  if (guard) return guard;
+
+  const [engineResult, holdingsResult, residualStats] = await Promise.all([
     runFactorEngine({ portfolioId, model: model as ModelPresetName, window: win, ewHalfLife: ew }),
     computeFactorExposures(portfolioId).catch(() => null),
+    // Constructed-from-per-stock residual series for the Total row's
+    // Unexplained cell. Independent of the portfolio-level OLS — it's
+    // built directly from per-stock rolling residuals so the number is
+    // genuinely a roll-up of the grid. Failure here is non-fatal; the
+    // Unexplained cell will fall back to "—".
+    computePortfolioResidualStats({
+      portfolioId,
+      model: model as ModelPresetName,
+      window: win,
+    }).catch(() => null),
   ]);
 
   if (!engineResult) {
@@ -99,6 +114,16 @@ export async function GET(req: NextRequest) {
     }),
     alphaAnnualized: endFit.alpha * 252,
     alphaTStat: endFit.alphaTStat,
+    // Log-space static alpha — null when the engine couldn't build the log
+    // path (e.g. some daily portfolio simple return fell to ≤ −100 %, vanishingly
+    // rare). UI falls back to simple-space when this is null.
+    alphaAnnualizedLog: engineResult.endFitLog
+      ? engineResult.endFitLog.alpha * 252
+      : null,
+    alphaTStatLog: engineResult.endFitLog ? engineResult.endFitLog.alphaTStat : null,
+    alphaCi95HalfLog: engineResult.endFitLog
+      ? 1.96 * engineResult.endFitLog.alphaStdError * 252
+      : null,
     rSquared: endFit.rSquared,
     adjRSquared: endFit.adjRSquared,
     concentrationHHI,
@@ -106,6 +131,29 @@ export async function GET(req: NextRequest) {
     idiosyncraticShare: risk.idiosyncraticShare,
     realizedAnnualizedVol,
     varGapPct,
+    residual: residualStats
+      ? {
+          sum: residualStats.residualSum,
+          mean: residualStats.residualMean,
+          tStat: residualStats.residualTStat,
+          ci95Half: residualStats.residualCi95Half,
+          annualizedVol: residualStats.residualAnnualizedVol,
+          bandwidth: residualStats.diagnostics.bandwidth,
+          n: residualStats.diagnostics.n,
+          startDate: residualStats.diagnostics.startDate,
+          endDate: residualStats.diagnostics.endDate,
+          droppedHoldings: residualStats.diagnostics.droppedHoldings,
+          coverageWeight: residualStats.diagnostics.coverageWeight,
+          // Log-space mirror — null when no holding contributed a log stream.
+          sumLog: residualStats.residualSumLog,
+          meanLog: residualStats.residualMeanLog,
+          tStatLog: residualStats.residualTStatLog,
+          ci95HalfLog: residualStats.residualCi95HalfLog,
+          annualizedVolLog: residualStats.residualAnnualizedVolLog,
+          bandwidthLog: residualStats.diagnostics.bandwidthLog,
+          nLog: residualStats.diagnostics.nLog,
+        }
+      : undefined,
     model: model as ModelPresetName,
     window: win,
     n: endFit.n,

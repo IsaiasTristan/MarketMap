@@ -174,15 +174,6 @@ export function OverviewClient() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 600, color: "var(--text-primary)", margin: "0 0 4px" }}>
-          Overview
-        </h1>
-        <p style={{ fontSize: 13, color: "var(--text-secondary)", margin: 0 }}>
-          How is my portfolio performing?
-        </p>
-      </div>
-
       {/* Level 1: P&L Cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
         <MetricCard

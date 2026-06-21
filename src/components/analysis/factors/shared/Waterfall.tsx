@@ -10,6 +10,7 @@
  * a high-contrast band with a sign-coloured number.
  */
 import type { ReactNode } from "react";
+import { FactorTooltip } from "./FactorTooltip";
 
 export interface WaterfallSegment {
   /** Stable key. */
@@ -22,6 +23,12 @@ export interface WaterfallSegment {
   color?: string;
   /** Optional secondary line (e.g. "β = +0.42 · t = 3.1"). */
   sub?: string;
+  /**
+   * Optional hover-popup content explaining the row (what it is + how it's
+   * calculated + the data used). When present, the label becomes a hover
+   * trigger.
+   */
+  info?: { name: string; definition: string; howCalculated?: string; dataUsed?: string };
 }
 
 interface WaterfallProps {
@@ -230,20 +237,40 @@ export function Waterfall({
                   }}
                 />
                 <div style={{ minWidth: 0, overflow: "hidden" }}>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      color: isResidual ? "var(--text-secondary)" : "var(--text-primary)",
-                      fontWeight: isResidual ? 500 : 500,
-                      fontStyle: isResidual ? "italic" : "normal",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                    title={s.label}
-                  >
-                    {s.label}
-                  </div>
+                  {(() => {
+                    const labelEl = (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: isResidual ? "var(--text-secondary)" : "var(--text-primary)",
+                          fontWeight: 500,
+                          fontStyle: isResidual ? "italic" : "normal",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {s.label}
+                      </span>
+                    );
+                    return s.info ? (
+                      <FactorTooltip
+                        name={s.info.name}
+                        definition={s.info.definition}
+                        howCalculated={s.info.howCalculated}
+                        dataUsed={s.info.dataUsed}
+                      >
+                        {labelEl}
+                      </FactorTooltip>
+                    ) : (
+                      <div
+                        style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                        title={s.label}
+                      >
+                        {labelEl}
+                      </div>
+                    );
+                  })()}
                   {s.sub && (
                     <div
                       style={{

@@ -64,3 +64,43 @@ export function expSumMinus1(logSum: number): number {
   if (!Number.isFinite(logSum)) return 0;
   return Math.exp(logSum) - 1;
 }
+
+/**
+ * Floor on `1 + x` used by {@link logOnePlusClipped}. A delisted-and-zero
+ * day or a halt-to-zero session would otherwise push the log path to NaN
+ * and force the entire row out of the rolling sample. Clipping rather than
+ * dropping keeps the constructed series continuous; the caller is
+ * responsible for surfacing the clip count in tooltips so the user can
+ * read a clipped-α with appropriate caution.
+ *
+ * 1e-6 corresponds to a daily simple return of −99.9999%; a stock that
+ * actually drops that hard in one day is going to be wildly noisy in any
+ * model and the clip just keeps the math defined.
+ */
+export const LOG_ONE_PLUS_CLIP_FLOOR = 1e-6;
+
+export interface LogOnePlusClippedResult {
+  /** ln(max(1 + x, FLOOR)). NaN only when input is non-finite. */
+  value: number;
+  /** True when the FLOOR was hit and the value is a clip rather than ln(1+x). */
+  clipped: boolean;
+}
+
+/**
+ * Defensive log-of-1+x with a tiny floor on `1+x`. Intended for per-stock
+ * paths where strict-drop (the engine's policy) is too aggressive — a
+ * single bad day shouldn't cost an entire stock its rolling-OLS coverage.
+ *
+ * Returns `{ value: NaN, clipped: false }` for non-finite input so callers
+ * can still discard truly garbage data; for any finite input the value is
+ * always defined and the `clipped` flag tells you whether you got the
+ * exact `ln(1+x)` or the floored substitute.
+ */
+export function logOnePlusClipped(simpleReturn: number): LogOnePlusClippedResult {
+  if (!Number.isFinite(simpleReturn)) return { value: Number.NaN, clipped: false };
+  const onePlus = 1 + simpleReturn;
+  if (onePlus < LOG_ONE_PLUS_CLIP_FLOOR) {
+    return { value: Math.log(LOG_ONE_PLUS_CLIP_FLOOR), clipped: true };
+  }
+  return { value: Math.log(onePlus), clipped: false };
+}

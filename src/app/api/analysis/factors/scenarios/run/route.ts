@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { factorScenarioRunBody } from "@/lib/api/schemas";
 import { runScenario, getSensitivityTable } from "@/server/services/factor-scenarios.service";
+import { requirePortfolioAccess } from "@/lib/api/guards";
 import type { ModelPresetName } from "@/types/factors";
 
 export const maxDuration = 60;
@@ -23,6 +24,9 @@ export async function POST(req: NextRequest) {
   }
 
   const { portfolioId, model, window: win, scenarioKey, customShocks } = parsed.data;
+
+  const guard = await requirePortfolioAccess(req, portfolioId);
+  if (guard) return guard;
 
   if (!scenarioKey && !customShocks?.length) {
     return NextResponse.json(

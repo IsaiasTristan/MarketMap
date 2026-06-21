@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { factorDriversQuery } from "@/lib/api/schemas";
 import { getFactorDrivers } from "@/server/services/factor-drivers.service";
+import { requirePortfolioAccess } from "@/lib/api/guards";
 import type { ModelPresetName } from "@/types/factors";
 
 export const maxDuration = 60;
@@ -17,6 +18,8 @@ export async function GET(req: NextRequest) {
   }
 
   const { portfolioId, model, window: win, ew, groupBy } = parsed.data;
+  const guard = await requirePortfolioAccess(req, portfolioId);
+  if (guard) return guard;
   const result = await getFactorDrivers(
     portfolioId,
     model as ModelPresetName,

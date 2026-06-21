@@ -1,6 +1,5 @@
-"use client";
-import { ConcentrationClient } from "@/components/analysis/concentration/ConcentrationClient";
+import { redirect } from "next/navigation";
 
 export default function ConcentrationPage() {
-  return <ConcentrationClient />;
+  redirect("/overview");
 }

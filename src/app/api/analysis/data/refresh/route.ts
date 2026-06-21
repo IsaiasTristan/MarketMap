@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { runFullRefresh } from "@/server/services/data-refresh.service";
+import { requireAdminGuard } from "@/lib/api/guards";
 
 export const maxDuration = 120;
 
 export async function POST(req: Request) {
+  const adminGuard = await requireAdminGuard(req);
+  if (adminGuard) return adminGuard;
   const { searchParams } = new URL(req.url);
   const portfolioId = searchParams.get("portfolioId") ?? undefined;
 

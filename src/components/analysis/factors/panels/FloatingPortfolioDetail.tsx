@@ -18,7 +18,7 @@ import type {
   AttributionResult,
   RiskDecomposition,
 } from "@/types/factors";
-import type { FactorPeriod } from "@/store/analysis";
+import type { FactorPeriod, FactorWindow } from "@/store/analysis";
 
 interface FloatingPortfolioDetailProps {
   exposure: FactorExposureSnapshot | null;
@@ -26,6 +26,7 @@ interface FloatingPortfolioDetailProps {
   risk: RiskDecomposition | null | undefined;
   history: Parameters<typeof TimeSeriesPanel>[0]["history"];
   selectedPeriod: FactorPeriod;
+  regressionWindow: FactorWindow;
   onClose: () => void;
 }
 
@@ -47,6 +48,7 @@ export function FloatingPortfolioDetail({
   risk,
   history,
   selectedPeriod,
+  regressionWindow,
   onClose,
 }: FloatingPortfolioDetailProps) {
   const [mounted, setMounted] = useState(false);
@@ -188,6 +190,7 @@ export function FloatingPortfolioDetail({
           attribution={attribution}
           risk={risk}
           selectedPeriod={selectedPeriod}
+          regressionWindow={regressionWindow}
         />
 
         {/* Rolling factor β over time, plus per-period attribution. */}

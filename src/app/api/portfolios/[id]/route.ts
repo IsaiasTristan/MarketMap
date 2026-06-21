@@ -6,11 +6,14 @@ import {
   renamePortfolio,
 } from "@/server/services/portfolio.service";
 import { renamePortfolioBody } from "@/lib/api/schemas";
+import { requirePortfolioAccess } from "@/lib/api/guards";
 
 type Ctx = { params: Promise<{ id: string }> };
 
-export async function GET(_req: Request, ctx: Ctx) {
+export async function GET(req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
+  const guard = await requirePortfolioAccess(req, id);
+  if (guard) return guard;
   const p = await getPortfolio(prisma, id);
   if (!p) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json({ portfolio: p });
@@ -18,6 +21,8 @@ export async function GET(_req: Request, ctx: Ctx) {
 
 export async function PATCH(req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
+  const guard = await requirePortfolioAccess(req, id);
+  if (guard) return guard;
   const json = await req.json().catch(() => null);
   const parsed = renamePortfolioBody.safeParse(json);
   if (!parsed.success) {
@@ -34,8 +39,10 @@ export async function PATCH(req: Request, ctx: Ctx) {
   }
 }
 
-export async function DELETE(_req: Request, ctx: Ctx) {
+export async function DELETE(req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
+  const guard = await requirePortfolioAccess(req, id);
+  if (guard) return guard;
   try {
     await deletePortfolio(prisma, id);
     return NextResponse.json({ ok: true });

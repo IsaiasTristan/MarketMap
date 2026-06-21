@@ -7,6 +7,7 @@ import { HORIZON_ORDER } from "@/domain/entities/horizons";
 import type { MetricKind } from "@/domain/entities/analytics";
 import { heatmapRgb } from "@/domain/calculations/heatmap";
 import { HORIZON_LABEL, formatMetricValue } from "@/lib/format";
+import { FactorPerformanceTable } from "@/components/FactorPerformanceTable";
 
 type ApiRow = {
   key: string;
@@ -15,6 +16,7 @@ type ApiRow = {
   subTheme?: string;
   ticker?: string;
   cells: Record<Horizon, number | null>;
+  lastDate?: string | null;
 };
 
 type ApiPayload = {
@@ -34,6 +36,7 @@ type CompanyLeaf = {
   ticker: string;
   name: string;
   cells: Record<Horizon, number | null>;
+  lastDate?: string | null;
 };
 
 type SubThemeNode = {
@@ -80,6 +83,22 @@ type DisplayRow =
 
 const TOTAL_COLS = 3 + HORIZON_ORDER.length;
 
+export type MarketMapLoadedInfo = {
+  asOf: string | null;
+  staleCalendarDays: number | null;
+  /** Number of active tickers in the universe whose last bar trails the
+   *  universe's freshest bar by more than STALE_TICKER_DAYS. Drives the
+   *  "N of M tickers stale" sub-label on the top bar. */
+  staleTickerCount: number;
+  /** Total number of active tickers represented in the grid (denominator). */
+  activeTickerCount: number;
+};
+
+/** A ticker is "stale" if its last bar trails the universe's freshest bar by
+ *  more than this many calendar days. Counted against the universe-freshest
+ *  bar (not wall-clock) so weekends / holidays / timezone don't false-flag. */
+const STALE_TICKER_DAYS = 3;
+
 export function MarketMapClient({
   universeId,
   reloadToken = 0,
@@ -87,7 +106,7 @@ export function MarketMapClient({
 }: {
   universeId: string;
   reloadToken?: number;
-  onLoaded?: () => void;
+  onLoaded?: (info: MarketMapLoadedInfo) => void;
 }) {
   const [metric, setMetric] = useState<MetricKind>("RETURN");
   const [benchmark, setBenchmark] = useState<"SP500" | "NASDAQ" | "DOW">(
@@ -123,7 +142,23 @@ export function MarketMapClient({
       const j = (await res.json()) as ApiPayload & { error?: string };
       if (!res.ok) throw new Error(j.error ?? res.statusText);
       setData(j);
-      onLoaded?.();
+      const tickerDates = j.rows
+        .map((r) => r.lastDate)
+        .filter((d): d is string => !!d);
+      const newestLastDate = tickerDates.length
+        ? tickerDates.reduce((a, b) => (a > b ? a : b))
+        : null;
+      const staleTickerCount = newestLastDate
+        ? tickerDates.filter(
+            (d) => calendarDaysBetween(d, newestLastDate) > STALE_TICKER_DAYS
+          ).length
+        : 0;
+      onLoaded?.({
+        asOf: j.asOf ?? null,
+        staleCalendarDays: j.asOf ? calendarDaysBetween(j.asOf, isoToday()) : null,
+        staleTickerCount,
+        activeTickerCount: j.rows.length,
+      });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setData(null);
@@ -301,7 +336,7 @@ export function MarketMapClient({
             <option value="SHARPE">Sharpe ratio</option>
           </select>
         </label>
-        {(metric === "EXCESS_RETURN" || metric === "RETURN") && (
+        {metric === "EXCESS_RETURN" && (
           <label>
             <div style={labelStyle}>Benchmark (excess)</div>
             <select
@@ -362,13 +397,13 @@ export function MarketMapClient({
         <table style={tableStyle}>
           <thead>
             <tr>
-              <th style={{ ...thStyle, textAlign: "left", width: "22%" }}>
+              <th style={{ ...thStyle, textAlign: "left", width: "1%" }}>
                 Sector
               </th>
-              <th style={{ ...thStyle, textAlign: "left", width: "20%" }}>
+              <th style={{ ...thStyle, textAlign: "left", width: "1%" }}>
                 Sub-Theme
               </th>
-              <th style={{ ...thStyle, textAlign: "left", width: "12%" }}>
+              <th style={{ ...thStyle, textAlign: "left", width: "1%" }}>
                 Ticker
               </th>
               {HORIZON_ORDER.map((h) => {
@@ -452,6 +487,7 @@ export function MarketMapClient({
                   position={row.position}
                   metric={metric}
                   range={ranges.COMPANY}
+                  universeAsOf={data?.asOf ?? null}
                 />
               );
             })}
@@ -468,6 +504,12 @@ export function MarketMapClient({
           </tbody>
         </table>
       </div>
+
+      <FactorPerformanceTable
+        metric={metric}
+        benchmark={benchmark}
+        reloadToken={reloadToken}
+      />
     </div>
   );
 }
@@ -594,13 +636,25 @@ function CompanyTableRow({
   position,
   metric,
   range,
+  universeAsOf,
 }: {
   company: CompanyLeaf;
   position: RowPosition;
   metric: MetricKind;
   range: RangeMap;
+  universeAsOf: string | null;
 }) {
   const isLast = position === "last" || position === "only";
+  // A row is "stale" when its last bar is older than the universe min lastDate
+  // (i.e. it's been left behind by the rest of the grid). We dim it so the
+  // user can see at a glance which tickers are out of sync.
+  const rowStale =
+    !!company.lastDate &&
+    !!universeAsOf &&
+    company.lastDate < universeAsOf;
+  const rowStyle: CSSProperties = rowStale
+    ? { ...companyRowStyle, opacity: 0.55 }
+    : companyRowStyle;
   const sectorCell: CSSProperties = {
     ...companySectorCell,
     borderBottomColor: isLast ? "var(--bg-border)" : "transparent",
@@ -613,13 +667,20 @@ function CompanyTableRow({
     ...companyTickerCell,
     borderBottomColor: isLast ? "var(--bg-border)" : "transparent",
   };
+  const tickerTitle = rowStale && company.lastDate
+    ? `${company.name} — last bar ${company.lastDate}, behind universe`
+    : company.name;
   return (
-    <tr style={companyRowStyle}>
+    <tr style={rowStyle}>
       <td style={sectorCell} />
       <td style={subCell} />
       <td style={tickerCell}>
-        <span style={tickerText} title={company.name}>
-          {company.ticker}
+        <span style={tickerLine} title={tickerTitle}>
+          <span style={companyNameText}>{company.name}</span>
+          <span style={tickerSymbolText}>
+            {company.ticker}
+            {rowStale ? "*" : ""}
+          </span>
         </span>
       </td>
       {HORIZON_ORDER.map((h) =>
@@ -678,6 +739,7 @@ function buildTree(rows: ApiRow[]): SectorNode[] {
         ? r.label.split("—").slice(1).join("—").trim()
         : r.label,
       cells: r.cells,
+      lastDate: r.lastDate ?? null,
     });
   }
   const sectors = [...bySector.keys()].sort();
@@ -833,6 +895,24 @@ function Legend({ metric }: { metric: MetricKind }) {
       Return / excess heatmap: red = negative, green = positive vs column min/max.
     </p>
   );
+}
+
+function isoToday(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function calendarDaysBetween(fromIso: string, toIso: string): number {
+  const a = Date.UTC(
+    Number(fromIso.slice(0, 4)),
+    Number(fromIso.slice(5, 7)) - 1,
+    Number(fromIso.slice(8, 10))
+  );
+  const b = Date.UTC(
+    Number(toIso.slice(0, 4)),
+    Number(toIso.slice(5, 7)) - 1,
+    Number(toIso.slice(8, 10))
+  );
+  return Math.floor((b - a) / 86_400_000);
 }
 
 function chevronStyle(open: boolean, color: string): CSSProperties {
@@ -1032,8 +1112,26 @@ const companyTickerCell: CSSProperties = {
   background: COMPANY_BG,
 };
 
-const tickerText: CSSProperties = {
+const tickerLine: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "baseline",
+  gap: "8px",
+  maxWidth: "100%",
+  overflow: "hidden",
+};
+
+const companyNameText: CSSProperties = {
   color: "var(--text-secondary)",
+  fontWeight: 400,
+  fontSize: "11px",
+  maxWidth: "22ch",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+const tickerSymbolText: CSSProperties = {
+  color: "var(--text-primary)",
   fontWeight: 500,
   fontSize: "12px",
   fontVariantNumeric: "tabular-nums",

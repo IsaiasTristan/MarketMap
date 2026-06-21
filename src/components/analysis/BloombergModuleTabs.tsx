@@ -9,9 +9,6 @@ const MODULE_TABS = [
   { href: "/performance", label: "Performance" },
   { href: "/risk", label: "Risk" },
   { href: "/factors", label: "Factors" },
-  { href: "/attribution", label: "Attribution" },
-  { href: "/stress", label: "Stress" },
-  { href: "/concentration", label: "Concentration" },
   { href: "/data", label: "Data" },
   { href: "/alerts", label: "Alerts" },
 ] as const;
