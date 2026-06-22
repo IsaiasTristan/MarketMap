@@ -33,15 +33,20 @@ import type {
 export function factorCellValue(
   cell: PerStockFactorCell | undefined,
   metric: FactorGridMetric,
+  mode: FactorAttributionMode = "log",
 ): number | null {
   if (!cell) return null;
+  const returnVal =
+    mode === "log"
+      ? cell.returnContributionLog ?? cell.returnContribution
+      : cell.returnContribution;
   const v =
     metric === "beta"
       ? cell.beta
       : metric === "return"
-        ? cell.returnContribution
+        ? returnVal
         : cell.riskContribution;
-  return Number.isFinite(v) ? v : null;
+  return v != null && Number.isFinite(v) ? v : null;
 }
 
 /**
@@ -196,7 +201,7 @@ export function buildCohortStats(args: {
     }
 
     for (const code of factorColumns) {
-      const v = factorCellValue(row.cells[code], metric);
+      const v = factorCellValue(row.cells[code], metric, mode);
       if (v === null) continue;
       if (!sigGatePassed(row, code, filters, mode)) continue;
       push(cohort, code, v);

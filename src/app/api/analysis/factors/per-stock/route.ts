@@ -50,6 +50,9 @@ function applyPeriodOverlay(result: PerStockResult, period: PeriodLabel): PerSto
       if (!cell) continue;
       const v = slice.returnByFactor[code];
       if (v != null && Number.isFinite(v)) cell.returnContribution = v;
+      const vLog = slice.returnByFactorLog?.[code];
+      cell.returnContributionLog =
+        vLog != null && Number.isFinite(vLog) ? vLog : null;
     }
     row.rollingAlphaPostBurnSum = slice.alphaSum;
     row.rollingResidualPostBurnSum = slice.residualSum;
@@ -97,10 +100,26 @@ export async function GET(req: NextRequest) {
     const cacheHasRealized =
       cached != null &&
       cached.rows.some((r) => "realizedTotalReturn" in r);
+    // Self-heal caches that predate the static-horizon-beta period
+    // decomposition (2026-06-21): the new service writes a `returnByFactorLog`
+    // map onto every period slice and a `returnContributionLog` onto every
+    // cell. An old cache has neither, so the log-mode grid + waterfall would
+    // fall back to simple silently. Probe a representative slice and force a
+    // fresh compute (write-through) when it's missing.
+    const cacheHasStaticBeta =
+      cached != null &&
+      cached.rows.some((r) =>
+        r.periodSlices
+          ? Object.values(r.periodSlices).some(
+              (s) => s && "returnByFactorLog" in s,
+            )
+          : false,
+      );
     const cacheUsable =
       cached != null &&
       (!period || cached.rows.some((r) => r.periodSlices)) &&
-      cacheHasRealized;
+      cacheHasRealized &&
+      cacheHasStaticBeta;
     if (cached && cacheUsable) {
       const overlaid = period ? applyPeriodOverlay(cached, period as PeriodLabel) : cached;
       return NextResponse.json({

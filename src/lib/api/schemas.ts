@@ -34,11 +34,6 @@ export const factorQueryParams = z.object({
     .optional()
     .transform((v) => (v ? Math.max(20, Math.min(2520, Number(v))) : 378))
     .pipe(z.number().int().min(20).max(2520)),
-  ew: z
-    .string()
-    .optional()
-    .transform((v) => (v ? Number(v) : null))
-    .pipe(z.number().positive().nullable()),
   from: z.string().optional(),
   to: z.string().optional(),
   benchmark: z.enum(["SP500", "NASDAQ", "DOW"]).optional(),

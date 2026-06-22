@@ -98,6 +98,35 @@ export interface ModelPreset {
   factors: FactorCode[];
 }
 
+/**
+ * Portfolio data-coverage diagnostics for the factor regression.
+ *
+ * The engine builds the portfolio return series from the UNION of position
+ * price dates, including each holding only on dates it actually traded and
+ * renormalizing weights across the present subset. A recently-listed holding
+ * (IPO / short history) therefore contributes only once it has prices instead
+ * of truncating the whole portfolio's aligned window. This object names which
+ * holdings / dates were excluded so the UI can surface a concise warning.
+ */
+export interface PortfolioCoverageDiagnostics {
+  totalPositions: number;
+  /** First date of the kept (regressable) portfolio return series. */
+  seriesStart: string | null;
+  /** Last date of the kept portfolio return series. */
+  seriesEnd: string | null;
+  /** Number of dates in the kept series. */
+  alignedDates: number;
+  /**
+   * Holdings that started after the series began (IPOs / short history) and so
+   * are absent from the early part of the regression sample.
+   */
+  shortHistoryPositions: { ticker: string; firstDate: string; observations: number }[];
+  /** Holdings that never contributed (no usable overlapping price history). */
+  excludedPositions: { ticker: string; reason: string }[];
+  /** Count of candidate dates dropped because portfolio coverage fell below the threshold. */
+  droppedLowCoverageDates: number;
+}
+
 // ---------------------------------------------------------------------------
 // Regression
 // ---------------------------------------------------------------------------
@@ -246,6 +275,12 @@ export interface FactorExposureSnapshot {
   regularized: boolean;
   normalizationApplied: boolean;
   normalization: FactorNormalizationDiagnostics | null;
+  /**
+   * Data-coverage diagnostics — which holdings / dates were excluded from the
+   * regression sample (short history / IPOs / low-coverage dates). Optional for
+   * back-compat; the UI shows a concise warning chip when populated.
+   */
+  coverage?: PortfolioCoverageDiagnostics | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +312,15 @@ export interface RiskDecomposition {
   /** Covariance matrix used (factor order matches model preset). */
   covMatrix: number[][];
   covMatrixWindow: number;
+  /**
+   * Window-scoped coverage diagnostics — names which holdings have no /
+   * partial price data inside the trailing risk window. Surfaced by the
+   * `/api/analysis/factors/risk` route so the Risk tab's CoverageWarning
+   * chip can list affected tickers + their data date ranges. Optional on
+   * the type because legacy consumers (computeRiskDecomposition pure path)
+   * don't populate it; the API spreads it on top of the engine result.
+   */
+  windowCoverage?: PortfolioCoverageDiagnostics;
 }
 
 // ---------------------------------------------------------------------------
@@ -532,8 +576,6 @@ export interface FactorEngineParams {
   model: ModelPresetName;
   /** Regression window in trading days. */
   window: number;
-  /** Exponential weighting half-life in trading days. null = uniform. */
-  ewHalfLife?: number | null;
   from?: string;
   to?: string;
 }
@@ -592,4 +634,16 @@ export interface FactorEngineResult {
     effectiveWindow: number;
     availableObservations: number;
   } | null;
+
+  /** Data-coverage diagnostics for the portfolio return series. */
+  coverage: PortfolioCoverageDiagnostics;
+
+  /**
+   * Coverage diagnostics scoped to the trailing risk-decomposition window
+   * (the last `windowN` aligned dates that feed the Euler decomposition).
+   * Names short-history / zero-data holdings within this window so the
+   * Risk-tab warning chip can list affected tickers + date ranges.
+   * Always present — `seriesStart`/`seriesEnd` span the risk window.
+   */
+  windowCoverage: PortfolioCoverageDiagnostics;
 }

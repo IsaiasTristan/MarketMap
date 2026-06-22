@@ -111,10 +111,17 @@ export type PerStockGridSortKey =
   | SummarySortKey
   | FactorCode;
 
-function pickValue(cell: PerStockFactorCell | undefined, metric: FactorGridMetric): number | null {
+function pickValue(
+  cell: PerStockFactorCell | undefined,
+  metric: FactorGridMetric,
+  mode: FactorAttributionMode,
+): number | null {
   if (!cell) return null;
   if (metric === "beta") return cell.beta;
-  if (metric === "return") return cell.returnContribution;
+  if (metric === "return") {
+    if (mode === "log") return cell.returnContributionLog ?? cell.returnContribution;
+    return cell.returnContribution;
+  }
   return cell.riskContribution;
 }
 
@@ -217,9 +224,10 @@ function renderFactorCell(
   stat: FactorGridStat,
   cohortStats: ScreenerColumnStats | null,
   filters: FactorScreenerFilters,
+  mode: FactorAttributionMode,
 ): CellRender {
   // Sig gate is universal — every stat lens hides masked cells the same way.
-  if (filters.sigGate.enabled && !sigGatePassed(row, code, filters)) {
+  if (filters.sigGate.enabled && !sigGatePassed(row, code, filters, mode)) {
     return gatedCellRender(filters.sigGate.threshold);
   }
 
@@ -237,7 +245,7 @@ function renderFactorCell(
   }
   if (stat === "ci") {
     if (!cell || metric === "risk") return emptyCellRender();
-    const base = pickValue(cell, metric);
+    const base = pickValue(cell, metric, mode);
     if (base === null) return emptyCellRender();
     const ci = ciHalfFromValueAndT(base, cell.tStat);
     if (ci === null) return emptyCellRender();
@@ -253,7 +261,7 @@ function renderFactorCell(
     };
   }
   if (stat === "z") {
-    const v = screenerFactorCellValue(cell, metric);
+    const v = screenerFactorCellValue(cell, metric, mode);
     const z = computeZ(v, cohortStats);
     if (z.fellBackToPct) {
       const pct = computePctRank(v, cohortStats);
@@ -285,7 +293,7 @@ function renderFactorCell(
     };
   }
   if (stat === "pct") {
-    const v = screenerFactorCellValue(cell, metric);
+    const v = screenerFactorCellValue(cell, metric, mode);
     const pct = computePctRank(v, cohortStats);
     if (pct === null) return emptyCellRender();
     const bg = heatPercentileBloomberg(pct / 100, factorHeatDirection(metric));
@@ -299,7 +307,7 @@ function renderFactorCell(
     };
   }
   // stat === "value"
-  const v = screenerFactorCellValue(cell, metric);
+  const v = screenerFactorCellValue(cell, metric, mode);
   if (v === null) return emptyCellRender();
   const text = formatValue(v, metric);
   const pct = computePctFraction(v, cohortStats);
@@ -820,7 +828,7 @@ export function PerStockGrid({
         const stats = statsFor(screenerView.stats, cohort, code);
         inner.set(
           code,
-          renderFactorCell(row.cells[code], row, code, metric, stat, stats, filters),
+          renderFactorCell(row.cells[code], row, code, metric, stat, stats, filters, attributionMode),
         );
       }
       out.set(row.ticker, inner);
@@ -939,6 +947,7 @@ export function PerStockGrid({
           hoveredValue = screenerFactorCellValue(
             row.cells[column as FactorCode],
             metric,
+            attributionMode,
           );
         }
       }
@@ -1358,10 +1367,12 @@ export function PerStockGrid({
                           : ""
                       }`
                     : "";
+                  const retLog = cell?.returnContributionLog;
                   const baseTitle = cell
                     ? `${getFactorDef(code).label}
 β (static, full window) = ${cell.beta.toFixed(3)} (t=${cell.tStat.toFixed(1)})
-Return contrib: ${(cell.returnContribution * 100).toFixed(2)}%   [β × Σ r_t, additive]
+Return contrib (simple): ${(cell.returnContribution * 100).toFixed(2)}%   [β × Σ r_t, additive]
+Return contrib (log${attributionMode === "log" ? ", shown" : ""}): ${retLog != null && Number.isFinite(retLog) ? (retLog * 100).toFixed(2) + "%" : "—"}   [β_log × Σ ln(1+r), static horizon fit]
   · geometric variant (β × Π(1+r)−1): ${(cell.returnContributionGeometric * 100).toFixed(2)}%
 Risk contrib: ${(cell.riskContribution * 100).toFixed(1)}%   [Euler, Σ aligned to regression sample]
 ${cell.riskContribution < 0 && cell.topCovariers && cell.topCovariers.length > 0

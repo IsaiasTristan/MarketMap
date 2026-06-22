@@ -121,7 +121,8 @@ export function TimeSeriesPanel({ history, attribution }: TimeSeriesPanelProps) 
         ) : (
           <div style={{ height: 100, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <span style={{ color: "var(--text-muted)", fontSize: 13 }}>
-              No rolling history yet. Factor exposures are saved each time the page is viewed.
+              No rolling history yet — not enough aligned trading days to fit the rolling regression.
+              Add more price history, then refresh the factor data pipeline.
             </span>
           </div>
         )}

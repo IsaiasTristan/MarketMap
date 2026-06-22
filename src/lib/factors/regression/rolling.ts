@@ -6,17 +6,15 @@
  */
 import type { RollingFitPoint } from "@/types/factors";
 import { multivariateOls } from "./ols";
-import { exponentialWeights } from "./weights";
 import { minObservations } from "../definitions/model-presets";
 
 /**
- * Compute rolling regression fits.
+ * Compute rolling regression fits (equal-weight OLS).
  *
  * @param dates    Aligned date strings (length = n).
  * @param y        Dependent variable (length = n).
  * @param X        Factor matrix rows × factors (length = n, each row has k values).
  * @param window   Lookback in observations.
- * @param ewHalfLife Optional EW half-life. null = uniform.
  * @returns        Array of RollingFitPoint, one per date starting at index (window - 1).
  */
 export function rollingMultivariateOls(
@@ -24,7 +22,6 @@ export function rollingMultivariateOls(
   y: number[],
   X: number[][],
   window: number,
-  ewHalfLife?: number | null,
 ): RollingFitPoint[] {
   const n = dates.length;
   const k = X[0]?.length ?? 0;
@@ -36,8 +33,7 @@ export function rollingMultivariateOls(
     const start = end - effectiveWindow + 1;
     const ySlice = y.slice(start, end + 1);
     const xSlice = X.slice(start, end + 1);
-    const weights = exponentialWeights(effectiveWindow, ewHalfLife);
-    const fit = multivariateOls(ySlice, xSlice, weights);
+    const fit = multivariateOls(ySlice, xSlice);
     out.push({ date: dates[end]!, fit });
   }
 
@@ -62,14 +58,13 @@ export function rollingResidualStream(
   y: number[],
   X: number[][],
   window: number,
-  ewHalfLife?: number | null,
 ): {
   dates: string[];
   residuals: number[];
   /** Index into the input (y, X) of the first emitted residual. */
   firstValidIdx: number | null;
 } {
-  const fits = rollingMultivariateOls(dates, y, X, window, ewHalfLife);
+  const fits = rollingMultivariateOls(dates, y, X, window);
   const k = X[0]?.length ?? 0;
   const out: { dates: string[]; residuals: number[]; firstValidIdx: number | null } = {
     dates: [],

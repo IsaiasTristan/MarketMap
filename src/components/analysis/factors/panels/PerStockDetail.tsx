@@ -39,7 +39,6 @@ import type { PerStockResult } from "@/server/services/factor-per-stock.service"
 import { useAnalysisStore } from "@/store/analysis";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
 import { pickHeadlineValue } from "@/lib/factors/attribution/headline-picker";
-import { resolvePeriodSlice } from "@/lib/factors/attribution/period";
 import { StockPriceChart } from "./StockPriceChart";
 import type { FactorCode } from "@/types/factors";
 import { Waterfall, type WaterfallSegment } from "../shared/Waterfall";
@@ -150,15 +149,21 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
   });
   const tsData: PerStockTimeSeriesPayload | null = tsRaw ?? null;
 
-  // Identity sums (Q2 lock-in: skip burn-in i < displayStartIndex).
-  // Path B (default when log series present): bars are decomposed in log
-  // space (Σ y_log = Σ(β·x_log) + Σα + Σε); the headline value is the
-  // compounded geometric reconciliation exp(Σ y_log) − 1, which ties to
-  // realised performance over the visible window.
-  // Path A (fallback): used only when the log path was strict-dropped (any
-  // 1+r ≤ 0 in the visible window). Identity Σy = Σ(β·r) + Σα + Σε holds
-  // daily, but the cumulative arithmetic sum is NOT a compounded total.
-  const useLog = tsData?.log != null;
+  // STATIC-HORIZON-BETA period decomposition (2026-06-21). The waterfall now
+  // reads the snapshot row's `periodSlices` — the SAME numbers the grid shows
+  // — so the popup and the table tie by construction. Betas + intercept come
+  // from the single full-horizon OLS fit; the trailing Attribution Period only
+  // restricts the realized contribution sums. The rolling-60d time series
+  // below is an illustrative beta-drift chart only.
+  //
+  // Identity over the slice: Σ y = Σ_f (β_f × Σr_f) + (α × days) + residual,
+  // where residual is the plug, so the identity closes by construction.
+  const periodSlice = row?.periodSlices?.[attributionPeriod] ?? null;
+  const logAvailable = periodSlice != null && periodSlice.alphaSumLog != null;
+  // Log is the default; fall back to simple only when the log path was
+  // strict-dropped for this stock (a daily 1+r ≤ 0 killed ln(1+r)).
+  const useLog = attributionMode === "log" && logAvailable;
+  const logWantedButUnavailable = attributionMode === "log" && !logAvailable;
   const {
     returnSegments,
     windowAlpha,
@@ -172,75 +177,53 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
     windowStartDate,
     windowEndDate,
   } = useMemo(() => {
-    if (!tsData) {
-      return {
-        returnSegments: [] as WaterfallSegment[],
-        windowAlpha: 0,
-        sumLogInner: 0,
-        geometricTotalReturn: 0,
-        geometricTotalReturnIncRf: null as number | null,
-        arithmeticTotalReturn: 0,
-        identitySumGap: 0,
-        postBurnObs: 0,
-        rollingAlphaToTotalRatio: 0,
-        windowStartDate: "",
-        windowEndDate: "",
-      };
-    }
-    const displayStartIdx = tsData.displayStartIndex ?? 0;
-    const n = tsData.dates.length;
-    // Attribution Period slice: restrict the waterfall sums to a trailing
-    // sub-window of the visible (post burn-in) range. resolvePeriodSlice over
-    // the full chart dates can return an index before the burn-in cut for long
-    // periods, so we clamp to displayStartIndex.
-    const periodSlice = resolvePeriodSlice(tsData.dates, attributionPeriod);
-    const startIdx = Math.max(displayStartIdx, periodSlice.startIndex < 0 ? displayStartIdx : periodSlice.startIndex);
-    const isFullVisibleWindow = startIdx === displayStartIdx;
-    const factorContrib = useLog ? tsData.log!.factorLogContrib : tsData.factorContrib;
-    const alphaSeries = useLog ? tsData.log!.alphaLog : tsData.alpha;
-    const residSeries = useLog ? tsData.log!.residualLog : tsData.residual;
-    const excessSeries = useLog ? tsData.log!.excessLogReturn : tsData.excessReturn;
+    const empty = {
+      returnSegments: [] as WaterfallSegment[],
+      windowAlpha: 0,
+      sumLogInner: 0,
+      geometricTotalReturn: 0,
+      geometricTotalReturnIncRf: null as number | null,
+      arithmeticTotalReturn: 0,
+      identitySumGap: 0,
+      postBurnObs: 0,
+      rollingAlphaToTotalRatio: 0,
+      windowStartDate: "",
+      windowEndDate: "",
+    };
+    if (!row || !periodSlice || periodSlice.observations <= 0) return empty;
+
+    const returnByFactor = useLog ? periodSlice.returnByFactorLog : periodSlice.returnByFactor;
+    const alphaSum = num(useLog ? periodSlice.alphaSumLog : periodSlice.alphaSum);
+    const idioSum = num(useLog ? periodSlice.residualSumLog : periodSlice.residualSum);
 
     const segs: WaterfallSegment[] = [];
     let factorContribTotal = 0;
     for (const code of factors) {
-      const arr = factorContrib[code];
-      if (!arr) continue;
-      let sum = 0;
-      for (let i = startIdx; i < n; i++) sum += num(arr[i]);
-      factorContribTotal += sum;
+      const v = returnByFactor[code];
+      if (v == null || !Number.isFinite(v)) continue;
+      factorContribTotal += v;
       const def = getFactorDef(code);
-      const lastBeta = useLog
-        ? num(tsData.log!.rollingBetasLog[code]?.[n - 1] ?? tsData.log!.betasLog[code] ?? 0)
-        : num(tsData.rollingBetas[code]?.[n - 1] ?? tsData.betas[code] ?? 0);
+      const beta = num(row.cells[code]?.beta);
       segs.push({
         key: `ret-${code}`,
         label: def.label,
-        value: sum,
+        value: v,
         color: def.color,
-        sub: `Latest rolling β = ${lastBeta >= 0 ? "+" : ""}${lastBeta.toFixed(2)}`,
+        sub: `Static β (horizon) = ${beta >= 0 ? "+" : ""}${beta.toFixed(2)} · β × Σ${useLog ? " ln(1+r)" : " r"} over period`,
         info: { name: def.label, definition: def.description, howCalculated: def.howCalculated },
       });
     }
     segs.sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
 
-    let alphaSum = 0;
-    let idioSum = 0;
-    let innerSum = 0;
-    let obs = 0;
-    for (let i = startIdx; i < n; i++) {
-      alphaSum += num(alphaSeries[i]);
-      idioSum += num(residSeries[i]);
-      innerSum += excessSeries[i] ?? 0;
-      obs++;
-    }
+    // Σ y over the period = systematic + alpha + residual (residual is the
+    // plug, so this is an exact identity).
+    const innerSum = factorContribTotal + alphaSum + idioSum;
 
-    // Always compute the legacy arithmetic Σ y_simple over the same window
-    // — even in log mode — so the methodology popover can disclose what the
-    // old headline used to be without changing the primary view.
-    let simpleSum = 0;
-    for (let i = startIdx; i < n; i++) {
-      simpleSum += tsData.excessReturn[i] ?? 0;
+    // Simple-space Σ y over the same period — for the methodology popover.
+    let simpleSum = num(periodSlice.alphaSum) + num(periodSlice.residualSum);
+    for (const code of factors) {
+      const sv = periodSlice.returnByFactor[code];
+      if (sv != null && Number.isFinite(sv)) simpleSum += sv;
     }
 
     const idioSeg: WaterfallSegment = {
@@ -249,41 +232,30 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
       value: idioSum,
       color: "#94a3b8",
       sub: useLog
-        ? "Σ ε_log_t = Σ (y_log − ŷ_log) over post burn-in"
-        : "Σ ε_t = Σ (actual − predicted) over post burn-in",
+        ? "Σ y_log − systematic − α (static-β plug over period)"
+        : "Σ y − systematic − α (static-β plug over period)",
       info: {
         name: "Unexplained Residual",
         definition:
-          "The part of the stock's return not explained by any factor — the regression residual summed over the window. Large unexplained residual means the factor model captures little of this stock's behavior.",
-        howCalculated: "Σ (actual return − predicted return) over the post-burn-in window.",
+          "The part of the stock's period return not explained by the static factor loadings or the static alpha — the realized return minus (Σ β × factor return) minus (α × days). Over the full horizon this is ~0 by OLS; over a shorter period it captures what the static fit missed.",
+        howCalculated: "realized excess − Σ(β × factor return) − (α × days), over the Attribution Period.",
       },
     };
 
     const ratio = Math.abs(innerSum) > 1e-9 ? Math.abs(alphaSum) / Math.abs(innerSum) : 0;
 
-    // Single source of truth for the headline display contract — the helper
-    // also drives the strict-drop fallback banner when the log path is null.
     const headline = pickHeadlineValue({
       arithmeticSum: simpleSum,
       logSum: useLog ? innerSum : null,
     });
 
-    // Geometric TOTAL return (excess + RF compounded) — directly comparable
-    // to broker / Google "1Y return" figures. Only computed in log mode
-    // (where the server populated `sumLogTotalVisible` over the same
-    // [displayStartIndex, n) window we sum here). Null in fallback Path A
-    // where mixing arithmetic excess with RF would not be a valid identity.
-    // `sumLogTotalVisible` is precomputed over the FULL visible window only,
-    // so the RF-inclusive total is valid only when the period slice spans that
-    // whole window. For shorter periods we can't reconstruct the per-day RF
-    // here, so we suppress the Total ≈ sub-line.
+    // Geometric TOTAL return (incl. RF) over this exact period — the
+    // price-based realized total, directly comparable to a broker "1Y return".
+    // Available for any period (it's the slice's price-endpoint ratio), shown
+    // only in log mode where the excess headline is geometric.
+    const totalRet = periodSlice.realizedTotalReturn;
     const geomTotalIncRf =
-      isFullVisibleWindow &&
-      useLog &&
-      tsData.log != null &&
-      Number.isFinite(tsData.log.sumLogTotalVisible)
-        ? Math.exp(tsData.log.sumLogTotalVisible) - 1
-        : null;
+      useLog && totalRet != null && Number.isFinite(totalRet) ? totalRet : null;
 
     return {
       returnSegments: [...segs, idioSeg],
@@ -292,13 +264,14 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
       geometricTotalReturn: headline.useLog ? headline.geometric! : headline.arithmetic,
       geometricTotalReturnIncRf: geomTotalIncRf,
       arithmeticTotalReturn: simpleSum,
+      // Residual is the plug, so the identity closes exactly by construction.
       identitySumGap: innerSum - (factorContribTotal + alphaSum + idioSum),
-      postBurnObs: obs,
+      postBurnObs: periodSlice.observations,
       rollingAlphaToTotalRatio: ratio,
-      windowStartDate: tsData.dates[startIdx] ?? "",
-      windowEndDate: tsData.dates[n - 1] ?? "",
+      windowStartDate: periodSlice.startDate,
+      windowEndDate: periodSlice.endDate,
     };
-  }, [tsData, factors, useLog, attributionPeriod]);
+  }, [row, periodSlice, factors, useLog]);
 
   const riskSegments: WaterfallSegment[] = useMemo(() => {
     if (!row) return [];
@@ -337,28 +310,76 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
   }, [row, factors]);
 
   if (!row) {
+    // No selection at all — render the same placeholder as before.
+    if (!selectedTicker) {
+      return (
+        <div
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--bg-border)",
+            height: "100%",
+            minHeight: 400,
+            padding: 24,
+            color: "var(--text-muted)",
+            fontSize: 12,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            textAlign: "center",
+          }}
+        >
+          Select a stock from the grid to see its full β / return / risk breakdown across all factors.
+        </div>
+      );
+    }
+    // Selected ticker is not present in the universe-wide factor grid (e.g.
+    // insufficient price history for the MACRO14 regression, or filtered out
+    // by sector/sub-theme). Surface what we still can — the live price chart
+    // — and explain why the factor decomposition is missing so the popup
+    // never appears broken when opened from the market map.
     return (
       <div
         style={{
           background: "var(--bg-surface)",
-          border: "1px solid var(--bg-border)",
           height: "100%",
           minHeight: 400,
-          padding: 24,
-          color: "var(--text-muted)",
-          fontSize: 12,
+          overflowY: "auto",
           display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          textAlign: "center",
+          flexDirection: "column",
         }}
       >
-        Select a stock from the grid to see its full β / return / risk breakdown across all factors.
+        <StockPriceChart ticker={selectedTicker} />
+        <div
+          role="status"
+          style={{
+            margin: "12px 14px",
+            padding: "10px 12px",
+            background: "rgba(245,158,11,0.08)",
+            border: "1px solid rgba(245,158,11,0.45)",
+            color: "var(--text-secondary)",
+            fontSize: 12,
+            lineHeight: 1.4,
+            fontFamily:
+              'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
+          }}
+        >
+          <div style={{ color: "#f59e0b", fontWeight: 600, marginBottom: 4 }}>
+            Factor decomposition unavailable for {selectedTicker}
+          </div>
+          This ticker isn&apos;t in the current {data.model} factor grid
+          (likely insufficient price history for the {data.regressionWindow}d
+          regression window, or filtered out by a sector / sub-theme picker on
+          the Factors tab). The price chart above is live; β / return / risk
+          decomposition and the rolling diagnostics will appear once the
+          ticker has enough history to fit.
+        </div>
       </div>
     );
   }
 
-  const returnWaterfallReady = tsData !== null && returnSegments.length > 0;
+  // The waterfall now renders from the snapshot row's period slices, so it no
+  // longer waits on the rolling time-series fetch.
+  const returnWaterfallReady = returnSegments.length > 0;
 
   // Reconciliation strip values (single line, monospace) — Q13 + Q4 lock.
   const reconLine =
@@ -544,13 +565,16 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
               const tNum = modeT ?? Number.NaN;
               const ciNum = modeCi ?? Number.NaN;
               return (
-                `Daily intercept × 252 from the snapshot OLS in ${attributionMode} space. t = ${Number.isFinite(tNum) ? tNum.toFixed(2) : "—"}.\n` +
-                `STATIC (whole-window) — distinct from Σ rolling α_t shown in the waterfall residual.\n\n` +
+                `Daily intercept × 252 from the horizon OLS in ${attributionMode} space. t = ${Number.isFinite(tNum) ? tNum.toFixed(2) : "—"}.\n` +
+                `This is the SAME fit that drives the waterfall's Alpha bar and the grid ALPHA column — ` +
+                `the only difference is units: this headline is the ANNUALIZED RATE (α × 252), while the ` +
+                `waterfall/grid show the PERIOD TOTAL (α × days in the Attribution Period). ` +
+                `So it is period-independent: changing 1D…1Y does not move it.\n\n` +
                 `95 % CI = α ± 1.96 × SE(α) × 252 = ` +
                 `${Number.isFinite(annNum) ? (annNum * 100).toFixed(2) : "—"}% ± ${Number.isFinite(ciNum) ? (ciNum * 100).toFixed(2) : "—"}%.\n` +
                 `Factor z-scoring does not affect this band — α and SE(α) are in y-units (excess return), and the studentised statistic is invariant to factor reparameterisation. With our typical DOF (≈ 250–365) the exact t-critical ≈ 1.97, so z = 1.96 is essentially equivalent.\n\n` +
                 (attributionMode === "log"
-                  ? `Log space: matches the waterfall's Σ α_t (log) segment in scale (rolling sum vs annualised intercept differ by horizon).`
+                  ? `Log space: the waterfall Alpha bar = this α × days; this headline = α × 252.`
                   : `Simple space: for high-vol stocks this can be wildly larger than the log-space static-α (Jensen's inequality on daily residuals). Switch attribution mode to log to align with the waterfall.`) +
                 `\n\nLARGE α may reflect model misspecification rather than skill — check residual scatter for systematic patterns.`
               );
@@ -718,18 +742,18 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
         </div>
         {tsLoading && !tsData && (
           <div style={{ padding: "16px 14px", fontSize: 11, color: "var(--text-muted)" }}>
-            Loading return decomposition (aligned to rolling factor time series)…
+            Loading rolling factor time series (beta-drift chart)…
           </div>
         )}
         {!tsLoading && !tsData && (
-          <div style={{ padding: "16px 14px", fontSize: 11, color: "var(--color-negative)" }}>
-            Could not load factor time series for this window — return waterfall unavailable.
+          <div style={{ padding: "16px 14px", fontSize: 11, color: "var(--text-muted)" }}>
+            Rolling factor time series unavailable for this window — the beta-drift chart below is hidden, but the attribution waterfall above is unaffected.
           </div>
         )}
 
         {returnWaterfallReady && (
           <div style={{ padding: "12px 14px 4px" }}>
-            {!useLog && (
+            {logWantedButUnavailable && (
               <div
                 style={{
                   marginBottom: 8,
@@ -759,21 +783,21 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
                   Excess return attribution
                   <FactorInfoIcon
                     tip={
-                      `Window: ${postBurnObs} / ${data.regressionWindow} trading days (post burn-in).\n\n` +
-                      (postBurnObs < data.regressionWindow
-                        ? `${data.regressionWindow - postBurnObs} day(s) dropped from the requested ${data.regressionWindow}-day display window. ` +
-                          `Strict drop-row policy: dates with any missing factor cell are removed (run scripts/factor-window-coverage.ts ${row.ticker} to inspect).\n\n`
-                        : ``) +
-                      `The first observations of the chart are reserved as a burn-in prefix so the ` +
-                      `rolling regression and factor normalization have a full history before the ` +
-                      `attribution series begins. The chart and this decomposition use the same cut, ` +
-                      `so the bars sum to the value displayed for the visible date range below.\n\n` +
+                      `Attribution Period: ${attributionPeriod} (${postBurnObs} trading days).\n\n` +
+                      `STATIC-BETA decomposition: the betas and intercept come from ONE OLS fit ` +
+                      `over the full ${data.regressionWindow}-day horizon; the Attribution Period only ` +
+                      `restricts the realized sums. Each factor bar = β_horizon × Σ factor return over ` +
+                      `the period; Alpha = α × days; the residual is the plug (realized − systematic − α). ` +
+                      `These are exactly the numbers in the grid row, so the popup and table tie.\n\n` +
+                      `The rolling-60-day betas in the time-series chart below are an illustrative ` +
+                      `drift view only — they are NOT used here (a 60-day, 14-factor regression is too ` +
+                      `noisy to attribute per-factor returns from).\n\n` +
                       (useLog
                         ? `Headline = exp(Σ y_log) − 1 = compounded geometric excess return over ` +
-                          `the window. The per-factor bars are additive in log space only — ` +
+                          `the period. The per-factor bars are additive in log space only — ` +
                           `exp(component) − 1 of an individual factor does NOT sum to the geometric total.`
                         : `Headline = Σ y_simple — arithmetic sum of daily simple excess returns. ` +
-                          `Identity holds daily but the multi-period sum is NOT a compounded total.`)
+                          `Identity holds but the multi-period sum is NOT a compounded total.`)
                     }
                     ariaLabel="Attribution window methodology"
                   />
@@ -789,13 +813,13 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
               segments={returnSegments}
               residual={{
                 key: "alpha",
-                label: useLog ? "Σ α_t (log)" : "Σ rolling α_t",
+                label: useLog ? "Alpha (α × days, log)" : "Alpha (α × days)",
                 value: windowAlpha,
                 color: "#f1f5f9",
                 sub:
                   rollingAlphaToTotalRatio > 0.5
-                    ? `⚠ |Σα|/|Σy| = ${(rollingAlphaToTotalRatio * 100).toFixed(0)}% — large rolling-α drift (possible model misspecification or β instability)`
-                    : `Σ rolling intercepts (post burn-in). Static α (ann.) = ${(row.alphaAnnualized * 100).toFixed(2)}%.`,
+                    ? `⚠ |α|/|Σy| = ${(rollingAlphaToTotalRatio * 100).toFixed(0)}% — alpha dominates the period return (possible model misspecification)`
+                    : `Static intercept × ${postBurnObs} days. Annualized rate = α × 252 = ${(postBurnObs > 0 ? (windowAlpha * 252) / postBurnObs * 100 : 0).toFixed(1)}% (the headline "Static alpha (ann.)" above).`,
               }}
               headlineOverride={
                 useLog ? { value: geometricTotalReturn } : undefined
@@ -813,10 +837,11 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
                     {geometricTotalReturnIncRf != null && (
                       <div
                         title={
-                          `Total return ≈ exp(Σ ln(1 + r_stock)) − 1 over the visible ` +
-                          `${postBurnObs}-day window.\n\n` +
+                          `Total return = price-based realized return over the ` +
+                          `${attributionPeriod} period (${postBurnObs} days) — endpoint ` +
+                          `price ratio, dividend-inclusive.\n\n` +
                           `Identity: Σ ln(1 + r_stock) = Σ y_log + Σ ln(1 + r_f).\n` +
-                          `So this number compounds the per-day RF back onto the ` +
+                          `So this number adds the RF back onto the ` +
                           `excess headline above, giving a figure directly comparable ` +
                           `to a broker / Google "1Y return" (which quotes total, not excess).\n\n` +
                           `Excess (geom.) = ${(geometricTotalReturn * 100).toFixed(2)}%\n` +
@@ -874,18 +899,17 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
               }}
               title={
                 useLog
-                  ? `Log-space daily identity:\n` +
-                    `  Σ y_log − [Σ(β·x_log) + Σα + Σε] = ${(identitySumGap * 100).toFixed(4)}%\n` +
-                    `Should be ≤ 1e-6 (numerical noise).\n\n` +
+                  ? `Log-space period identity (static-β decomposition):\n` +
+                    `  Σ y_log − [Σ(β·Σln(1+r)) + α·days + residual] = ${(identitySumGap * 100).toFixed(4)}%\n` +
+                    `Closes by construction (residual is the plug).\n\n` +
                     `Headline reconciliation:\n` +
                     `  Σ y_log = ${(sumLogInner * 100).toFixed(2)}%\n` +
                     `  exp(Σ y_log) − 1 = ${(geometricTotalReturn * 100).toFixed(2)}% (compounded realized excess)\n\n` +
                     `Bars are additive in log space only; exp(component) − 1 of an ` +
                     `individual factor does NOT sum to the geometric headline.`
-                  : `Arithmetic identity (fallback path):\n` +
-                    `  Σy − [Σ(β·r) + Σα + Σε] = ${(identitySumGap * 100).toFixed(4)}%\n` +
-                    `Should be ≤ 1e-6 (numerical noise). Larger gap indicates a bug or ` +
-                    `burn-in misalignment.`
+                  : `Arithmetic period identity (static-β decomposition):\n` +
+                    `  Σy − [Σ(β·Σr) + α·days + residual] = ${(identitySumGap * 100).toFixed(4)}%\n` +
+                    `Closes by construction (residual is the plug).`
               }
             >
               <span
@@ -900,11 +924,11 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
                 {Math.abs(identitySumGap) < 1e-6 ? "✓" : "⚠"}
               </span>
               <span>
-                Daily identity {Math.abs(identitySumGap) < 1e-6 ? "closes" : "open"}
+                Period identity {Math.abs(identitySumGap) < 1e-6 ? "closes" : "open"}
                 {" "}
                 {useLog
-                  ? `(log space; bars sum to inner Σ y_log)`
-                  : `(arithmetic; residual ${(identitySumGap * 100).toFixed(4)}%)`}
+                  ? `(static β · log space; bars sum to Σ y_log)`
+                  : `(static β · arithmetic; residual ${(identitySumGap * 100).toFixed(4)}%)`}
               </span>
             </div>
           </div>

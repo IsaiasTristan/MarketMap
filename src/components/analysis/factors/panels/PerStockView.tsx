@@ -36,6 +36,7 @@ export function PerStockView() {
     factorModel,
     factorWindow,
     factorPeriod,
+    factorAttributionMode,
     factorGridMetric,
     factorGridStat,
     openFactorDetailPanels,
@@ -164,6 +165,7 @@ export function PerStockView() {
       factors,
       metric: factorGridMetric,
       filters: factorScreenerFilters,
+      mode: factorAttributionMode,
     });
   }, [
     data,
@@ -171,6 +173,7 @@ export function PerStockView() {
     factorSectorHeatmapEnabled,
     factorScreenerFilters,
     factorGridMetric,
+    factorAttributionMode,
   ]);
 
   if (isLoading) {

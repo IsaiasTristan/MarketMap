@@ -417,6 +417,25 @@ model PerStockGridSnapshot {
   @@index([model, regressionWindow])
 }
 
+/// Precomputed rolling factor-beta history for a portfolio, keyed by
+/// (portfolioId, model, regressionWindow). Built by the daily job from the
+/// engine's rolling OLS series (one beta vector per trading day over the
+/// trailing window). Lets the Attribution tab's "Rolling Factor Betas" chart
+/// load instantly from storage instead of recomputing per page view. One row
+/// per (portfolioId, model, regressionWindow), overwritten each run.
+model FactorRollingBetaSnapshot {
+  id               String   @id @default(cuid())
+  portfolioId      String
+  model            String
+  regressionWindow Int
+  asOfDate         DateTime @db.Date
+  seriesJson       Json
+  computedAt       DateTime @default(now())
+
+  @@unique([portfolioId, model, regressionWindow])
+  @@index([portfolioId, model, regressionWindow])
+}
+
 // --- Operations ---
 
 model RefreshJob {

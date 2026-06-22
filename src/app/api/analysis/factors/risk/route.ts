@@ -17,14 +17,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { portfolioId, model, window: win, ew } = parsed.data;
+  const { portfolioId, model, window: win } = parsed.data;
   const guard = await requirePortfolioAccess(req, portfolioId);
   if (guard) return guard;
   const engineResult = await runFactorEngine({
     portfolioId,
     model: model as ModelPresetName,
     window: win,
-    ewHalfLife: ew,
   });
 
   if (!engineResult) {
@@ -34,5 +33,12 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  return NextResponse.json(engineResult.risk);
+  // Spread `windowCoverage` onto the risk payload so the Risk tab can render
+  // its discrete coverage warning chip naming holdings excluded / short on
+  // data inside the trailing risk window. Additive — existing consumers
+  // typed as `RiskDecomposition` simply ignore the extra field.
+  return NextResponse.json({
+    ...engineResult.risk,
+    windowCoverage: engineResult.windowCoverage,
+  });
 }

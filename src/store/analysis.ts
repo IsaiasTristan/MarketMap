@@ -20,6 +20,14 @@ export type FactorWindow = 63 | 252 | 504 | 756;
  * sample, applied to a recent slice). Options are trailing horizons.
  */
 export type FactorPeriod = "1D" | "5D" | "1M" | "3M" | "6M" | "1Y";
+/**
+ * Trailing window (in trading days) used by the Risk tab Euler variance
+ * decomposition. Decoupled from HORIZON (`FactorWindow`) so a user can ask
+ * "what does my risk look like over the last 1M / 6M / 1Y / 2Y / 5Y?"
+ * without disturbing exposure/attribution betas, which are fit on the
+ * HORIZON sample.
+ */
+export type FactorRiskWindow = 21 | 126 | 252 | 504 | 1260;
 export type FactorTsRollingWindow = 30 | 60 | 90 | 252 | "match";
 
 /** Top-level Factors-tab view (Portfolio aggregate vs per-stock grid vs correlations). */
@@ -140,8 +148,8 @@ interface AnalysisState {
   // Factor analysis settings (persisted)
   factorModel: FactorModelPreset;
   factorWindow: FactorWindow;
-  factorEwHalfLife: number | null;
   factorPeriod: FactorPeriod;
+  factorRiskWindow: FactorRiskWindow;
   factorView: FactorView;
   factorGridMetric: FactorGridMetric;
   factorGridStat: FactorGridStat;
@@ -196,8 +204,8 @@ interface AnalysisState {
   dismissToast: (id: string) => void;
   setFactorModel: (m: FactorModelPreset) => void;
   setFactorWindow: (w: FactorWindow) => void;
-  setFactorEwHalfLife: (hl: number | null) => void;
   setFactorPeriod: (p: FactorPeriod) => void;
+  setFactorRiskWindow: (w: FactorRiskWindow) => void;
   setFactorView: (v: FactorView) => void;
   setFactorGridMetric: (m: FactorGridMetric) => void;
   setFactorGridStat: (s: FactorGridStat) => void;
@@ -265,8 +273,8 @@ export const useAnalysisStore = create<AnalysisState>()(
       toasts: [],
       factorModel: "MACRO14",
       factorWindow: 252,
-      factorEwHalfLife: null,
       factorPeriod: "1Y",
+      factorRiskWindow: 252,
       factorView: "portfolio",
       factorGridMetric: "beta",
       factorGridStat: "value",
@@ -293,8 +301,8 @@ export const useAnalysisStore = create<AnalysisState>()(
         set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
       setFactorModel: (factorModel) => set({ factorModel }),
       setFactorWindow: (factorWindow) => set({ factorWindow }),
-      setFactorEwHalfLife: (factorEwHalfLife) => set({ factorEwHalfLife }),
       setFactorPeriod: (factorPeriod) => set({ factorPeriod }),
+      setFactorRiskWindow: (factorRiskWindow) => set({ factorRiskWindow }),
       setFactorView: (factorView) => set({ factorView }),
       setFactorGridMetric: (factorGridMetric) =>
         // Risk × T/CI is ill-defined — auto-flip Stat back to Value when the
@@ -436,15 +444,21 @@ export const useAnalysisStore = create<AnalysisState>()(
       // v11 (2026-06-13): HORIZON presets — factorWindow constrained to
       // {63,252,504,756}; attribution periods switched to 1D/5D/1M/3M/6M/1Y.
       // Legacy windows reseed to 252 (Standard); legacy periods reseed to 1Y.
-      version: 11,
+      // v12 (2026-06-21): dead EWMA path removed. factorEwHalfLife was always
+      // null in practice (no UI control), so we drop the persisted key from
+      // any prior session to keep the persisted shape aligned with the type.
+      // v13 (2026-06-21): added factorRiskWindow (1M/6M/1Y/2Y/5Y in trading
+      // days) — a decoupled Risk-tab window. Defaults to 252 (1Y); invalid
+      // legacy values reseed to the same default.
+      version: 13,
       partialize: (s) => ({
         activePortfolioId: s.activePortfolioId,
         dateRange: s.dateRange,
         onboardingDone: s.onboardingDone,
         factorModel: s.factorModel,
         factorWindow: s.factorWindow,
-        factorEwHalfLife: s.factorEwHalfLife,
         factorPeriod: s.factorPeriod,
+        factorRiskWindow: s.factorRiskWindow,
         factorView: s.factorView,
         factorGridMetric: s.factorGridMetric,
         factorGridStat: s.factorGridStat,
@@ -516,6 +530,15 @@ export const useAnalysisStore = create<AnalysisState>()(
           const validPeriods = ["1D", "5D", "1M", "3M", "6M", "1Y"];
           if (!validPeriods.includes(next.factorPeriod as string)) {
             next.factorPeriod = "1Y";
+          }
+        }
+        if (version < 12) {
+          delete next.factorEwHalfLife;
+        }
+        if (version < 13) {
+          const validRiskWindows = [21, 126, 252, 504, 1260];
+          if (!validRiskWindows.includes(next.factorRiskWindow as number)) {
+            next.factorRiskWindow = 252;
           }
         }
         return next;

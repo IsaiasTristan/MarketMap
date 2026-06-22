@@ -20,6 +20,10 @@ import {
   precomputeAllPerStockGrids,
   type GridPrecomputeEntry,
 } from "./factor-per-stock-cache.service";
+import {
+  precomputeAllPortfolioRollingBetas,
+  type RollingBetaPrecomputeEntry,
+} from "./factor-rolling-cache.service";
 
 export interface DailyPrecomputeSummary {
   startedAt: string;
@@ -36,6 +40,7 @@ export interface DailyPrecomputeSummary {
     macroError?: string;
   };
   grids: GridPrecomputeEntry[];
+  rollingBetas: RollingBetaPrecomputeEntry[];
 }
 
 /**
@@ -46,6 +51,8 @@ export interface DailyPrecomputeSummary {
  *      trading sessions so prices reach the last close.
  *   2. Factor pipeline refresh (Fama-French + Macro, in parallel).
  *   3. Per-stock grid precompute for every (model, window) the UI exposes.
+ *   4. Rolling factor-beta series precompute for every portfolio × (model,
+ *      window) — powers the Attribution tab's "Rolling Factor Betas" chart.
  *
  * Never throws on per-step failures — failures are recorded in the summary so
  * the caller can decide what to do. Throws only on hard preconditions (no
@@ -119,6 +126,13 @@ export async function runDailyPrecompute(
     );
   }
 
+  // --- Step 4: portfolio rolling factor-beta precompute --------------------
+  const rolling = await precomputeAllPortfolioRollingBetas();
+  const rollingOk = rolling.entries.filter((e) => e.status === "ok").length;
+  log(
+    `[daily-precompute] rolling betas: ${rollingOk}/${rolling.entries.length} portfolio×(model,window) series cached in ${(rolling.totalMs / 1000).toFixed(1)}s.`,
+  );
+
   const finishedAt = new Date();
   const totalMs = finishedAt.getTime() - startedAt.getTime();
   log(
@@ -138,5 +152,6 @@ export async function runDailyPrecompute(
         macro.status === "rejected" ? (macro.reason as Error).message : undefined,
     },
     grids: grid.entries,
+    rollingBetas: rolling.entries,
   };
 }

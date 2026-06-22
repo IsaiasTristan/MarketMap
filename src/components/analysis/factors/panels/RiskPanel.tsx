@@ -2,7 +2,11 @@
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
 import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import { MethodologyTooltip } from "../shared/MethodologyTooltip";
+import { Segmented } from "../shared/Segmented";
+import { CoverageWarning } from "./CoverageWarning";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
+import { RISK_WINDOW_PRESETS } from "@/lib/factors/definitions/risk-window-presets";
+import { useAnalysisStore, type FactorRiskWindow } from "@/store/analysis";
 import type { RiskDecomposition, FactorCode } from "@/types/factors";
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
@@ -10,8 +14,65 @@ interface RiskPanelProps {
   risk: RiskDecomposition | null | undefined;
 }
 
+const labelStyle: React.CSSProperties = {
+  color: "var(--text-muted)",
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+  fontSize: 10,
+  fontWeight: 600,
+};
+
 export function RiskPanel({ risk }: RiskPanelProps) {
-  if (!risk) return null;
+  const { factorRiskWindow, setFactorRiskWindow } = useAnalysisStore();
+
+  // Header row — Risk Window segmented control + coverage chip. Rendered
+  // even when the regression failed for the selected window so the user can
+  // pivot back to a shorter window without leaving the tab.
+  const header = (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        flexWrap: "wrap",
+      }}
+    >
+      <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <span style={labelStyle}>Risk Window</span>
+        <Segmented<string>
+          value={String(factorRiskWindow)}
+          onChange={(v) => setFactorRiskWindow(Number(v) as FactorRiskWindow)}
+          options={RISK_WINDOW_PRESETS.map((p) => ({
+            value: String(p.value),
+            label: p.label,
+            title: `${p.sub} trailing window (${p.value} trading days)`,
+          }))}
+        />
+      </div>
+      <CoverageWarning coverage={risk?.windowCoverage} failed={!risk} />
+    </div>
+  );
+
+  if (!risk) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {header}
+        <div
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--bg-border)",
+            padding: "16px 18px",
+            fontSize: 12,
+            color: "var(--text-secondary)",
+            lineHeight: 1.5,
+          }}
+        >
+          Not enough aligned data to estimate factor risk over the selected window.
+          Try a shorter Risk Window above, or refresh the factor pipeline.
+        </div>
+      </div>
+    );
+  }
 
   const pieData = [
     { name: "Systematic", value: risk.systematicShare * 100 },
@@ -23,6 +84,8 @@ export function RiskPanel({ risk }: RiskPanelProps) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {header}
+
       {/* Summary cards row */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
         {[

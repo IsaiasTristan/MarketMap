@@ -3,9 +3,9 @@
  * rolling history for the exposure time-series chart.
  *
  * Snapshots store the end-of-period factor betas + diagnostics for a given
- * (portfolioId, asOfDate, modelName) combination. They power:
- *   - The "Exposure Over Time" chart (history API)
- *   - Drift alert detection (alerts service)
+ * (portfolioId, asOfDate, modelName) combination. They power drift alert
+ * detection (alerts service). The "Rolling Factor Betas" chart is served from
+ * the precomputed rolling series in factor-rolling-cache.service instead.
  */
 import type { Prisma } from "@prisma/client";
 import { prisma as db } from "@/infrastructure/db/client";
@@ -77,45 +77,6 @@ export async function persistFactorSnapshot(
       data: { portfolioId, asOfDate: dateObj, modelName: model, factorsJson: json },
     });
   }
-}
-
-/**
- * Read the rolling exposure history for a portfolio.
- * Returns up to `limit` most-recent snapshots ordered ascending by date.
- */
-export async function getExposureHistory(
-  portfolioId: string,
-  model: string,
-  limit = 252,
-): Promise<{
-  dates: string[];
-  series: Record<string, number[]>;
-  alphas: number[];
-  rSquareds: number[];
-}> {
-  const rows = await db.factorExposureSnapshot.findMany({
-    where: { portfolioId, modelName: model },
-    orderBy: { asOfDate: "asc" },
-    take: limit,
-  });
-
-  const dates: string[] = [];
-  const series: Record<string, number[]> = {};
-  const alphas: number[] = [];
-  const rSquareds: number[] = [];
-
-  for (const row of rows) {
-    dates.push(row.asOfDate.toISOString().slice(0, 10));
-    const json = row.factorsJson as unknown as SnapshotJson;
-    alphas.push(json.alpha ?? 0);
-    rSquareds.push(json.rSquared ?? 0);
-    for (const [code, beta] of Object.entries(json.betas ?? {})) {
-      if (!series[code]) series[code] = [];
-      series[code]!.push(beta);
-    }
-  }
-
-  return { dates, series, alphas, rSquareds };
 }
 
 /**

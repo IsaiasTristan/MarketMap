@@ -16,6 +16,7 @@ import { PerStockView } from "./panels/PerStockView";
 import { CorrelationsView } from "./panels/CorrelationsView";
 import { PortfolioTotalsPanel } from "./panels/PortfolioTotalsPanel";
 import { PortfolioFactorGrid } from "./panels/PortfolioFactorGrid";
+import { CoverageWarning } from "./panels/CoverageWarning";
 import { FloatingPortfolioDetail } from "./panels/FloatingPortfolioDetail";
 import { FloatingPerStockDetail } from "./panels/FloatingPerStockDetail";
 import { BloombergTabStrip } from "@/components/analysis/BloombergTabStrip";
@@ -36,8 +37,8 @@ const PORTFOLIO_TABS: { key: PortfolioTab; label: string }[] = [
   { key: "alerts", label: "Alerts" },
 ];
 
-function factorParams(model: string, win: number, ew: number | null) {
-  return `model=${model}&window=${win}${ew ? `&ew=${ew}` : ""}`;
+function factorParams(model: string, win: number) {
+  return `model=${model}&window=${win}`;
 }
 
 export function FactorsClient() {
@@ -45,8 +46,8 @@ export function FactorsClient() {
     activePortfolioId,
     factorModel,
     factorWindow,
-    factorEwHalfLife,
     factorPeriod,
+    factorRiskWindow,
     factorView,
     factorGridMetric,
     factorGridSectorFilter,
@@ -75,13 +76,13 @@ export function FactorsClient() {
     }
   }, [factorModel, setFactorModel]);
 
-  const params = factorParams(factorModel, factorWindow, factorEwHalfLife);
+  const params = factorParams(factorModel, factorWindow);
   const baseUrl = `/api/analysis/factors`;
   const portfolioEnabled = factorView === "portfolio" && !!activePortfolioId;
 
   // Exposure (always fetched in portfolio mode)
   const { data: exposure, isLoading: exposureLoading, error: exposureError } = useQuery<FactorExposureSnapshot>({
-    queryKey: ["factor-exposure", activePortfolioId, factorModel, factorWindow, factorEwHalfLife],
+    queryKey: ["factor-exposure", activePortfolioId, factorModel, factorWindow],
     queryFn: () =>
       fetch(`${baseUrl}/exposure?portfolioId=${activePortfolioId}&${params}`)
         .then((r) => r.json()),
@@ -105,12 +106,15 @@ export function FactorsClient() {
     staleTime: 5 * 60_000,
   });
 
-  // Exposure history (for time-series panel)
+  // Rolling factor-beta history (for the time-series panel). Window-aware so
+  // the rolling series matches the selected HORIZON; served cache-first from
+  // the daily-precomputed FactorRollingBetaSnapshot.
   const { data: history } = useQuery({
-    queryKey: ["factor-history", activePortfolioId, factorModel],
+    queryKey: ["factor-history", activePortfolioId, factorModel, factorWindow],
     queryFn: () =>
-      fetch(`${baseUrl}/exposure/history?portfolioId=${activePortfolioId}&model=${factorModel}`)
-        .then((r) => r.json()),
+      fetch(
+        `${baseUrl}/exposure/history?portfolioId=${activePortfolioId}&model=${factorModel}&window=${factorWindow}`,
+      ).then((r) => r.json()),
     enabled: portfolioEnabled && activeTab === "attribution",
     staleTime: 5 * 60_000,
   });
@@ -127,6 +131,24 @@ export function FactorsClient() {
         r.ok ? (r.json() as Promise<RiskDecomposition>) : null,
       ),
     enabled: portfolioEnabled,
+    staleTime: 5 * 60_000,
+  });
+
+  // Risk-tab-only: a separate fetch keyed on the user-selected Risk Window
+  // (1M/6M/1Y/2Y/5Y in trading days). Decoupled from HORIZON so the variance
+  // waterfall above the tabs + the Exposure / Attribution tabs all stay on
+  // the HORIZON sample while the Risk tab re-estimates the Euler
+  // decomposition over the user's chosen trailing window. Lazy — only fired
+  // when the Risk tab is active. Resolves non-200 to null, matching the
+  // primary risk query, so a recent IPO or insufficient history surfaces
+  // through the CoverageWarning chip rather than throwing.
+  const { data: riskWindowed } = useQuery<RiskDecomposition | null>({
+    queryKey: ["factor-risk-window", activePortfolioId, factorModel, factorRiskWindow],
+    queryFn: () =>
+      fetch(
+        `${baseUrl}/risk?portfolioId=${activePortfolioId}&model=${factorModel}&window=${factorRiskWindow}`,
+      ).then((r) => (r.ok ? (r.json() as Promise<RiskDecomposition>) : null)),
+    enabled: portfolioEnabled && activeTab === "risk",
     staleTime: 5 * 60_000,
   });
 
@@ -193,6 +215,12 @@ export function FactorsClient() {
     exposure &&
     "error" in (exposure as unknown as Record<string, unknown>);
 
+  // Coverage diagnostics ride on BOTH the success snapshot and the 422 error
+  // body, so the warning chip can name the culprit holdings either way.
+  const coverageDiag =
+    (exposure as unknown as { coverage?: import("@/types/factors").PortfolioCoverageDiagnostics | null })
+      ?.coverage ?? null;
+
   const showPortfolioEmptyState = factorView === "portfolio" && !activePortfolioId;
 
   return (
@@ -239,21 +267,8 @@ export function FactorsClient() {
 
       {factorView === "portfolio" && !showPortfolioEmptyState && (
         <>
-          {insufficientData && (
-            <div
-              style={{
-                padding: "10px 16px",
-                background: "rgba(245,158,11,0.06)",
-                border: "1px solid rgba(245,158,11,0.25)",
-                borderRadius: 2,
-                fontSize: 13,
-                color: "var(--color-warning)",
-              }}
-            >
-              Not enough data for factor regression. Need at least{" "}
-              <strong>2k + 30 aligned trading days</strong> between your portfolio and the factor return
-              series. Add positions or wait for more price history, then refresh the factor data pipeline.
-            </div>
+          {(insufficientData || coverageDiag) && (
+            <CoverageWarning coverage={coverageDiag} failed={!!insufficientData} />
           )}
 
           {exposureLoading ? (
@@ -315,7 +330,7 @@ export function FactorsClient() {
                 attribution={attribution}
               />
             )}
-            {activeTab === "risk" && <RiskPanel risk={risk} />}
+            {activeTab === "risk" && <RiskPanel risk={riskWindowed} />}
             {activeTab === "drivers" && (
               <DriversPanel
                 drivers={drivers}

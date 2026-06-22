@@ -26,6 +26,7 @@ import {
 } from "@/domain/calculations/heatmap";
 import {
   useAnalysisStore,
+  type FactorAttributionMode,
   type FactorGridMetric,
   type FactorGridStat,
   type FactorPeriod,
@@ -118,10 +119,19 @@ const SUMMARY_LABELS: Record<SummarySortKey, string> = {
   residual: "Unexplained",
 };
 
-function pickValue(cell: PerStockFactorCell | undefined, metric: FactorGridMetric): number | null {
+function pickValue(
+  cell: PerStockFactorCell | undefined,
+  metric: FactorGridMetric,
+  mode: FactorAttributionMode,
+): number | null {
   if (!cell) return null;
   if (metric === "beta") return cell.beta;
-  if (metric === "return") return cell.returnContribution;
+  if (metric === "return") {
+    // Log mode shows the static log-OLS factor contribution so the grid
+    // factor column ties to the per-stock waterfall's log-space bar.
+    if (mode === "log") return cell.returnContributionLog ?? cell.returnContribution;
+    return cell.returnContribution;
+  }
   return cell.riskContribution;
 }
 
@@ -152,24 +162,38 @@ function ciHalfFromValueAndT(value: number, tStat: number): number | null {
   return Math.abs(value / tStat) * 1.96;
 }
 
-/** Stat-aware lookup for per-holding rows (mirrors PerStockGrid). */
-function summaryValue(row: PerStockRow, key: SummarySortKey, stat: FactorGridStat): number | null {
+/**
+ * Stat-aware, mode-aware lookup for per-holding rows (mirrors PerStockGrid).
+ *
+ * Alpha / Unexplained VALUE now read the static-horizon-beta period sums
+ * (`rollingAlphaPostBurnSum*` / `rollingResidualPostBurnSum*` are overwritten
+ * by the route's period overlay with the static-beta slice values), routed to
+ * the log fields when attribution mode = "log" (the default) so the grid ties
+ * to the per-stock waterfall. T / CI stay on the static snapshot-OLS stats.
+ */
+function summaryValue(
+  row: PerStockRow,
+  key: SummarySortKey,
+  stat: FactorGridStat,
+  mode: FactorAttributionMode,
+): number | null {
   // Total Return is stat-invariant — the realized period total stock return
   // (price-based, geometric, dividend-inclusive), already overlaid to the
   // active Attribution Period by the per-stock route.
   if (key === "totalReturn") return row.realizedTotalReturn;
   if (key === "rSquared") return row.rSquared;
   if (key === "realizedVol") return row.realizedAnnualizedVol;
+  const useLog = mode === "log";
   if (key === "alpha") {
-    if (stat === "t") return row.alphaTStat;
+    if (stat === "t") return useLog ? row.alphaTStatLog : row.alphaTStat;
     if (stat === "ci") return row.alphaCi95Half > 0 ? row.alphaCi95Half : null;
-    return row.rollingAlphaPostBurnSum;
+    return useLog ? row.rollingAlphaPostBurnSumLog : row.rollingAlphaPostBurnSum;
   }
   // residual
-  if (stat === "t") return row.residualTStat;
+  if (stat === "t") return useLog ? row.residualTStatLog : row.residualTStat;
   if (stat === "ci")
     return row.residualCi95Half != null && row.residualCi95Half > 0 ? row.residualCi95Half : null;
-  return row.rollingResidualPostBurnSum;
+  return useLog ? row.rollingResidualPostBurnSumLog : row.rollingResidualPostBurnSum;
 }
 
 function formatSummaryValue(v: number | null, key: SummarySortKey, stat: FactorGridStat): string {
@@ -191,16 +215,17 @@ function factorCellShownValue(
   cell: PerStockFactorCell | undefined,
   metric: FactorGridMetric,
   stat: FactorGridStat,
+  mode: FactorAttributionMode,
 ): number | null {
   if (!cell) return null;
   if (stat === "t") return cell.tStat;
   if (stat === "ci") {
     if (metric === "risk") return null;
-    const base = pickValue(cell, metric);
+    const base = pickValue(cell, metric, mode);
     if (base === null) return null;
     return ciHalfFromValueAndT(base, cell.tStat);
   }
-  return pickValue(cell, metric);
+  return pickValue(cell, metric, mode);
 }
 
 const headerCellStyle: React.CSSProperties = {
@@ -271,6 +296,7 @@ function buildTotalRow(
   weightByTicker: Map<string, number>,
   factors: FactorCode[],
   metric: FactorGridMetric,
+  mode: FactorAttributionMode,
   exposure: FactorExposureSnapshot | null,
 ): TotalRow {
   const cellValue: TotalRow["cellValue"] = {};
@@ -287,7 +313,7 @@ function buildTotalRow(
       let any = false;
       for (const row of filteredRows) {
         const w = weightByTicker.get(row.ticker) ?? 0;
-        const v = pickValue(row.cells[code], metric);
+        const v = pickValue(row.cells[code], metric, mode);
         if (v === null || !Number.isFinite(v)) continue;
         total += w * v;
         any = true;
@@ -393,6 +419,7 @@ function compareRows(
   key: GridSortKey,
   metric: FactorGridMetric,
   stat: FactorGridStat,
+  mode: FactorAttributionMode,
   dir: "asc" | "desc",
 ): number {
   if (key === "ticker") {
@@ -414,11 +441,11 @@ function compareRows(
   }
   const isSummary = (SUMMARY_KEYS as readonly string[]).includes(key as string);
   const va = isSummary
-    ? summaryValue(a, key as SummarySortKey, stat)
-    : factorCellShownValue(a.cells[key as FactorCode], metric, stat);
+    ? summaryValue(a, key as SummarySortKey, stat, mode)
+    : factorCellShownValue(a.cells[key as FactorCode], metric, stat, mode);
   const vb = isSummary
-    ? summaryValue(b, key as SummarySortKey, stat)
-    : factorCellShownValue(b.cells[key as FactorCode], metric, stat);
+    ? summaryValue(b, key as SummarySortKey, stat, mode)
+    : factorCellShownValue(b.cells[key as FactorCode], metric, stat, mode);
   const na = va === null || !Number.isFinite(va);
   const nb = vb === null || !Number.isFinite(vb);
   if (na && nb) return a.ticker.localeCompare(b.ticker);
@@ -505,13 +532,15 @@ export function PortfolioFactorGrid({
   const sortedRows = useMemo(() => {
     const rows = [...filteredRows];
     if (!sortBy) return rows;
-    rows.sort((a, b) => compareRows(a, b, signedWeightByTicker, sortBy.key, metric, stat, sortBy.dir));
+    rows.sort((a, b) =>
+      compareRows(a, b, signedWeightByTicker, sortBy.key, metric, stat, attributionMode, sortBy.dir),
+    );
     return rows;
-  }, [filteredRows, sortBy, metric, stat, signedWeightByTicker]);
+  }, [filteredRows, sortBy, metric, stat, attributionMode, signedWeightByTicker]);
 
   const totalRow = useMemo(
-    () => buildTotalRow(filteredRows, signedWeightByTicker, factors, metric, exposure),
-    [filteredRows, signedWeightByTicker, factors, metric, exposure],
+    () => buildTotalRow(filteredRows, signedWeightByTicker, factors, metric, attributionMode, exposure),
+    [filteredRows, signedWeightByTicker, factors, metric, attributionMode, exposure],
   );
 
   // Heatmap span — anchor on max |value-mode magnitude| across stock rows
@@ -521,7 +550,7 @@ export function PortfolioFactorGrid({
     for (const f of factors) {
       let max = 0;
       for (const r of filteredRows) {
-        const v = pickValue(r.cells[f], metric);
+        const v = pickValue(r.cells[f], metric, attributionMode);
         if (v !== null && Number.isFinite(v) && Math.abs(v) > max) max = Math.abs(v);
       }
       const tot = totalRow.cellValue[f];
@@ -531,7 +560,7 @@ export function PortfolioFactorGrid({
       m.set(f, Math.max(max, 1e-6));
     }
     return m;
-  }, [factors, filteredRows, metric, totalRow]);
+  }, [factors, filteredRows, metric, attributionMode, totalRow]);
 
   const summarySpans = useMemo(() => {
     const out: Record<SummarySortKey, number> = {
@@ -545,13 +574,13 @@ export function PortfolioFactorGrid({
       let max = 0;
       // Always read in value mode so the heat scale is stable across STAT toggle.
       for (const r of filteredRows) {
-        const v = summaryValue(r, k, "value");
+        const v = summaryValue(r, k, "value", attributionMode);
         if (v !== null && Number.isFinite(v) && Math.abs(v) > max) max = Math.abs(v);
       }
       out[k] = Math.max(max, 1e-6);
     }
     return out;
-  }, [filteredRows]);
+  }, [filteredRows, attributionMode]);
 
   const headerButtonBase: React.CSSProperties = {
     width: "100%",
@@ -841,7 +870,7 @@ export function PortfolioFactorGrid({
                   {`${signed >= 0 ? "+" : ""}${(signed * 100).toFixed(1)}%`}
                 </td>
                 {SUMMARY_KEYS.map((k, idx) => {
-                  const v = summaryValue(row, k, stat);
+                  const v = summaryValue(row, k, stat, attributionMode);
                   const isLastSummary = idx === SUMMARY_KEYS.length - 1;
                   const bg = ((): string => {
                     if (v === null || !Number.isFinite(v)) return "rgba(255,255,255,0.02)";
@@ -895,7 +924,7 @@ export function PortfolioFactorGrid({
                 })}
                 {factors.map((code) => {
                   const cell = row.cells[code];
-                  const value = factorCellShownValue(cell, metric, stat);
+                  const value = factorCellShownValue(cell, metric, stat, attributionMode);
                   const span = colSpans.get(code) ?? 1;
                   const bg = ((): string => {
                     if (value === null || !Number.isFinite(value))

@@ -338,8 +338,17 @@ export function PerStockTimeSeries({
           flexWrap: "wrap",
         }}
       >
-        <div style={headerStyle}>
-          {ticker} · Factor Time Series
+        <div
+          style={{ ...headerStyle, cursor: "help" }}
+          title={
+            `Rolling ${data?.rollingWindow ?? 60}-day factor regression — an ILLUSTRATIVE beta-drift view only.\n\n` +
+            `These rolling betas are NOT used for the attribution waterfall or the grid columns ` +
+            `above: those use a single static fit over the full horizon (a 60-day, 14-factor ` +
+            `regression is too noisy to attribute per-factor returns from). Use this chart to see ` +
+            `HOW the loadings move over time, not to read precise contribution numbers.`
+          }
+        >
+          {ticker} · Factor Time Series (rolling β drift)
           {data && (
             <span style={{ marginLeft: 8, color: "var(--text-secondary)", fontWeight: 500 }}>
               · rolling W = {data.rollingWindow}d · display W = {snapshotWindow}d · visible{" "}

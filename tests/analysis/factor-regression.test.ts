@@ -3,7 +3,6 @@
  */
 import { describe, it, expect } from "vitest";
 import { multivariateOls } from "../../src/lib/factors/regression/ols";
-import { exponentialWeights } from "../../src/lib/factors/regression/weights";
 
 // Helper: generate synthetic data from known betas
 function syntheticData(
@@ -82,25 +81,6 @@ describe("multivariateOls", () => {
     expect(isFinite(fit.rSquared)).toBe(true);
   });
 
-  it("applies exponential weights (newer obs matter more)", () => {
-    const n = 100;
-    // Early observations pulled in one direction, late ones in another
-    const X: number[][] = Array.from({ length: n }, () => [(Math.random() - 0.5) * 0.02]);
-    const trueEarly = -1.0;
-    const trueLate = 2.0;
-    const y = X.map((row, i) => {
-      const beta = i < 50 ? trueEarly : trueLate;
-      return beta * row[0]!;
-    });
-
-    const uniformFit = multivariateOls(y, X);
-    const ewWeights = exponentialWeights(n, 20); // very short half-life → recent dominates
-    const ewFit = multivariateOls(y, X, ewWeights);
-
-    // EW fit should be pulled more toward trueLate
-    expect(Math.abs(ewFit.betas[0]! - trueLate)).toBeLessThan(Math.abs(uniformFit.betas[0]! - trueLate));
-  });
-
   it("computes t-stats with correct sign and returns significant results for strong signal", () => {
     const n = 252;
     const X: number[][] = Array.from({ length: n }, () => [(Math.random() - 0.5) * 0.02]);
@@ -119,26 +99,5 @@ describe("multivariateOls", () => {
     expect(fit.rSquared).toBeGreaterThanOrEqual(0);
     expect(fit.rSquared).toBeLessThanOrEqual(1);
     expect(fit.adjRSquared).toBeLessThanOrEqual(fit.rSquared);
-  });
-});
-
-describe("exponentialWeights", () => {
-  it("returns uniform weights when halfLife is null", () => {
-    const w = exponentialWeights(10, null);
-    expect(w.every((x) => x === 1)).toBe(true);
-  });
-
-  it("newest observation has highest weight", () => {
-    const w = exponentialWeights(10, 3);
-    expect(w[9]).toBeGreaterThan(w[0]!);
-  });
-
-  it("weight decays at correct half-life", () => {
-    const hl = 10;
-    const n = 21; // positions 0..20
-    const w = exponentialWeights(n, hl);
-    // weight at index (n-1-hl) should be ~0.5 × weight at index (n-1)
-    const ratio = w[n - 1 - hl]! / w[n - 1]!;
-    expect(ratio).toBeCloseTo(0.5, 3);
   });
 });

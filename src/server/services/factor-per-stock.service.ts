@@ -39,6 +39,7 @@ import {
   resolvePeriodSlice,
   type PeriodLabel,
 } from "@/lib/factors/attribution/period";
+import { computeStaticBetaPeriodSlice } from "@/lib/factors/attribution/static-beta-period";
 import { factorCovarianceMatrix } from "@/lib/factors/risk/covariance";
 import { computeRiskDecomposition } from "@/lib/factors/risk/decomposition";
 import { computeFactorCoverage } from "@/lib/factors/regression/coverage";
@@ -72,11 +73,19 @@ export interface PerStockFactorCell {
   beta: number;
   tStat: number;
   /**
-   * Return contribution: β × Σ_t r_{t,f} (additive, daily-summed).
-   * Decimal (0.05 = 5%). Matches the rolling additive series in the
-   * per-stock time series chart by construction.
+   * Return contribution (simple space): β_simple × Σ_t r_{t,f} (additive,
+   * daily-summed). Decimal (0.05 = 5%). Uses the static horizon-window OLS
+   * loading. Shown by the grid when attribution mode = "simple".
    */
   returnContribution: number;
+  /**
+   * Return contribution (log space): β_log × Σ_t ln(1 + r_{t,f}) using the
+   * static horizon-window log-OLS loading. Decimal. Shown by the grid when
+   * attribution mode = "log" (the default) so the grid factor column matches
+   * the per-stock waterfall's log-space factor bar by construction. Null when
+   * the log path failed for this stock (rare — a factor return ≤ -100%).
+   */
+  returnContributionLog: number | null;
   /**
    * Legacy geometric variant: β × (Π(1+r_t) − 1). Kept so we can show the
    * gap between additive and compound interpretations in tooltips.
@@ -291,13 +300,26 @@ export interface PerStockRow {
 }
 
 /**
- * Period-restricted contributions for a single stock. `returnByFactor[code]`
- * is `β_f × Σ_{t in period} r_{t,f}` (additive, simple). Alpha / residual
- * sums come from the same fixed-W rolling OLS used for the full-window
- * columns, restricted to the period's date range.
+ * Period-restricted decomposition for a single stock, all derived from the
+ * SINGLE static horizon-window OLS fit (betas estimated on the full window,
+ * applied across the trailing period). This is the one canonical estimator
+ * for per-stock attribution — the grid columns and the per-stock waterfall
+ * both read these fields so they tie by construction. (The rolling-60d OLS
+ * is demoted to the illustrative beta-drift chart only.)
+ *
+ * Identity over the slice (simple space):
+ *   Σ_{t in period} y_t = Σ_f returnByFactor[f] + alphaSum + residualSum
+ * where:
+ *   returnByFactor[f] = β_f,simple × Σ_{t in period} r_{t,f}
+ *   alphaSum          = α_simple × observations    (static intercept × days)
+ *   residualSum       = Σ y_t − Σ_f returnByFactor[f] − alphaSum   (the plug)
+ * The log-space variants (returnByFactorLog / alphaSumLog / residualSumLog)
+ * use the parallel log-OLS fit and y_log; null when the log path failed.
  */
 export interface PerStockPeriodSlice {
   returnByFactor: Partial<Record<FactorCode, number>>;
+  /** Log-space factor contributions: β_log × Σ ln(1+r) over the slice. Empty when the log path failed. */
+  returnByFactorLog: Partial<Record<FactorCode, number>>;
   alphaSum: number | null;
   residualSum: number | null;
   alphaSumLog: number | null;
@@ -1013,6 +1035,18 @@ export async function runPerStockFactors(
       for (const row of xRawKept) s += row[fi] ?? 0;
       return s;
     });
+    // Log-space cumulative factor returns (Σ ln(1+r_t)) over the same window,
+    // for the static log-OLS factor contribution. Only meaningful when the
+    // log path succeeded (fitLog != null), in which case xLog aligns 1:1 with
+    // xRawKept / the model window.
+    const factorCumReturnsAdditiveLog: number[] | null =
+      fitLog != null
+        ? usableFactors.map((_, fi) => {
+            let s = 0;
+            for (const row of xLog) s += row[fi] ?? 0;
+            return s;
+          })
+        : null;
 
     // Per-factor cells.
     const cells: Partial<Record<FactorCode, PerStockFactorCell>> = {};
@@ -1021,12 +1055,17 @@ export async function runPerStockFactors(
       const beta = fit.betas[fi] ?? 0;
       const tStat = fit.tStats[fi] ?? 0;
       const returnContribution = beta * (factorCumReturnsAdditive[fi] ?? 0);
+      const returnContributionLog =
+        fitLog != null && factorCumReturnsAdditiveLog != null
+          ? (fitLog.betas[fi] ?? 0) * (factorCumReturnsAdditiveLog[fi] ?? 0)
+          : null;
       const returnContributionGeometric = beta * (factorCumReturnsGeom[fi] ?? 0);
       const riskContribution = decompAligned.factors[fi]?.pctVarianceContrib ?? 0;
       const cell: PerStockFactorCell = {
         beta,
         tStat,
         returnContribution,
+        returnContributionLog,
         returnContributionGeometric,
         riskContribution,
       };
@@ -1048,19 +1087,20 @@ export async function runPerStockFactors(
     const alphaWindowSum = fit.alpha * fit.n;
     const residualWindowSum = fit.residuals.reduce((s, e) => s + e, 0);
 
-    // Fixed-W rolling OLS over the same aligned (y, X) so the grid
-    // surfaces a stable Σα / Σε that matches the per-stock waterfall when
-    // the chart's rolling W = GRID_ROLLING_WINDOW (its default).
+    // Fixed-W rolling OLS over the same aligned (y, X). NOTE (2026-06-21):
+    // this is NO LONGER the source of the grid's Alpha / Unexplained columns
+    // or the waterfall — those now use the static horizon-beta period
+    // decomposition in `periodSlices` (one canonical estimator). The rolling
+    // stream is retained ONLY to (a) drive the residual t-stat / CI band and
+    // (b) feed the portfolio residual service's ε_p,t construction when
+    // `retainResidualStreams` is set. The 60d-rolling betas on a 14-factor
+    // model are too noisy to attribute per-factor returns from.
     let rollingAlphaPostBurnSum: number | null = null;
     let rollingResidualPostBurnSum: number | null = null;
     let rollingObservationsPostBurn = 0;
     let residualTStat: number | null = null;
     let residualCi95Half: number | null = null;
     let residualStreamForOutput: { dates: string[]; residuals: number[] } | undefined;
-    // Per-day rolling α / ε keyed by model-window index, so period slices can
-    // re-sum over an arbitrary trailing sub-range without re-running OLS.
-    const rollingByModelIdx: { modelIdx: number; alpha: number; residual: number }[] = [];
-    const rollingByModelIdxLog: { modelIdx: number; alpha: number; residual: number }[] = [];
     if (yExt.length >= GRID_ROLLING_WINDOW + 1) {
       // Rolling OLS runs over the EXTENDED sample so pre-window dates
       // serve as burn-in runway. We then sum α/ε ONLY over indices
@@ -1098,7 +1138,6 @@ export async function runPerStockFactors(
         eSum += eps;
         rollingResiduals.push(eps);
         rollingResidualDates.push(rolling[r]!.date);
-        rollingByModelIdx.push({ modelIdx: t - modelStartIdxExt, alpha: rfit.alpha, residual: eps });
         obs++;
       }
       if (obs > 0) {
@@ -1190,7 +1229,6 @@ export async function runPerStockFactors(
         eSumLog += eps;
         rollingResidualsLog.push(eps);
         rollingResidualDatesLog.push(rollingLog[r]!.date);
-        rollingByModelIdxLog.push({ modelIdx: t - modelStartIdxExt, alpha: rfit.alpha, residual: eps });
         obsLog++;
       }
       if (obsLog > 0) {
@@ -1223,10 +1261,17 @@ export async function runPerStockFactors(
     }
 
     // -------------------------------------------------------------------
-    // Period slices — restrict Return / Alpha / Unexplained to each trailing
-    // reporting period. Betas are unchanged (fit on the full horizon window);
-    // only the realized contribution sums are sliced. modelDates aligns 1:1
-    // with xRawKept / y (the model-window sample).
+    // Period slices — STATIC-BETA decomposition restricted to each trailing
+    // reporting period. The single horizon-window OLS fit (`fit` / `fitLog`)
+    // supplies the betas AND the intercept; we apply them across the slice so
+    // every per-stock number (grid columns + waterfall) shares one estimator
+    // and ties by construction. modelDates aligns 1:1 with xRawKept / y / yLog.
+    //
+    // Per slice [s, e] (obs = e − s + 1):
+    //   returnByFactor[f] = β_f × Σ_{i∈[s,e]} r_{i,f}
+    //   alphaSum          = α × obs                       (static intercept × days)
+    //   residualSum       = Σ_{i∈[s,e]} y_i − Σ_f returnByFactor[f] − alphaSum
+    // and identically in log space using fitLog / yLog when the log path ran.
     // -------------------------------------------------------------------
     const periodSlices = (() => {
       const modelDates = alignedExtKeptDates.slice(modelStartIdxExt);
@@ -1236,30 +1281,43 @@ export async function runPerStockFactors(
         const slice = resolvePeriodSlice(modelDates, label);
         const { startIndex, endIndex } = slice;
         const returnByFactor: Partial<Record<FactorCode, number>> = {};
+        const returnByFactorLog: Partial<Record<FactorCode, number>> = {};
+        let alphaSum: number | null = null;
+        let residualSum: number | null = null;
+        let alphaSumLog: number | null = null;
+        let residualSumLog: number | null = null;
+        let observations = 0;
         if (startIndex >= 0) {
+          observations = endIndex - startIndex + 1;
+          // Simple-space static-beta decomposition (one canonical estimator,
+          // shared with the per-stock waterfall via `computeStaticBetaPeriodSlice`).
+          const decompSimple = computeStaticBetaPeriodSlice(
+            fit.betas,
+            fit.alpha,
+            xRawKept.slice(startIndex, endIndex + 1),
+            y.slice(startIndex, endIndex + 1),
+          );
           for (let fi = 0; fi < usableFactors.length; fi++) {
-            let s = 0;
-            for (let i = startIndex; i <= endIndex; i++) s += xRawKept[i]?.[fi] ?? 0;
-            returnByFactor[usableFactors[fi]!] = (fit.betas[fi] ?? 0) * s;
+            returnByFactor[usableFactors[fi]!] = decompSimple.returnByFactor[fi] ?? 0;
+          }
+          alphaSum = decompSimple.alphaSum;
+          residualSum = decompSimple.residualSum;
+          // Log-space static-beta decomposition (only when the log fit ran;
+          // xLog / yLog then align 1:1 with the model window).
+          if (fitLog != null) {
+            const decompLog = computeStaticBetaPeriodSlice(
+              fitLog.betas,
+              fitLog.alpha,
+              xLog.slice(startIndex, endIndex + 1),
+              yLog.slice(startIndex, endIndex + 1),
+            );
+            for (let fi = 0; fi < usableFactors.length; fi++) {
+              returnByFactorLog[usableFactors[fi]!] = decompLog.returnByFactor[fi] ?? 0;
+            }
+            alphaSumLog = decompLog.alphaSum;
+            residualSumLog = decompLog.residualSum;
           }
         }
-        const sumRolling = (
-          stream: { modelIdx: number; alpha: number; residual: number }[],
-        ): { alpha: number | null; residual: number | null; obs: number } => {
-          let a = 0;
-          let e = 0;
-          let o = 0;
-          for (const p of stream) {
-            if (p.modelIdx >= startIndex && p.modelIdx <= endIndex) {
-              a += p.alpha;
-              e += p.residual;
-              o++;
-            }
-          }
-          return o > 0 ? { alpha: a, residual: e, obs: o } : { alpha: null, residual: null, obs: 0 };
-        };
-        const simple = sumRolling(rollingByModelIdx);
-        const logS = sumRolling(rollingByModelIdxLog);
         // Realized total stock return over this period's date range:
         // exp(Σ ln(1 + r)) − 1 over [startIndex, endIndex] of `rawReturn`.
         // Pure price quantity (dividend-inclusive via adjClose), so it
@@ -1269,11 +1327,12 @@ export async function runPerStockFactors(
           startIndex >= 0 ? realizedTotalReturnOver(startIndex, endIndex) : null;
         out[label] = {
           returnByFactor,
-          alphaSum: simple.alpha,
-          residualSum: simple.residual,
-          alphaSumLog: logS.alpha,
-          residualSumLog: logS.residual,
-          observations: simple.obs,
+          returnByFactorLog,
+          alphaSum,
+          residualSum,
+          alphaSumLog,
+          residualSumLog,
+          observations,
           startDate: slice.startDate,
           endDate: slice.endDate,
           realizedTotalReturn,

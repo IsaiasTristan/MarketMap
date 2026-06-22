@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { portfolioId, model, window: win, ew, groupBy } = parsed.data;
+  const { portfolioId, model, window: win, groupBy } = parsed.data;
   const guard = await requirePortfolioAccess(req, portfolioId);
   if (guard) return guard;
   const result = await getFactorDrivers(
@@ -25,7 +25,6 @@ export async function GET(req: NextRequest) {
     model as ModelPresetName,
     groupBy,
     win,
-    ew,
   );
 
   if (!result) {

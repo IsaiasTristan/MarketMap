@@ -2,12 +2,18 @@
 
 import type { CSSProperties } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { Horizon } from "@/domain/entities/horizons";
 import { HORIZON_ORDER } from "@/domain/entities/horizons";
 import type { MetricKind } from "@/domain/entities/analytics";
 import { heatmapRgb } from "@/domain/calculations/heatmap";
 import { HORIZON_LABEL, formatMetricValue } from "@/lib/format";
 import { FactorPerformanceTable } from "@/components/FactorPerformanceTable";
+import { TopMoversTable } from "@/components/TopMoversTable";
+import { useAnalysisStore } from "@/store/analysis";
+import { FloatingPerStockDetail } from "@/components/analysis/factors/panels/FloatingPerStockDetail";
+import type { PerStockResult } from "@/server/services/factor-per-stock.service";
+import { isExcludedSector } from "@/lib/market-map/excluded-sectors";
 
 type ApiRow = {
   key: string;
@@ -123,6 +129,47 @@ export function MarketMapClient({
     () => new Set()
   );
 
+  // Reuse the factors-tab popup machinery for ticker drill-down. The popup
+  // is identified purely by ticker and reads its model/window/period config
+  // from the global store, so the market map can share the React Query cache
+  // with the Factors tab (same queryKey -> no duplicate fetch).
+  const factorModel = useAnalysisStore((s) => s.factorModel);
+  const factorWindow = useAnalysisStore((s) => s.factorWindow);
+  const factorPeriod = useAnalysisStore((s) => s.factorPeriod);
+  const openFactorDetailPanels = useAnalysisStore(
+    (s) => s.openFactorDetailPanels,
+  );
+  const openFactorDetailPanel = useAnalysisStore(
+    (s) => s.openFactorDetailPanel,
+  );
+  const closeFactorDetailPanel = useAnalysisStore(
+    (s) => s.closeFactorDetailPanel,
+  );
+
+  const { data: perStockData, isLoading: perStockLoading } =
+    useQuery<PerStockResult>({
+      queryKey: ["factor-per-stock", factorModel, factorWindow, factorPeriod],
+      queryFn: () =>
+        fetch(
+          `/api/analysis/factors/per-stock?model=${factorModel}&window=${factorWindow}&period=${factorPeriod}`,
+        ).then((r) => r.json()),
+      enabled: openFactorDetailPanels.length > 0,
+      staleTime: 5 * 60_000,
+    });
+
+  const openTickerSet = useMemo(
+    () => new Set(openFactorDetailPanels.map((p) => p.ticker)),
+    [openFactorDetailPanels],
+  );
+
+  const handleSelectTicker = useCallback(
+    (ticker: string) => {
+      if (openTickerSet.has(ticker)) closeFactorDetailPanel(ticker);
+      else openFactorDetailPanel(ticker);
+    },
+    [openTickerSet, closeFactorDetailPanel, openFactorDetailPanel],
+  );
+
   const qs = useMemo(() => {
     const u = new URLSearchParams();
     u.set("metric", metric);
@@ -141,8 +188,12 @@ export function MarketMapClient({
       );
       const j = (await res.json()) as ApiPayload & { error?: string };
       if (!res.ok) throw new Error(j.error ?? res.statusText);
-      setData(j);
-      const tickerDates = j.rows
+      // Drop sectors we explicitly hide from the Performance page (e.g.
+      // INDEX & MACRO) at the boundary so every downstream surface — main
+      // grid, Top Movers, top-bar telemetry — sees the same filtered universe.
+      const filteredRows = j.rows.filter((r) => !isExcludedSector(r.sector));
+      setData({ ...j, rows: filteredRows });
+      const tickerDates = filteredRows
         .map((r) => r.lastDate)
         .filter((d): d is string => !!d);
       const newestLastDate = tickerDates.length
@@ -157,7 +208,7 @@ export function MarketMapClient({
         asOf: j.asOf ?? null,
         staleCalendarDays: j.asOf ? calendarDaysBetween(j.asOf, isoToday()) : null,
         staleTickerCount,
-        activeTickerCount: j.rows.length,
+        activeTickerCount: filteredRows.length,
       });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -488,6 +539,8 @@ export function MarketMapClient({
                   metric={metric}
                   range={ranges.COMPANY}
                   universeAsOf={data?.asOf ?? null}
+                  selected={openTickerSet.has(row.company.ticker)}
+                  onSelectTicker={handleSelectTicker}
                 />
               );
             })}
@@ -510,6 +563,51 @@ export function MarketMapClient({
         benchmark={benchmark}
         reloadToken={reloadToken}
       />
+
+      <TopMoversTable
+        universeId={universeId}
+        reloadToken={reloadToken}
+        companyLeaves={
+          metric === "RETURN"
+            ? sortedTree.flatMap((s) =>
+                s.subThemes.flatMap((st) => st.companies),
+              )
+            : null
+        }
+        onSelectTicker={handleSelectTicker}
+        selectedTickers={openTickerSet}
+      />
+
+      {perStockData &&
+        openFactorDetailPanels.map((panel) => (
+          <FloatingPerStockDetail
+            key={panel.ticker}
+            panel={panel}
+            data={perStockData}
+          />
+        ))}
+      {perStockLoading && openFactorDetailPanels.length > 0 && !perStockData && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: "fixed",
+            right: 16,
+            bottom: 16,
+            zIndex: 100,
+            padding: "6px 12px",
+            background: "var(--bg-surface)",
+            border: "1px solid var(--bg-border)",
+            color: "var(--text-secondary)",
+            fontSize: 12,
+            fontFamily:
+              'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
+            boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+          }}
+        >
+          Loading factor detail…
+        </div>
+      )}
     </div>
   );
 }
@@ -637,12 +735,16 @@ function CompanyTableRow({
   metric,
   range,
   universeAsOf,
+  selected,
+  onSelectTicker,
 }: {
   company: CompanyLeaf;
   position: RowPosition;
   metric: MetricKind;
   range: RangeMap;
   universeAsOf: string | null;
+  selected: boolean;
+  onSelectTicker: (ticker: string) => void;
 }) {
   const isLast = position === "last" || position === "only";
   // A row is "stale" when its last bar is older than the universe min lastDate
@@ -652,26 +754,39 @@ function CompanyTableRow({
     !!company.lastDate &&
     !!universeAsOf &&
     company.lastDate < universeAsOf;
-  const rowStyle: CSSProperties = rowStale
-    ? { ...companyRowStyle, opacity: 0.55 }
+  // Amber selection tint matches the Factors-tab PerStockGrid selected-row
+  // styling so the popup-source UX is identical across surfaces.
+  const baseRow: CSSProperties = selected
+    ? { ...companyRowStyle, background: SELECTED_ROW_BG }
     : companyRowStyle;
+  const rowStyle: CSSProperties = rowStale
+    ? { ...baseRow, opacity: 0.55, cursor: "pointer" }
+    : { ...baseRow, cursor: "pointer" };
+  const cellBg = selected ? SELECTED_ROW_BG : undefined;
   const sectorCell: CSSProperties = {
     ...companySectorCell,
     borderBottomColor: isLast ? "var(--bg-border)" : "transparent",
+    ...(cellBg ? { background: cellBg } : {}),
   };
   const subCell: CSSProperties = {
     ...companySubCell,
     borderBottomColor: isLast ? "var(--bg-border)" : "transparent",
+    ...(cellBg ? { background: cellBg } : {}),
   };
   const tickerCell: CSSProperties = {
     ...companyTickerCell,
     borderBottomColor: isLast ? "var(--bg-border)" : "transparent",
+    ...(cellBg ? { background: cellBg } : {}),
   };
   const tickerTitle = rowStale && company.lastDate
-    ? `${company.name} — last bar ${company.lastDate}, behind universe`
-    : company.name;
+    ? `${company.name} — last bar ${company.lastDate}, behind universe (click to open factor detail)`
+    : `${company.name} (click to open factor detail)`;
   return (
-    <tr style={rowStyle}>
+    <tr
+      style={rowStyle}
+      onClick={() => onSelectTicker(company.ticker)}
+      aria-selected={selected}
+    >
       <td style={sectorCell} />
       <td style={subCell} />
       <td style={tickerCell}>
@@ -689,6 +804,8 @@ function CompanyTableRow({
     </tr>
   );
 }
+
+const SELECTED_ROW_BG = "rgba(240,182,93,0.10)";
 
 function renderHeatCell(
   h: Horizon,

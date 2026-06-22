@@ -26,7 +26,11 @@
  */
 import type { FactorCode } from "@/types/factors";
 import type { PerStockRow } from "@/server/services/factor-per-stock.service";
-import type { FactorGridMetric, FactorScreenerFilters } from "@/store/analysis";
+import type {
+  FactorAttributionMode,
+  FactorGridMetric,
+  FactorScreenerFilters,
+} from "@/store/analysis";
 import { factorCellValue, sigGatePassed } from "./stats";
 
 /** Cells below this contributing-row threshold render blank, not low-opacity. */
@@ -82,8 +86,10 @@ export function aggregateBySectorFactor(args: {
   factors: ReadonlyArray<FactorCode>;
   metric: FactorGridMetric;
   filters: FactorScreenerFilters;
+  /** Attribution mode — routes return-contribution cells to log/simple. Default log. */
+  mode?: FactorAttributionMode;
 }): SectorHeatmapResult {
-  const { rows, factors, metric, filters } = args;
+  const { rows, factors, metric, filters, mode = "log" } = args;
 
   // Bucket rows by sector once.
   const rowsBySector = new Map<string, PerStockRow[]>();
@@ -105,8 +111,8 @@ export function aggregateBySectorFactor(args: {
       // factor cells excluded, non-finite values excluded.
       const values: number[] = [];
       for (const r of sectorRows) {
-        if (filters.sigGate.enabled && !sigGatePassed(r, code, filters)) continue;
-        const v = factorCellValue(r.cells[code], metric);
+        if (filters.sigGate.enabled && !sigGatePassed(r, code, filters, mode)) continue;
+        const v = factorCellValue(r.cells[code], metric, mode);
         if (v === null) continue;
         values.push(v);
       }

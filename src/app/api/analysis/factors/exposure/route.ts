@@ -5,7 +5,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { factorQueryParams } from "@/lib/api/schemas";
-import { runFactorEngine } from "@/server/services/factor-engine.service";
+import {
+  runFactorEngine,
+  getPortfolioCoverageDiagnostics,
+} from "@/server/services/factor-engine.service";
 import { persistFactorSnapshot } from "@/server/services/factor-snapshot.service";
 import { evaluateFactorAlerts } from "@/server/services/factor-alerts.service";
 import { computeFactorExposures } from "@/server/services/factor.service";
@@ -23,13 +26,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { portfolioId, model, window: win, ew } = parsed.data;
+  const { portfolioId, model, window: win } = parsed.data;
 
   const guard = await requirePortfolioAccess(req, portfolioId);
   if (guard) return guard;
 
   const [engineResult, holdingsResult, residualStats] = await Promise.all([
-    runFactorEngine({ portfolioId, model: model as ModelPresetName, window: win, ewHalfLife: ew }),
+    runFactorEngine({ portfolioId, model: model as ModelPresetName, window: win }),
     computeFactorExposures(portfolioId).catch(() => null),
     // Constructed-from-per-stock residual series for the Total row's
     // Unexplained cell. Independent of the portfolio-level OLS — it's
@@ -44,8 +47,13 @@ export async function GET(req: NextRequest) {
   ]);
 
   if (!engineResult) {
+    const coverage = await getPortfolioCoverageDiagnostics(portfolioId).catch(() => null);
     return NextResponse.json(
-      { error: "INSUFFICIENT_DATA", reason: "Not enough aligned portfolio + factor return data." },
+      {
+        error: "INSUFFICIENT_DATA",
+        reason: "Not enough aligned portfolio + factor return data.",
+        coverage,
+      },
       { status: 422 },
     );
   }
@@ -162,6 +170,7 @@ export async function GET(req: NextRequest) {
     regularized: endFit.regularized,
     normalizationApplied: true,
     normalization: engineResult.normalization,
+    coverage: engineResult.coverage,
   };
 
   // Persist snapshot and evaluate alerts (fire-and-forget; don't block response)

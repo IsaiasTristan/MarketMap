@@ -60,6 +60,7 @@ function makeCell(beta: number, tStat: number = beta * 5): PerStockFactorCell {
     beta,
     tStat,
     returnContribution: beta * 0.05,
+    returnContributionLog: beta * 0.045,
     returnContributionGeometric: beta * 0.05,
     riskContribution: Math.abs(beta) * 0.1,
   };
@@ -861,7 +862,7 @@ describe("aggregateBySectorFactor", () => {
     expect(tech.mean).toBeCloseTo(1.2, 6);
   });
 
-  it("respects active metric (return contribution)", () => {
+  it("respects active metric (return contribution, simple mode)", () => {
     const rows = [
       makeRow({ ticker: "A", sector: "Tech", cells: { MKT_RF: makeCell(1.0, 5) } }),
       makeRow({ ticker: "B", sector: "Tech", cells: { MKT_RF: makeCell(2.0, 6) } }),
@@ -873,10 +874,29 @@ describe("aggregateBySectorFactor", () => {
       factors: ["MKT_RF"],
       metric: "return",
       filters: NO_FILTERS,
+      mode: "simple",
     });
     const tech = out.bySector.get("Tech")!.get("MKT_RF")!;
     // Mean of [0.05, 0.10, 0.15] = 0.10
     expect(tech.mean).toBeCloseTo(0.10, 6);
+  });
+
+  it("respects attribution mode (log return contribution by default)", () => {
+    const rows = [
+      makeRow({ ticker: "A", sector: "Tech", cells: { MKT_RF: makeCell(1.0, 5) } }),
+      makeRow({ ticker: "B", sector: "Tech", cells: { MKT_RF: makeCell(2.0, 6) } }),
+      makeRow({ ticker: "C", sector: "Tech", cells: { MKT_RF: makeCell(3.0, 7) } }),
+    ];
+    // makeCell sets returnContributionLog = beta * 0.045; default mode = log.
+    const out = aggregateBySectorFactor({
+      rows,
+      factors: ["MKT_RF"],
+      metric: "return",
+      filters: NO_FILTERS,
+    });
+    const tech = out.bySector.get("Tech")!.get("MKT_RF")!;
+    // Mean of [0.045, 0.090, 0.135] = 0.090
+    expect(tech.mean).toBeCloseTo(0.09, 6);
   });
 
   it("returns empty result for empty rows", () => {

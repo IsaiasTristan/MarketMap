@@ -11,11 +11,12 @@ import { prisma as db } from "@/infrastructure/db/client";
 import { dailyReturnsFromAdjustedCloses } from "@/domain/calculations/returns";
 import { multivariateOls } from "@/lib/factors/regression/ols";
 import { rollingMultivariateOls } from "@/lib/factors/regression/rolling";
-import { exponentialWeights } from "@/lib/factors/regression/weights";
 import { factorCovarianceMatrix } from "@/lib/factors/risk/covariance";
 import { computeRiskDecomposition } from "@/lib/factors/risk/decomposition";
 import { resolveModel, minObservations } from "@/lib/factors/definitions/model-presets";
 import { normalizeFactorRows } from "@/lib/factors/regression/normalization";
+import { buildCoverageWeightedReturns } from "@/lib/factors/regression/portfolio-coverage";
+import { buildWindowCoverageDiagnostics } from "@/lib/factors/regression/window-coverage";
 import { getFactorInputType } from "@/lib/factors/definitions/factor-codes";
 import {
   factorRowLog,
@@ -27,12 +28,18 @@ import type {
   FactorEngineParams,
   FactorEngineResult,
   ModelPresetName,
+  PortfolioCoverageDiagnostics,
   RegressionFit,
   RollingFitPoint,
 } from "@/types/factors";
 
-// Minimum common prices required across all portfolio positions
+// Minimum regressable portfolio return observations.
 const MIN_PRICE_HISTORY = 30;
+
+// Minimum fraction of portfolio gross value that must have price data on a
+// date for that date to enter the regression sample. Prevents a single small
+// recently-listed holding from defining a meaningless early series.
+const MIN_COVERAGE = 0.5;
 
 /** Load the aligned portfolio return series. Weights derive from
  *  shares × latest price; long/short sign is applied so a short position
@@ -75,15 +82,15 @@ async function loadPortfolioReturns(portfolioId: string, from?: string, to?: str
     new Map(rows.map((r) => [r.tradeDate.toISOString().slice(0, 10), Number(r.adjClose)])),
   );
 
-  // Common dates (inner join)
+  // Union of all position price dates. We no longer inner-join across every
+  // holding — a single recently-listed holding would otherwise collapse the
+  // aligned window to its own short history. Instead each holding contributes
+  // only on dates it actually traded (see the per-date loop below).
   const allDates = [
     ...new Set(
       priceData.flatMap((rows) => rows.map((r) => r.tradeDate.toISOString().slice(0, 10))),
     ),
   ].sort();
-  const commonDates = allDates.filter((d) => priceMaps.every((m) => m.has(d)));
-
-  if (commonDates.length < MIN_PRICE_HISTORY) return null;
 
   // Market-value weights at the latest available price, with long/short
   // sign applied. This represents "given my portfolio as it stands today,
@@ -99,22 +106,44 @@ async function loadPortfolioReturns(portfolioId: string, from?: string, to?: str
     return (p.isShort ? -1 : 1) * gross;
   });
 
-  // Compute daily portfolio returns using signed weights — shorts subtract
-  // from the daily P&L when the underlying rises.
-  const portReturns: number[] = [];
-  for (let i = 1; i < commonDates.length; i++) {
-    let r = 0;
-    for (let j = 0; j < secIds.length; j++) {
-      const prev = priceMaps[j]!.get(commonDates[i - 1]!);
-      const cur = priceMaps[j]!.get(commonDates[i]!);
-      if (prev && cur && prev > 0) r += weights[j]! * ((cur - prev) / prev);
-    }
-    portReturns.push(r);
-  }
+  // Per-date coverage-weighted portfolio returns + coverage diagnostics. Each
+  // holding contributes only on dates it actually traded; the present signed
+  // weights are renormalized to full investment and low-coverage dates are
+  // dropped. A recent IPO simply enters once it has prices instead of
+  // truncating the whole portfolio's aligned window.
+  const { dates, returns: portReturns, coverage } = buildCoverageWeightedReturns(
+    allDates,
+    positions.map((p, j) => ({
+      ticker: p.security.ticker,
+      priceByDate: priceMaps[j]!,
+      firstDate: priceData[j]![0]?.tradeDate.toISOString().slice(0, 10) ?? null,
+      weight: weights[j]!,
+      gross: grossValues[j]!,
+    })),
+    MIN_COVERAGE,
+  );
+
+  if (dates.length < MIN_PRICE_HISTORY) return null;
+
+  // Per-position metadata needed for window-scoped coverage diagnostics on
+  // the Risk tab (which holdings have no / partial data inside the trailing
+  // risk window). Built once here so the Risk window slice is a pure
+  // O(W × P) walk over the same maps.
+  const positionWindowMeta = positions.map((p, j) => {
+    const rows = priceData[j]!;
+    return {
+      ticker: p.security.ticker,
+      priceByDate: priceMaps[j]!,
+      firstDate: rows[0]?.tradeDate.toISOString().slice(0, 10) ?? null,
+      lastDate: rows[rows.length - 1]?.tradeDate.toISOString().slice(0, 10) ?? null,
+    };
+  });
 
   return {
-    dates: commonDates.slice(1),
+    dates,
     returns: portReturns,
+    coverage,
+    positionWindowMeta,
     positions: positions.map((p, i) => ({
       ticker: p.security.ticker,
       securityId: p.securityId,
@@ -123,6 +152,63 @@ async function loadPortfolioReturns(portfolioId: string, from?: string, to?: str
       sector: p.sector ?? p.security.sector ?? "Other",
       subTheme: "Other", // will be enriched from universe if needed
     })),
+  };
+}
+
+/**
+ * Lightweight coverage diagnostics used when the engine cannot run at all
+ * (genuinely insufficient data). Reports per-position observation counts so
+ * the UI can name which holdings are too new without running the full engine.
+ */
+export async function getPortfolioCoverageDiagnostics(
+  portfolioId: string,
+): Promise<PortfolioCoverageDiagnostics> {
+  const positions = await db.portfolioPosition.findMany({
+    where: { portfolioId },
+    include: { security: true },
+  });
+
+  const counts = await Promise.all(
+    positions.map(async (p) => {
+      const [agg, first] = await Promise.all([
+        db.priceHistory.count({ where: { securityId: p.securityId } }),
+        db.priceHistory.findFirst({
+          where: { securityId: p.securityId },
+          orderBy: { tradeDate: "asc" },
+          select: { tradeDate: true },
+        }),
+      ]);
+      return {
+        ticker: p.security.ticker,
+        observations: agg,
+        firstDate: first ? first.tradeDate.toISOString().slice(0, 10) : null,
+      };
+    }),
+  );
+
+  const maxObs = counts.reduce((m, c) => Math.max(m, c.observations), 0);
+  const shortHistoryPositions: PortfolioCoverageDiagnostics["shortHistoryPositions"] = [];
+  const excludedPositions: PortfolioCoverageDiagnostics["excludedPositions"] = [];
+  for (const c of counts) {
+    if (c.observations === 0) {
+      excludedPositions.push({ ticker: c.ticker, reason: "No price history" });
+    } else if (c.observations < maxObs) {
+      shortHistoryPositions.push({
+        ticker: c.ticker,
+        firstDate: c.firstDate ?? "",
+        observations: c.observations,
+      });
+    }
+  }
+
+  return {
+    totalPositions: positions.length,
+    seriesStart: null,
+    seriesEnd: null,
+    alignedDates: 0,
+    shortHistoryPositions,
+    excludedPositions,
+    droppedLowCoverageDates: 0,
   };
 }
 
@@ -172,13 +258,17 @@ export async function runFactorEngine(
   const model = resolveModel(params.model);
   const factorCodes = model.factors as FactorCode[];
   const regressionWindow = params.window;
-  const ewHalfLife = params.ewHalfLife ?? null;
 
   // Load portfolio returns
   const portfolio = await loadPortfolioReturns(params.portfolioId, params.from, params.to);
   if (!portfolio) return null;
 
-  const { dates: portDates, returns: portTotals } = portfolio;
+  const {
+    dates: portDates,
+    returns: portTotals,
+    coverage,
+    positionWindowMeta,
+  } = portfolio;
 
   // Load factor returns aligned to portfolio dates
   const { factorMap, rfMap } = await loadFactorReturns(portDates, factorCodes);
@@ -244,8 +334,7 @@ export async function runFactorEngine(
   const startIdx = n - windowN;
   const yEnd = portExcessReturns.slice(startIdx);
   const xEnd = finalFactorRowsNorm.slice(startIdx);
-  const endWeights = exponentialWeights(windowN, ewHalfLife);
-  const endFit = multivariateOls(yEnd, xEnd, endWeights);
+  const endFit = multivariateOls(yEnd, xEnd);
 
   // Rolling fits.
   //
@@ -270,7 +359,6 @@ export async function runFactorEngine(
     portExcessReturns,
     finalFactorRowsNorm,
     effectiveRollingWindow,
-    ewHalfLife,
   );
 
   // Risk decomposition
@@ -332,18 +420,25 @@ export async function runFactorEngine(
 
     const yLogEnd = portExcessLogReturns.slice(startIdx);
     const xLogEnd = factorLogRows.slice(startIdx);
-    endFitLog = multivariateOls(yLogEnd, xLogEnd, endWeights);
+    endFitLog = multivariateOls(yLogEnd, xLogEnd);
     rollingFitsLog = rollingMultivariateOls(
       finalDates,
       portExcessLogReturns,
       factorLogRows,
       effectiveRollingWindow,
-      ewHalfLife,
     );
   } else {
     portExcessLogReturns = null;
     rfLogReturns = null;
   }
+
+  // Window-scoped coverage — names which holdings have no / partial price
+  // data inside the trailing risk window (the same `windowN` slice used by
+  // the Euler decomposition). The compact CoverageWarning chip on the Risk
+  // tab reads from this so the user can see exactly which tickers were
+  // affected and over what date ranges.
+  const windowDates = finalDates.slice(-windowN);
+  const windowCoverage = buildWindowCoverageDiagnostics(windowDates, positionWindowMeta);
 
   return {
     dates: finalDates,
@@ -364,6 +459,8 @@ export async function runFactorEngine(
     endFitLog,
     rollingFitsLog,
     windowFallback,
+    coverage,
+    windowCoverage,
   };
 }
 

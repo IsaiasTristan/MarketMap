@@ -12,7 +12,6 @@
  */
 import type { FactorCode, PositionLoadings } from "@/types/factors";
 import { multivariateOls } from "../regression/ols";
-import { exponentialWeights } from "../regression/weights";
 
 export interface SecurityReturnSeries {
   ticker: string;
@@ -25,14 +24,13 @@ export interface SecurityReturnSeries {
 }
 
 /**
- * Compute per-security factor loadings.
+ * Compute per-security factor loadings (equal-weight OLS).
  *
  * @param securities      Position return series (all aligned to same dates).
  * @param factorCodes     Factor codes in regression order.
  * @param factorMatrix    Factor return matrix; index = date position, inner = factor values.
  * @param rfSeries        Daily RF series aligned to dates.
  * @param window          Lookback window in trading days.
- * @param ewHalfLife      Optional EW half-life.
  */
 export function computeHoldingsLoadings(
   securities: SecurityReturnSeries[],
@@ -40,7 +38,6 @@ export function computeHoldingsLoadings(
   factorMatrix: number[][],  // n × k aligned to shared dates
   rfSeries: number[],
   window: number,
-  ewHalfLife?: number | null,
 ): PositionLoadings[] {
   const n = factorMatrix.length;
   const useWindow = Math.min(window, n);
@@ -48,7 +45,6 @@ export function computeHoldingsLoadings(
 
   const xSlice = factorMatrix.slice(start);
   const rfSlice = rfSeries.slice(start);
-  const weights = exponentialWeights(xSlice.length, ewHalfLife);
 
   return securities.map((sec) => {
     const ySlice = sec.returns.slice(start).map((r, i) => r - (rfSlice[i] ?? 0));
@@ -57,7 +53,7 @@ export function computeHoldingsLoadings(
       for (const code of factorCodes) loadings[code] = 0;
       return { ticker: sec.ticker, sector: sec.sector, subTheme: sec.subTheme, weight: sec.weight, loadings };
     }
-    const fit = multivariateOls(ySlice, xSlice, weights);
+    const fit = multivariateOls(ySlice, xSlice);
     const loadings: Partial<Record<FactorCode, number>> = {};
     for (let fi = 0; fi < factorCodes.length; fi++) {
       loadings[factorCodes[fi]!] = fit.betas[fi] ?? 0;

@@ -4,7 +4,6 @@ import {
   getPortfolioPnl,
   getAllocationByPosition,
   getAllocationBySector,
-  getAllocationByGeography,
   getContributors,
 } from "@/server/services/pnl.service";
 import { requirePortfolioAccess } from "@/lib/api/guards";
@@ -23,7 +22,6 @@ export async function GET(req: Request) {
 
   const allocationByPosition = getAllocationByPosition(positionsWithPnl);
   const allocationBySector = getAllocationBySector(positionsWithPnl);
-  const allocationByGeography = getAllocationByGeography(positionsWithPnl);
   const { contributors, detractors } = getContributors(positionsWithPnl, 5);
 
   return NextResponse.json({
@@ -32,7 +30,6 @@ export async function GET(req: Request) {
     allocation: {
       byPosition: allocationByPosition,
       bySector: allocationBySector,
-      byGeography: allocationByGeography,
     },
     contributors,
     detractors,

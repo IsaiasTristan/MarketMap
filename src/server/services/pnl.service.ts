@@ -11,6 +11,7 @@ import {
 } from "@/infrastructure/providers/yahoo-fundamentals";
 import { toYahooSymbol } from "@/infrastructure/providers/yahoo-chart-http";
 import type { PositionRow } from "./position.service";
+import { computePositionRisk } from "./risk.service";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -54,6 +55,23 @@ export interface AllocationSlice {
   name: string;
   value: number; // $ market value
   pct: number;   // fraction 0-1
+}
+
+// ── Pure helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Resolve a position's sector across the three sources we keep, in priority
+ * order: the user-curated universe tag wins, then the position's manual
+ * override, then the Yahoo profile fallback. Exported for direct testing of
+ * the priority chain (the Sector toggle on the Capital Allocation donut
+ * relies on this resolving to a real sector instead of collapsing to "Other").
+ */
+export function resolveSector(
+  universeSector: string | null | undefined,
+  positionSector: string | null | undefined,
+  securitySector: string | null | undefined,
+): string | null {
+  return universeSector ?? positionSector ?? securitySector ?? null;
 }
 
 // ── Period boundary helpers ────────────────────────────────────────────────
@@ -161,6 +179,17 @@ export async function getPortfolioPnl(
   });
   const secMap = new Map(securities.map((s) => [s.ticker, s]));
 
+  // Universe tags are the user-curated source of truth for sector grouping
+  // (security.sector is the Yahoo profile fallback). Loading by securityId
+  // matches factor-drivers.service.ts.
+  const universeRows = await db.universeConstituent.findMany({
+    where: { securityId: { in: securities.map((s) => s.id) } },
+    select: { securityId: true, sector: true },
+  });
+  const universeSectorBySecId = new Map(
+    universeRows.map((r) => [r.securityId, r.sector]),
+  );
+
   // Period boundaries
   const mtdStart = boundaryIso("MTD");
   const qtdStart = boundaryIso("QTD");
@@ -227,10 +256,12 @@ export async function getPortfolioPnl(
     const daysToLiquidate =
       adv20 > 0 ? grossMv / (adv20 * currentPrice * 0.2) : 999;
 
+    const universeSector = secId ? universeSectorBySecId.get(secId) : null;
+
     positionsWithPnl.push({
       ticker: pos.ticker,
       name: pos.name,
-      sector: pos.sector ?? sec?.sector ?? null,
+      sector: resolveSector(universeSector, pos.sector, sec?.sector),
       country: sec?.country ?? null,
       shares: pos.shares,
       isShort: pos.isShort,
@@ -327,5 +358,248 @@ export function getContributors(
   return {
     contributors: sorted.slice(0, n),
     detractors: sorted.slice(-n).reverse(),
+  };
+}
+
+// ── Return / Risk allocation by horizon ───────────────────────────────────
+
+export type AllocationHorizon = "1D" | "5D" | "1M" | "6M" | "1Y" | "2Y" | "5Y";
+
+export const ALLOCATION_HORIZONS: AllocationHorizon[] = [
+  "1D",
+  "5D",
+  "1M",
+  "6M",
+  "1Y",
+  "2Y",
+  "5Y",
+];
+
+/**
+ * Trading-day count per horizon, used as the time index for sqrt(t)
+ * VaR scaling. Assumes returns are i.i.d.; matches the classic
+ * Basel-style horizon extension.
+ */
+const HORIZON_TRADING_DAYS: Record<AllocationHorizon, number> = {
+  "1D": 1,
+  "5D": 5,
+  "1M": 21,
+  "6M": 126,
+  "1Y": 252,
+  "2Y": 504,
+  "5Y": 1260,
+};
+
+/**
+ * Calendar offset used to look up the start-of-horizon close from
+ * stored PriceHistory via `getPriceAt`, which floors to the most recent
+ * trading day on or before the cutoff. 5D uses 7 calendar days to
+ * cross a weekend; 1Y / 2Y / 5Y use simple 365-day years.
+ */
+const HORIZON_CALENDAR_DAYS: Record<AllocationHorizon, number> = {
+  "1D": 1,
+  "5D": 7,
+  "1M": 30,
+  "6M": 180,
+  "1Y": 365,
+  "2Y": 730,
+  "5Y": 1825,
+};
+
+export function scaleVarToHorizon(
+  var1d: number,
+  horizon: AllocationHorizon,
+): number {
+  return var1d * Math.sqrt(HORIZON_TRADING_DAYS[horizon]);
+}
+
+export function horizonStartDateIso(
+  horizon: AllocationHorizon,
+  refDate: Date = new Date(),
+): string {
+  const d = new Date(refDate);
+  d.setUTCDate(d.getUTCDate() - HORIZON_CALENDAR_DAYS[horizon]);
+  return d.toISOString().slice(0, 10);
+}
+
+export interface ReturnSlice {
+  /** Ticker, used as the pie-slice key. */
+  name: string;
+  /** Absolute return percent — drives the slice arc length. */
+  value: number;
+  /** Signed return percent (negative when the position lost money). */
+  signed: number;
+  /** True when `signed < 0`; the UI draws a red outline on negative slices. */
+  negative: boolean;
+  /** Gross market value at the end of the horizon, for legend context. */
+  marketValue: number;
+}
+
+export interface RiskSlice {
+  name: string;
+  /** Dollar VaR over the horizon (already sqrt-time scaled). Always >= 0. */
+  value: number;
+  /** Share of total horizon VaR. */
+  pct: number;
+  /** Same as `value` — explicit alias for legend clarity. */
+  dollar: number;
+  /** Shorts contribute risk too — risk slices are never marked negative. */
+  negative: false;
+  marketValue: number;
+}
+
+export interface ReturnRiskAllocation {
+  horizon: AllocationHorizon;
+  byReturn: ReturnSlice[];
+  byRisk: RiskSlice[];
+  totals: {
+    /** Gross-weighted portfolio return over the horizon (signed). */
+    returnPct: number;
+    /** Dollar P&L over the horizon (signed). */
+    returnDollar: number;
+    /** Total horizon VaR in dollars. */
+    varDollar: number;
+    /** Total horizon VaR as a fraction of gross capital. */
+    varPct: number;
+    grossValue: number;
+  };
+}
+
+/**
+ * Per-position return + risk slices for the Capital Allocation donut.
+ *
+ * Return slices are sized by absolute return % so the donut always closes,
+ * with `negative` set when the signed return is < 0 so the UI can outline
+ * the slice in red.
+ *
+ * Risk slices reuse `computePositionRisk`'s 1-day 95% parametric VaR per
+ * position and scale to the requested horizon via sqrt(trading days). This
+ * is the classic i.i.d. assumption; it intentionally does not re-estimate
+ * vol over the horizon window (per the plan: "Risk = 1-day VaR scaled by
+ * sqrt(time)").
+ *
+ * Price sourcing per horizon:
+ *  - 1D weekday: live Yahoo quote (current) and Yahoo prevClose (start).
+ *  - 1D weekend: last two stored closes.
+ *  - 5D+ : most recent stored close (current) and `getPriceAt(cutoff)` (start).
+ */
+export async function getReturnRiskAllocation(
+  portfolioId: string,
+  horizon: AllocationHorizon,
+): Promise<ReturnRiskAllocation> {
+  const positions = await db.portfolioPosition.findMany({
+    where: { portfolioId },
+    include: { security: true },
+  });
+
+  const empty: ReturnRiskAllocation = {
+    horizon,
+    byReturn: [],
+    byRisk: [],
+    totals: {
+      returnPct: 0,
+      returnDollar: 0,
+      varDollar: 0,
+      varPct: 0,
+      grossValue: 0,
+    },
+  };
+
+  if (!positions.length) return empty;
+
+  const weekend = isWeekend();
+  const tickers = positions.map((p) => p.security.ticker);
+  const quotes =
+    horizon === "1D" && !weekend ? await fetchYahooQuotes(tickers) : null;
+
+  // Single risk pass per request — sqrt-time scaling below derives every
+  // horizon's VaR from the 1-day baseline without re-fitting volatility.
+  const risk = await computePositionRisk(portfolioId);
+  const riskByTicker = new Map(risk.positions.map((r) => [r.ticker, r]));
+  const scale = Math.sqrt(HORIZON_TRADING_DAYS[horizon]);
+
+  const startCutoff = horizon === "1D" ? null : horizonStartDateIso(horizon);
+
+  const byReturn: ReturnSlice[] = [];
+  const byRisk: RiskSlice[] = [];
+  let grossValue = 0;
+  let returnDollar = 0;
+  let totalVar = 0;
+
+  for (const pos of positions) {
+    const shares = Number(pos.shares);
+    const ticker = pos.security.ticker;
+    const sign = pos.isShort ? -1 : 1;
+
+    let currentPrice = 0;
+    let startPrice = 0;
+
+    if (horizon === "1D") {
+      if (weekend) {
+        const stored = await getLastStoredPrices(pos.securityId);
+        if (stored) {
+          currentPrice = stored.currentPrice;
+          startPrice = stored.prevClose;
+        }
+      } else {
+        const q = quotes?.get(toYahooSymbol(ticker));
+        currentPrice = q?.price ?? 0;
+        startPrice = q?.prevClose ?? currentPrice;
+      }
+    } else {
+      const [latest, startRow] = await Promise.all([
+        db.priceHistory.findFirst({
+          where: { securityId: pos.securityId },
+          orderBy: { tradeDate: "desc" },
+          select: { adjClose: true },
+        }),
+        getPriceAt(pos.securityId, startCutoff!),
+      ]);
+      currentPrice = latest ? Number(latest.adjClose) : 0;
+      startPrice = startRow ?? currentPrice;
+    }
+
+    const marketValue = Math.abs(shares * currentPrice);
+    grossValue += marketValue;
+
+    const retPctSigned =
+      startPrice > 0 ? (sign * (currentPrice - startPrice)) / startPrice : 0;
+    returnDollar += sign * shares * (currentPrice - startPrice);
+
+    byReturn.push({
+      name: ticker,
+      value: Math.abs(retPctSigned),
+      signed: retPctSigned,
+      negative: retPctSigned < 0,
+      marketValue,
+    });
+
+    const var1d = riskByTicker.get(ticker)?.varDollar95 ?? 0;
+    const varH = var1d * scale;
+    totalVar += varH;
+    byRisk.push({
+      name: ticker,
+      value: varH,
+      pct: 0,
+      dollar: varH,
+      negative: false,
+      marketValue,
+    });
+  }
+
+  for (const r of byRisk) {
+    r.pct = totalVar > 0 ? r.value / totalVar : 0;
+  }
+
+  // Gross-weighted return so longs and shorts net correctly against
+  // gross capital deployed (matches PnlSummary's anchoring convention).
+  const returnPct = grossValue > 0 ? returnDollar / grossValue : 0;
+  const varPct = grossValue > 0 ? totalVar / grossValue : 0;
+
+  return {
+    horizon,
+    byReturn,
+    byRisk,
+    totals: { returnPct, returnDollar, varDollar: totalVar, varPct, grossValue },
   };
 }

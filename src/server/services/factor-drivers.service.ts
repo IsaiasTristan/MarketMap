@@ -16,7 +16,6 @@ export async function getFactorDrivers(
   model: ModelPresetName,
   groupBy: "position" | "sector" | "subTheme",
   window: number,
-  ewHalfLife?: number | null,
 ): Promise<DriversResult | null> {
   const preset = resolveModel(model);
   const factorCodes = preset.factors as FactorCode[];
@@ -140,7 +139,6 @@ export async function getFactorDrivers(
     factorMatrixForReturns,
     rfForReturns,
     window,
-    ewHalfLife,
   );
 
   return computeDrivers(loadings, factorCodes, groupBy);
