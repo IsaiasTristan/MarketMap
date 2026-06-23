@@ -506,22 +506,57 @@ async function fetchQuoteChartResult(
   return json.chart?.result?.[0] ?? null;
 }
 
+/** Prior regular-session intraday sparkline + prior close for one ticker.
+ *  Fetched from a `5d` chart so the latest prior session is reachable across
+ *  weekends / holidays. Used by the prior-session sparkline cache sweep. */
+export interface YahooPriorSession {
+  prevDayCloses: number[];
+  prevClose: number;
+  /** ET calendar date (yyyy-MM-dd) the prior-session bars belong to, if known. */
+  asOfDate: string | null;
+}
+
+export async function fetchYahooPriorSession(
+  ticker: string,
+): Promise<YahooPriorSession | null> {
+  const r0 = await fetchQuoteChartResult(ticker, "5d", { includePrePost: false });
+  if (!r0) return null;
+
+  const ts = r0.timestamp ?? [];
+  const rawCloses = r0.indicators?.quote?.[0]?.close ?? [];
+  const { prevDayCloses } = splitIntradayByEtDate(ts, rawCloses);
+  if (prevDayCloses.length < 2) return null;
+
+  const meta = r0.meta ?? {};
+  const prevClose = Number.isFinite(meta.previousClose)
+    ? (meta.previousClose as number)
+    : Number.isFinite(meta.chartPreviousClose)
+      ? (meta.chartPreviousClose as number)
+      : prevDayCloses[prevDayCloses.length - 1]!;
+
+  return { prevDayCloses, prevClose, asOfDate: null };
+}
+
+/** Company display name from chart meta (`longName` preferred). Small `1d`
+ *  daily-bar call — used by the one-time name backfill. Returns null when no
+ *  usable name is present or the fetch is throttled / fails. */
+export async function fetchYahooDisplayName(ticker: string): Promise<string | null> {
+  const r0 = await fetchQuoteChartResult(ticker, "1d");
+  if (!r0) return null;
+  const meta = r0.meta ?? {};
+  const name =
+    (typeof meta.longName === "string" && meta.longName.trim()) ||
+    (typeof meta.shortName === "string" && meta.shortName.trim()) ||
+    null;
+  return name || null;
+}
+
 async function fetchYahooQuoteWithSparkline(
   ticker: string,
 ): Promise<YahooStripQuote | null> {
-  const r0 = await fetchQuoteChartResult(ticker, "1d");
+  const r0 = await fetchQuoteChartResult(ticker, "5d", { includePrePost: true });
   if (!r0) return null;
-
-  const closes = (r0.indicators?.quote?.[0]?.close ?? []).filter(
-    (c): c is number => c != null && Number.isFinite(c),
-  );
-
-  return buildStripQuoteFromChart(
-    r0,
-    decimate(closes, SPARKLINE_MAX_POINTS),
-    [],
-    { extendedCloses: [] },
-  );
+  return buildHoldingsSparklineQuote(r0);
 }
 
 function buildHoldingsSparklineQuote(r0: QuoteChartResult): YahooStripQuote | null {
@@ -537,16 +572,14 @@ function buildHoldingsSparklineQuote(r0: QuoteChartResult): YahooStripQuote | nu
   });
 }
 
-/** Holdings dashboard: today + prior session sparklines from one 1mo chart call. */
-async function fetchYahooQuoteWithDualSparkline(
-  ticker: string,
-): Promise<YahooStripQuote | null> {
-  const r0 = await fetchQuoteChartResult(ticker, "1mo", { includePrePost: true });
-  if (!r0) return null;
-  return buildHoldingsSparklineQuote(r0);
-}
-
-async function fetchYahooQuoteWithSparklineHoldingsFallback(
+/**
+ * Holdings dashboard: today's regular + extended (PRE/POST) sparkline from one
+ * small `1d` chart call. The prior-session ("Previous Price") sparkline is NOT
+ * pulled here — it is served from the daily prior-session cache so we don't
+ * re-fetch immutable data on every 20s refresh. `meta.previousClose` on the
+ * `1d` range still gives the correct prior close for 1D-return colouring.
+ */
+async function fetchYahooQuoteWithSparklineHoldingsToday(
   ticker: string,
 ): Promise<YahooStripQuote | null> {
   const r0 = await fetchQuoteChartResult(ticker, "1d", { includePrePost: true });
@@ -599,8 +632,7 @@ export async function fetchYahooQuotesWithSparklinePool(
       if (idx >= queue.length) return;
       const t = queue[idx]!;
       try {
-        let q = await fetchYahooQuoteWithDualSparkline(t);
-        if (!q) q = await fetchYahooQuoteWithSparklineHoldingsFallback(t);
+        const q = await fetchYahooQuoteWithSparklineHoldingsToday(t);
         if (q) out.set(toYahooSymbol(t), q);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

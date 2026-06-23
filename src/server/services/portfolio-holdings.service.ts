@@ -4,10 +4,14 @@
 
 import { prisma as db } from "@/infrastructure/db/client";
 import {
+  fetchYahooPriorSession,
   fetchYahooQuotesWithSparklinePool,
   toYahooSymbol,
   type YahooStripQuote,
 } from "@/infrastructure/providers/yahoo-chart-http";
+import {
+  getPriorSessionSparkline,
+} from "./prior-session-sparkline.service";
 import { computePctRank } from "@/lib/factors/screener/derived";
 import {
   buildCohortStats,
@@ -106,13 +110,15 @@ function resolveHoldingDisplayName(
   securityName: string | undefined,
   quote: YahooStripQuote | undefined,
 ): string {
-  const yahooName = quote?.displayName?.trim();
-  if (yahooName && !isTickerLikeName(yahooName, ticker)) return yahooName;
-
+  // DB-first: the stored name (manual / universe import) is authoritative and
+  // survives Yahoo throttling. Fall back to the live name, then the ticker.
   const storedName = securityName?.trim();
   if (storedName && !isTickerLikeName(storedName, ticker)) return storedName;
 
-  return yahooName || storedName || ticker;
+  const yahooName = quote?.displayName?.trim();
+  if (yahooName && !isTickerLikeName(yahooName, ticker)) return yahooName;
+
+  return storedName || yahooName || ticker;
 }
 
 function resolveQuote(
@@ -207,9 +213,38 @@ export async function getPortfolioHoldings(
   const universeSecurityIds = universeRows.map((r) => r.security.id);
   const storedBySecId = await batchLastTwoPrices(universeSecurityIds);
 
-  // Live sparklines for portfolio positions. On weekends we still fetch
-  // sparkline history but overlay stored closes for price / 1D return.
-  const quotes = await fetchYahooQuotesWithSparklinePool(portfolioTickers);
+  // Live today's sparkline + price only (small `1d` pull). Prior-session
+  // sparklines come from the daily cache — see prior-session-sparkline.service.
+  const quotes = await fetchYahooQuotesWithSparklinePool(portfolioTickers, {
+    concurrency: 3,
+    perRequestDelayMs: 350,
+  });
+
+  // Prior-session sparklines from the in-memory cache; one-off 5d fallback for
+  // tickers missing from the cache (cold start / just-added holding).
+  const priorSparkByTicker = new Map<string, number[]>();
+  const priorFallbackTickers: string[] = [];
+  for (const t of portfolioTickers) {
+    const cached = getPriorSessionSparkline(t);
+    if (cached && cached.prevDayCloses.length >= 2) {
+      priorSparkByTicker.set(t, cached.prevDayCloses);
+    } else {
+      priorFallbackTickers.push(t);
+    }
+  }
+  if (priorFallbackTickers.length > 0) {
+    const fallbacks = await Promise.all(
+      priorFallbackTickers.map(async (t) => {
+        const prior = await fetchYahooPriorSession(t);
+        return prior && prior.prevDayCloses.length >= 2
+          ? { t, closes: prior.prevDayCloses }
+          : null;
+      }),
+    );
+    for (const fb of fallbacks) {
+      if (fb) priorSparkByTicker.set(fb.t, fb.closes);
+    }
+  }
 
   const securities = await db.security.findMany({
     where: { ticker: { in: portfolioTickers } },
@@ -253,6 +288,7 @@ export async function getPortfolioHoldings(
   );
 
   const rows: HoldingRow[] = [];
+  const nameUpdates: { id: string; name: string }[] = [];
 
   for (const pos of positions) {
     const sec = secMap.get(pos.ticker);
@@ -270,11 +306,24 @@ export async function getPortfolioHoldings(
     ]);
 
     const q = resolveQuote(pos.ticker, quotes, stored, weekend);
+    const liveQuote = quotes.get(toYahooSymbol(pos.ticker));
     const displayName = resolveHoldingDisplayName(
       pos.ticker,
       sec?.name ?? pos.name,
-      quotes.get(toYahooSymbol(pos.ticker)),
+      liveQuote,
     );
+
+    if (
+      secId &&
+      sec &&
+      isTickerLikeName(sec.name, pos.ticker) &&
+      liveQuote?.displayName &&
+      !isTickerLikeName(liveQuote.displayName, pos.ticker)
+    ) {
+      nameUpdates.push({ id: secId, name: liveQuote.displayName.trim() });
+    }
+
+    const prevDaySparkline = priorSparkByTicker.get(pos.ticker) ?? [];
     const sector =
       resolveSector(ur?.sector, pos.sector, sec?.sector) ?? "Other";
     const subTheme = ur?.subTheme?.trim() || "Other";
@@ -312,7 +361,7 @@ export async function getPortfolioHoldings(
       currentPrice: q.price,
       marketValue: Math.abs(pos.shares * q.price),
       sparkline: q.sparkline,
-      prevDaySparkline: q.prevDaySparkline,
+      prevDaySparkline,
       sparklineExtended: q.sparklineExtended,
       prevClose: q.prevClose,
       dayOpen: q.dayOpen,
@@ -336,6 +385,14 @@ export async function getPortfolioHoldings(
   }
 
   rows.sort((a, b) => b.chg1dPct - a.chg1dPct);
+
+  if (nameUpdates.length > 0) {
+    await Promise.all(
+      nameUpdates.map((u) =>
+        db.security.update({ where: { id: u.id }, data: { name: u.name } }),
+      ),
+    );
+  }
 
   return { rows };
 }

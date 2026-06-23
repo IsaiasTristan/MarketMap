@@ -43,5 +43,16 @@ export async function register() {
         e,
       );
     }
+    try {
+      const { startPriorSessionRunner } = await import(
+        "@/server/services/prior-session-runner"
+      );
+      startPriorSessionRunner();
+    } catch (e) {
+      console.error(
+        "[instrumentation] failed to start prior-session runner:",
+        e,
+      );
+    }
   }
 }

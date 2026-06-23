@@ -188,6 +188,27 @@ describe("composeCurrentSparkline", () => {
     expect(extended).toEqual([]);
   });
 
+  it("suppresses today's PRE tail during regular hours when pre-market bars exist", () => {
+    const jun23Pre = [
+      etUnix("2026-06-23T08:00:00-04:00"),
+      etUnix("2026-06-23T09:00:00-04:00"),
+    ];
+    const jun23Reg = [
+      etUnix("2026-06-23T10:00:00-04:00"),
+      etUnix("2026-06-23T12:00:00-04:00"),
+      etUnix("2026-06-23T14:00:00-04:00"),
+    ];
+    const ts = [...jun23Pre, ...jun23Reg];
+    const closes = [108, 109, 110, 111, 112];
+    const sessions = splitIntradaySessions(ts, closes);
+    const now = new Date("2026-06-23T12:00:00-04:00");
+
+    const { regular, extended } = composeCurrentSparkline(sessions, now);
+
+    expect(regular).toEqual([110, 111, 112]);
+    expect(extended).toEqual([]);
+  });
+
   it("appends today's POST tail during after-hours", () => {
     const jun23Reg = [
       etUnix("2026-06-23T10:00:00-04:00"),
@@ -206,6 +227,22 @@ describe("composeCurrentSparkline", () => {
 
     expect(regular).toEqual([200, 201]);
     expect(extended).toEqual([202, 203]);
+  });
+});
+
+describe("splitIntradaySessions", () => {
+  it("routes PRE and POST bars into separate buckets", () => {
+    const ts = [
+      etUnix("2026-06-23T08:00:00-04:00"),
+      etUnix("2026-06-23T12:00:00-04:00"),
+      etUnix("2026-06-23T17:00:00-04:00"),
+    ];
+    const closes = [108, 110, 112];
+    const sessions = splitIntradaySessions(ts, closes);
+
+    expect(sessions.byDatePre.get("2026-06-23")).toEqual([108]);
+    expect(sessions.byDateRegular.get("2026-06-23")).toEqual([110]);
+    expect(sessions.byDatePost.get("2026-06-23")).toEqual([112]);
   });
 });
 

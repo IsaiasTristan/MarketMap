@@ -13,7 +13,8 @@ const MIN_SESSION_BARS = 2;
 
 export type IntradaySessionSplit = {
   byDateRegular: Map<string, number[]>;
-  byDateExtended: Map<string, number[]>;
+  byDatePre: Map<string, number[]>;
+  byDatePost: Map<string, number[]>;
 };
 
 /** Decimate by stride, preserving first and last samples. */
@@ -44,7 +45,8 @@ export function splitIntradaySessions(
   closes: (number | null)[],
 ): IntradaySessionSplit {
   const byDateRegular = new Map<string, number[]>();
-  const byDateExtended = new Map<string, number[]>();
+  const byDatePre = new Map<string, number[]>();
+  const byDatePost = new Map<string, number[]>();
 
   for (let i = 0; i < timestamps.length; i++) {
     const c = closes[i];
@@ -54,12 +56,14 @@ export function splitIntradaySessions(
     const session = classifyEtTimeOfDay(unix);
     if (session === "REGULAR") {
       pushBucket(byDateRegular, d, c);
+    } else if (session === "PRE") {
+      pushBucket(byDatePre, d, c);
     } else {
-      pushBucket(byDateExtended, d, c);
+      pushBucket(byDatePost, d, c);
     }
   }
 
-  return { byDateRegular, byDateExtended };
+  return { byDateRegular, byDatePre, byDatePost };
 }
 
 function latestPriorRegularDate(
@@ -77,6 +81,15 @@ function latestPriorRegularDate(
 /**
  * Compose the Current Price sparkline: regular session (bicolor) plus optional
  * extended PRE/POST tail (dashed gray in the UI).
+ *
+ * The dashed tail only ever represents price action that comes AFTER the solid
+ * regular line:
+ *   - During / after today's regular session, the tail is today's POST bars
+ *     (empty until 16:00 ET) — never this morning's PRE bars, which belong
+ *     before the open and would render backwards.
+ *   - Before today's open (carry branch), the solid line is the prior regular
+ *     session and the tail is that session's POST bars, plus this morning's
+ *     PRE bars while the clock is in the PRE window.
  */
 export function composeCurrentSparkline(
   sessions: IntradaySessionSplit,
@@ -90,7 +103,7 @@ export function composeCurrentSparkline(
     return {
       regular: decimateSparkline(todayRegular, REGULAR_SPARKLINE_MAX),
       extended: decimateSparkline(
-        sessions.byDateExtended.get(todayEt) ?? [],
+        sessions.byDatePost.get(todayEt) ?? [],
         EXTENDED_SPARKLINE_MAX,
       ),
     };
@@ -98,9 +111,9 @@ export function composeCurrentSparkline(
 
   const carryDate = latestPriorRegularDate(sessions.byDateRegular, todayEt);
   if (carryDate) {
-    let extended = [...(sessions.byDateExtended.get(carryDate) ?? [])];
+    let extended = [...(sessions.byDatePost.get(carryDate) ?? [])];
     if (clockSession === "PRE") {
-      extended = [...extended, ...(sessions.byDateExtended.get(todayEt) ?? [])];
+      extended = [...extended, ...(sessions.byDatePre.get(todayEt) ?? [])];
     }
     return {
       regular: decimateSparkline(
@@ -111,7 +124,10 @@ export function composeCurrentSparkline(
     };
   }
 
-  const todayExtended = sessions.byDateExtended.get(todayEt) ?? [];
+  const todayExtended = [
+    ...(sessions.byDatePre.get(todayEt) ?? []),
+    ...(sessions.byDatePost.get(todayEt) ?? []),
+  ];
   if (todayExtended.length >= MIN_SESSION_BARS) {
     return { regular: [], extended: decimateSparkline(todayExtended, EXTENDED_SPARKLINE_MAX) };
   }

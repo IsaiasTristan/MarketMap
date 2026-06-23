@@ -13,6 +13,7 @@ import {
 } from "@/components/analysis/overview/CapitalAllocationCard";
 import { HoldingsDashboard } from "@/components/analysis/overview/HoldingsDashboard";
 import { HoldingsRiskTable } from "@/components/analysis/overview/HoldingsRiskTable";
+import { HoldingsLiveChartGrid } from "@/components/analysis/overview/HoldingsLiveChartGrid";
 import { PortfolioFactorSummary } from "@/components/analysis/overview/PortfolioFactorSummary";
 import { fmt$, fmtPct } from "@/components/analysis/overview/formatters";
 import type { HoldingRow } from "@/server/services/portfolio-holdings.service";
@@ -118,7 +119,7 @@ export function OverviewClient() {
       return body;
     },
     enabled: !!activePortfolioId,
-    refetchInterval: 60_000,
+    refetchInterval: 20_000,
   });
 
   const { data: posRiskData, isLoading: posRiskLoading } = useQuery<{
@@ -255,6 +256,14 @@ export function OverviewClient() {
       <HoldingsRiskTable
         positions={posRiskData?.positions ?? []}
         loading={posRiskLoading}
+      />
+
+      <HoldingsLiveChartGrid
+        rows={holdingsData?.rows ?? []}
+        dailyPnlByTicker={
+          new Map(positions.map((p) => [p.ticker, p.dailyPnl]))
+        }
+        loading={holdingsLoading}
       />
 
       <PortfolioFactorSummary

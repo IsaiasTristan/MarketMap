@@ -16,7 +16,8 @@
     "db:studio": "prisma studio",
     "job:refresh": "node -e \"console.log('Refresh job runner not wired yet.'); process.exit(0)\"",
     "job:daily": "tsx scripts/daily-precompute.ts",
-    "job:precompute-grid": "tsx scripts/precompute-per-stock-grid.ts"
+    "job:precompute-grid": "tsx scripts/precompute-per-stock-grid.ts",
+    "job:backfill-names": "tsx scripts/backfill-security-names.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",

@@ -4,8 +4,7 @@ import type { CSSProperties } from "react";
 import { useMemo, useState } from "react";
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
 import { fmtPrice } from "@/components/analysis/overview/formatters";
-import { IntradaySparkline } from "@/components/analysis/ui/IntradaySparkline";
-import { GraySparkline } from "@/components/analysis/ui/GraySparkline";
+import { SessionSeamSparkline } from "@/components/analysis/ui/SessionSeamSparkline";
 import { DayRangeBar } from "@/components/analysis/overview/DayRangeBar";
 import { PeriodCell } from "@/components/analysis/overview/PeriodBlock";
 import { CohortDistribution } from "@/components/analysis/overview/CohortDistribution";
@@ -153,20 +152,16 @@ function HoldingRowView({
         {fmtPrice(row.currentPrice)}
       </td>
       <td
-        className="spark-col-prev"
-        style={{ ...tdBase, textAlign: "center", padding: "0 0 0 2px" }}
+        className="spark-col-session"
+        style={{ ...tdBase, textAlign: "center", padding: "0 4px" }}
       >
-        <GraySparkline series={row.prevDaySparkline} height={18} fluid />
-      </td>
-      <td
-        className="spark-col-curr"
-        style={{ ...tdBase, textAlign: "center", padding: "0 2px 0 0" }}
-      >
-        <IntradaySparkline
-          series={row.sparkline}
+        <SessionSeamSparkline
+          priorSeries={row.prevDaySparkline}
+          todaySeries={row.sparkline}
           extendedSeries={row.sparklineExtended}
           prevClose={row.prevClose}
-          fallbackSeries={row.prevDaySparkline}
+          fallbackTodaySeries={row.prevDaySparkline}
+          timeMode="us_regular"
           height={18}
           fluid
         />
@@ -248,7 +243,7 @@ function SectionHeader({
       }}
     >
       <td
-        colSpan={15}
+        colSpan={14}
         style={{
           padding: "0 6px",
           fontSize: BB_GRID_FONT_SIZE,
@@ -306,17 +301,9 @@ export function HoldingsDashboard({ rows, loading, error }: HoldingsDashboardPro
         <th style={{ ...thStyle, textAlign: "right" }}>Price</th>
         <th
           style={{ ...thStyle, textAlign: "center", lineHeight: 1.05, padding: "2px 4px" }}
-          title="Previous Price"
+          title="Prior session (white) · today (colored vs prev close)"
         >
-          <span style={{ display: "block", fontSize: 10 }}>Previous</span>
-          <span style={{ display: "block", fontSize: 10 }}>Price</span>
-        </th>
-        <th
-          style={{ ...thStyle, textAlign: "center", lineHeight: 1.05, padding: "2px 4px" }}
-          title="Current Price"
-        >
-          <span style={{ display: "block", fontSize: 10 }}>Current</span>
-          <span style={{ display: "block", fontSize: 10 }}>Price</span>
+          Session
         </th>
         <th style={{ ...thStyle, textAlign: "center" }}>Range</th>
         <th style={{ ...thStyle, textAlign: "right" }}>1D</th>

@@ -10,7 +10,7 @@
  * absolute change) between the grab point and the cursor, and the selected
  * span is shaded. Mirrors the Bloomberg "drag to measure" gesture.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   AreaChart,
@@ -22,6 +22,10 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
+import {
+  appendSparklineTail,
+  mergeIntradayPoints,
+} from "@/lib/holdings/merge-intraday-points";
 import type {
   PriceRange,
   PriceSeriesResult,
@@ -37,6 +41,20 @@ interface ChartPoint {
   t: string;
   price: number;
   label: string;
+}
+
+export interface StockPriceChartProps {
+  ticker: string;
+  /** Poll intraday ranges every 20s and append new points. */
+  live?: boolean;
+  /** Hide range toggles and shrink header chrome. */
+  compact?: boolean;
+  /** Chart body height in px. */
+  height?: number;
+  /** Optional sparkline tail from holdings refresh (5m closes). */
+  liveTail?: number[];
+  /** Omit outer card border when embedded in a modal shell. */
+  embedded?: boolean;
 }
 
 function formatLabel(t: string, intraday: boolean): string {
@@ -58,11 +76,45 @@ function toIdx(raw: number | string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export function StockPriceChart({ ticker }: { ticker: string }) {
+function toChartPoints(
+  raw: { t: string; price: number }[],
+  intraday: boolean,
+): ChartPoint[] {
+  return raw.map((p, i) => ({
+    idx: i,
+    t: p.t,
+    price: p.price,
+    label: formatLabel(p.t, intraday),
+  }));
+}
+
+export function StockPriceChart({
+  ticker,
+  live = false,
+  compact = false,
+  height = 180,
+  liveTail,
+  embedded = false,
+}: StockPriceChartProps) {
   const [range, setRange] = useState<PriceRange>("1D");
   const [dragStart, setDragStart] = useState<number | null>(null);
   const [dragEnd, setDragEnd] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [mergedPoints, setMergedPoints] = useState<{ t: string; price: number }[]>(
+    [],
+  );
+  const mergedRangeRef = useRef<PriceRange | null>(null);
+
+  useEffect(() => {
+    setMergedPoints([]);
+    mergedRangeRef.current = null;
+    setDragStart(null);
+    setDragEnd(null);
+    setDragging(false);
+  }, [ticker]);
+
+  const isIntradayRange = range === "1D" || range === "5D";
+  const livePolling = live && isIntradayRange;
 
   const { data, isLoading, error } = useQuery<PriceSeriesResult>({
     queryKey: ["price-series", ticker, range],
@@ -70,21 +122,46 @@ export function StockPriceChart({ ticker }: { ticker: string }) {
       fetch(
         `/api/analysis/securities/price-series?ticker=${encodeURIComponent(ticker)}&range=${range}`,
       ).then((r) => r.json()),
-    // Intraday goes stale fast; daily can be cached far longer.
-    staleTime: range === "1D" || range === "5D" ? 30_000 : 10 * 60_000,
+    staleTime: isIntradayRange ? 30_000 : 10 * 60_000,
+    refetchInterval: livePolling ? 20_000 : false,
   });
 
   const intraday = data?.interval === "1m" || data?.interval === "5m";
 
-  const points: ChartPoint[] = useMemo(() => {
-    if (!data?.points) return [];
-    return data.points.map((p, i) => ({
-      idx: i,
-      t: p.t,
-      price: p.price,
-      label: formatLabel(p.t, !!intraday),
-    }));
-  }, [data, intraday]);
+  // Merge successive intraday fetches so the series grows forward without reset.
+  useEffect(() => {
+    if (!data?.points) return;
+    if (!isIntradayRange) {
+      setMergedPoints(data.points);
+      mergedRangeRef.current = range;
+      return;
+    }
+    if (mergedRangeRef.current !== range) {
+      setMergedPoints(data.points);
+      mergedRangeRef.current = range;
+      return;
+    }
+    setMergedPoints((prev) => mergeIntradayPoints(prev, data.points));
+  }, [data, isIntradayRange, range]);
+
+  // Bridge holdings sparkline tail between full price-series polls.
+  useEffect(() => {
+    if (!live || !isIntradayRange || !liveTail?.length) return;
+    setMergedPoints((prev) => {
+      if (prev.length === 0) return prev;
+      const last = prev[prev.length - 1]!.price;
+      const tailFrom = liveTail.findIndex((p) => p !== last);
+      const slice = tailFrom >= 0 ? liveTail.slice(tailFrom) : liveTail.slice(-1);
+      return appendSparklineTail(prev, slice, 60_000);
+    });
+  }, [live, isIntradayRange, liveTail]);
+
+  const seriesPoints = isIntradayRange ? mergedPoints : (data?.points ?? []);
+
+  const points: ChartPoint[] = useMemo(
+    () => toChartPoints(seriesPoints, !!intraday),
+    [seriesPoints, intraday],
+  );
 
   // Baseline for the header % change: 1D uses prior close when available so
   // the day's move is measured from yesterday's close, not the first tick.
@@ -130,8 +207,15 @@ export function StockPriceChart({ ticker }: { ticker: string }) {
     return [lo - pad, hi + pad];
   }, [points]);
 
+  const gradientId = `spc-${ticker}-${embedded ? "emb" : "std"}`;
+
   return (
-    <div style={{ background: "var(--bg-surface)", border: "1px solid var(--bg-border)" }}>
+    <div
+      style={{
+        background: "var(--bg-surface)",
+        border: embedded ? "none" : "1px solid var(--bg-border)",
+      }}
+    >
       {/* Header: price + change + range toggles */}
       <div
         style={{
@@ -139,7 +223,7 @@ export function StockPriceChart({ ticker }: { ticker: string }) {
           alignItems: "baseline",
           justifyContent: "space-between",
           gap: 12,
-          padding: "8px 12px",
+          padding: compact ? "6px 10px" : "8px 12px",
           borderBottom: "1px solid var(--bg-border)",
           flexWrap: "wrap",
         }}
@@ -160,7 +244,7 @@ export function StockPriceChart({ ticker }: { ticker: string }) {
             <span
               style={{
                 fontFamily: "var(--font-mono, monospace)",
-                fontSize: 15,
+                fontSize: compact ? 13 : 15,
                 fontWeight: 600,
                 color: "var(--text-primary)",
               }}
@@ -172,7 +256,7 @@ export function StockPriceChart({ ticker }: { ticker: string }) {
             <span
               style={{
                 fontFamily: "var(--font-mono, monospace)",
-                fontSize: 12,
+                fontSize: compact ? 11 : 12,
                 fontWeight: 600,
                 color,
               }}
@@ -182,36 +266,40 @@ export function StockPriceChart({ ticker }: { ticker: string }) {
             </span>
           )}
         </div>
-        <div style={{ display: "flex", gap: 2 }}>
-          {RANGES.map((r) => {
-            const active = r === range;
-            return (
-              <button
-                key={r}
-                type="button"
-                onClick={() => {
-                  setRange(r);
-                  setDragStart(null);
-                  setDragEnd(null);
-                  setDragging(false);
-                }}
-                style={{
-                  fontSize: 10,
-                  fontWeight: active ? 700 : 500,
-                  padding: "2px 7px",
-                  cursor: "pointer",
-                  color: active ? "#0b0f17" : "var(--text-muted)",
-                  background: active ? "var(--accent, #f0b65d)" : "transparent",
-                  border: "1px solid",
-                  borderColor: active ? "var(--accent, #f0b65d)" : "var(--bg-border)",
-                  fontVariantNumeric: "tabular-nums",
-                }}
-              >
-                {r}
-              </button>
-            );
-          })}
-        </div>
+        {!compact && (
+          <div style={{ display: "flex", gap: 2 }}>
+            {RANGES.map((r) => {
+              const active = r === range;
+              return (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => {
+                    setRange(r);
+                    setMergedPoints([]);
+                    mergedRangeRef.current = null;
+                    setDragStart(null);
+                    setDragEnd(null);
+                    setDragging(false);
+                  }}
+                  style={{
+                    fontSize: 10,
+                    fontWeight: active ? 700 : 500,
+                    padding: "2px 7px",
+                    cursor: "pointer",
+                    color: active ? "#0b0f17" : "var(--text-muted)",
+                    background: active ? "var(--accent, #f0b65d)" : "transparent",
+                    border: "1px solid",
+                    borderColor: active ? "var(--accent, #f0b65d)" : "var(--bg-border)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {r}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Chart body */}
@@ -244,20 +332,46 @@ export function StockPriceChart({ ticker }: { ticker: string }) {
           </div>
         )}
 
-        {isLoading ? (
-          <div style={{ height: 180, display: "grid", placeItems: "center", color: "var(--text-muted)", fontSize: 11 }}>
+        {isLoading && points.length === 0 ? (
+          <div
+            style={{
+              height,
+              display: "grid",
+              placeItems: "center",
+              color: "var(--text-muted)",
+              fontSize: 11,
+            }}
+          >
             Loading {range} price…
           </div>
         ) : error || data?.error ? (
-          <div style={{ height: 180, display: "grid", placeItems: "center", color: "var(--color-warning, #f59e0b)", fontSize: 11, textAlign: "center", padding: "0 16px" }}>
+          <div
+            style={{
+              height,
+              display: "grid",
+              placeItems: "center",
+              color: "var(--color-warning, #f59e0b)",
+              fontSize: 11,
+              textAlign: "center",
+              padding: "0 16px",
+            }}
+          >
             {data?.error ?? "Failed to load price data."}
           </div>
         ) : points.length === 0 ? (
-          <div style={{ height: 180, display: "grid", placeItems: "center", color: "var(--text-muted)", fontSize: 11 }}>
+          <div
+            style={{
+              height,
+              display: "grid",
+              placeItems: "center",
+              color: "var(--text-muted)",
+              fontSize: 11,
+            }}
+          >
             No price data for {range}.
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height={180}>
+          <ResponsiveContainer width="100%" height={height}>
             <AreaChart
               data={points}
               margin={{ top: 6, right: 8, bottom: 0, left: 0 }}
@@ -277,7 +391,7 @@ export function StockPriceChart({ ticker }: { ticker: string }) {
               onMouseUp={() => setDragging(false)}
             >
               <defs>
-                <linearGradient id={`spc-${ticker}`} x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={color} stopOpacity={0.28} />
                   <stop offset="100%" stopColor={color} stopOpacity={0} />
                 </linearGradient>
@@ -317,7 +431,7 @@ export function StockPriceChart({ ticker }: { ticker: string }) {
                 dataKey="price"
                 stroke={color}
                 strokeWidth={1.4}
-                fill={`url(#spc-${ticker})`}
+                fill={`url(#${gradientId})`}
                 isAnimationActive={false}
                 dot={false}
               />

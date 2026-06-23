@@ -19,6 +19,7 @@ import {
   fetchYahooQuotesWithSparkline,
   toYahooSymbol,
 } from "@/infrastructure/providers/yahoo-chart-http";
+import type { SparklineTimeMode } from "@/lib/market/sparkline-session-layout";
 
 export type StripInstrumentKind = "price" | "yield";
 
@@ -27,6 +28,7 @@ export interface StripInstrument {
   yahooSymbol: string;
   kind: StripInstrumentKind;
   decimals: number;
+  timeMode: SparklineTimeMode;
 }
 
 export interface MarketStripQuote {
@@ -43,24 +45,27 @@ export interface MarketStripQuote {
   /** Today's intraday close series (oldest -> newest) for the chip sparkline.
    *  Empty when no intraday data is available — chip renders just a baseline. */
   sparkline: number[];
+  /** Prior trading session closes for the seam sparkline left segment. */
+  prevDaySparkline: number[];
+  timeMode: SparklineTimeMode;
 }
 
 /**
  * Order matters — this is the left-to-right display order in the UI strip.
  */
 export const STRIP_INSTRUMENTS: readonly StripInstrument[] = [
-  { label: "S&P 500", yahooSymbol: "^GSPC", kind: "price", decimals: 2 },
-  { label: "DOW", yahooSymbol: "^DJI", kind: "price", decimals: 2 },
-  { label: "NASDAQ", yahooSymbol: "^IXIC", kind: "price", decimals: 2 },
-  { label: "VIX", yahooSymbol: "^VIX", kind: "price", decimals: 2 },
-  { label: "Gold", yahooSymbol: "GC=F", kind: "price", decimals: 2 },
-  { label: "Bitcoin", yahooSymbol: "BTC-USD", kind: "price", decimals: 0 },
-  { label: "WTI", yahooSymbol: "CL=F", kind: "price", decimals: 2 },
-  { label: "HHUB", yahooSymbol: "NG=F", kind: "price", decimals: 3 },
-  { label: "EUR/USD", yahooSymbol: "EURUSD=X", kind: "price", decimals: 4 },
-  { label: "USD/JPY", yahooSymbol: "USDJPY=X", kind: "price", decimals: 2 },
-  { label: "5Y", yahooSymbol: "^FVX", kind: "yield", decimals: 2 },
-  { label: "10Y", yahooSymbol: "^TNX", kind: "yield", decimals: 2 },
+  { label: "S&P 500", yahooSymbol: "^GSPC", kind: "price", decimals: 2, timeMode: "us_regular" },
+  { label: "DOW", yahooSymbol: "^DJI", kind: "price", decimals: 2, timeMode: "us_regular" },
+  { label: "NASDAQ", yahooSymbol: "^IXIC", kind: "price", decimals: 2, timeMode: "us_regular" },
+  { label: "VIX", yahooSymbol: "^VIX", kind: "price", decimals: 2, timeMode: "us_regular" },
+  { label: "Gold", yahooSymbol: "GC=F", kind: "price", decimals: 2, timeMode: "et_calendar_day" },
+  { label: "Bitcoin", yahooSymbol: "BTC-USD", kind: "price", decimals: 0, timeMode: "et_calendar_day" },
+  { label: "WTI", yahooSymbol: "CL=F", kind: "price", decimals: 2, timeMode: "et_calendar_day" },
+  { label: "HHUB", yahooSymbol: "NG=F", kind: "price", decimals: 3, timeMode: "et_calendar_day" },
+  { label: "EUR/USD", yahooSymbol: "EURUSD=X", kind: "price", decimals: 4, timeMode: "et_calendar_day" },
+  { label: "USD/JPY", yahooSymbol: "USDJPY=X", kind: "price", decimals: 2, timeMode: "et_calendar_day" },
+  { label: "5Y", yahooSymbol: "^FVX", kind: "yield", decimals: 2, timeMode: "us_regular" },
+  { label: "10Y", yahooSymbol: "^TNX", kind: "yield", decimals: 2, timeMode: "us_regular" },
 ] as const;
 
 /**
@@ -112,6 +117,8 @@ export async function getMarketStrip(): Promise<MarketStripQuote[]> {
       prevClose,
       ...derived,
       sparkline: q?.intradayCloses ?? [],
+      prevDaySparkline: q?.prevDayCloses ?? [],
+      timeMode: inst.timeMode,
     };
   });
 }

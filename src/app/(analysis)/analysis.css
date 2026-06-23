@@ -175,13 +175,12 @@ html {
   font-variant-numeric: tabular-nums;
 }
 
-.bb-holdings-table .spark-col-prev,
-.bb-holdings-table .spark-col-curr {
+.bb-holdings-table .spark-col-session {
   overflow: visible;
+  min-width: 88px;
 }
 
-.bb-holdings-table .spark-col-prev svg,
-.bb-holdings-table .spark-col-curr svg {
+.bb-holdings-table .spark-col-session svg {
   width: 100%;
   height: 18px;
   display: block;
