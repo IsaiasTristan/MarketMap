@@ -19,6 +19,7 @@ import {
   YAxis,
   Tooltip,
   ReferenceArea,
+  ReferenceLine,
   ResponsiveContainer,
 } from "recharts";
 import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
@@ -26,6 +27,12 @@ import {
   appendSparklineTail,
   mergeIntradayPoints,
 } from "@/lib/holdings/merge-intraday-points";
+import {
+  REGULAR_SESSION_AXIS_TICKS,
+  sessionFractionToEtLabel,
+  timestampToSessionFraction,
+} from "@/lib/market/sparkline-session-layout";
+import { useSessionClock } from "@/lib/market/use-session-clock";
 import type {
   PriceRange,
   PriceSeriesResult,
@@ -41,6 +48,7 @@ interface ChartPoint {
   t: string;
   price: number;
   label: string;
+  sessionX?: number;
 }
 
 export interface StockPriceChartProps {
@@ -79,12 +87,14 @@ function toIdx(raw: number | string | null | undefined): number | null {
 function toChartPoints(
   raw: { t: string; price: number }[],
   intraday: boolean,
+  session1D: boolean,
 ): ChartPoint[] {
   return raw.map((p, i) => ({
     idx: i,
     t: p.t,
     price: p.price,
     label: formatLabel(p.t, intraday),
+    ...(session1D ? { sessionX: timestampToSessionFraction(p.t) } : {}),
   }));
 }
 
@@ -115,6 +125,8 @@ export function StockPriceChart({
 
   const isIntradayRange = range === "1D" || range === "5D";
   const livePolling = live && isIntradayRange;
+  const session1D = range === "1D";
+  useSessionClock(live ? 20_000 : 60_000);
 
   const { data, isLoading, error } = useQuery<PriceSeriesResult>({
     queryKey: ["price-series", ticker, range],
@@ -159,9 +171,12 @@ export function StockPriceChart({
   const seriesPoints = isIntradayRange ? mergedPoints : (data?.points ?? []);
 
   const points: ChartPoint[] = useMemo(
-    () => toChartPoints(seriesPoints, !!intraday),
-    [seriesPoints, intraday],
+    () => toChartPoints(seriesPoints, !!intraday, session1D && !!intraday),
+    [seriesPoints, intraday, session1D],
   );
+
+  const prevClose =
+    range === "1D" && data?.previousClose != null ? data.previousClose : null;
 
   // Baseline for the header % change: 1D uses prior close when available so
   // the day's move is measured from yesterday's close, not the first tick.
@@ -203,9 +218,15 @@ export function StockPriceChart({
       if (p.price < lo) lo = p.price;
       if (p.price > hi) hi = p.price;
     }
+    if (prevClose != null && Number.isFinite(prevClose)) {
+      if (prevClose < lo) lo = prevClose;
+      if (prevClose > hi) hi = prevClose;
+    }
     const pad = (hi - lo) * 0.08 || hi * 0.02 || 1;
     return [lo - pad, hi + pad];
-  }, [points]);
+  }, [points, prevClose]);
+
+  const useSessionAxis = session1D && !!intraday && points.length > 0;
 
   const gradientId = `spc-${ticker}-${embedded ? "emb" : "std"}`;
 
@@ -397,10 +418,18 @@ export function StockPriceChart({
                 </linearGradient>
               </defs>
               <XAxis
-                dataKey="label"
+                type={useSessionAxis ? "number" : "category"}
+                dataKey={useSessionAxis ? "sessionX" : "label"}
+                domain={useSessionAxis ? [0, 1] : undefined}
+                ticks={useSessionAxis ? [...REGULAR_SESSION_AXIS_TICKS] : undefined}
+                tickFormatter={
+                  useSessionAxis
+                    ? (v: number) => sessionFractionToEtLabel(v)
+                    : undefined
+                }
                 tick={{ fontSize: 9, fill: "var(--text-muted)" }}
-                interval="preserveStartEnd"
-                minTickGap={48}
+                interval={useSessionAxis ? undefined : "preserveStartEnd"}
+                minTickGap={useSessionAxis ? undefined : 48}
                 axisLine={{ stroke: "var(--bg-border)" }}
                 tickLine={false}
               />
@@ -418,10 +447,32 @@ export function StockPriceChart({
                 labelStyle={{ color: "var(--text-muted)", fontSize: 10 }}
                 formatter={(v) => [fmtPrice(Number(v)), "Price"]}
               />
+              {prevClose != null && Number.isFinite(prevClose) && (
+                <ReferenceLine
+                  y={prevClose}
+                  stroke="var(--text-muted)"
+                  strokeDasharray="4 4"
+                  strokeWidth={1}
+                  label={{
+                    value: `Prev ${fmtPrice(prevClose)}`,
+                    position: "insideTopLeft",
+                    fill: "var(--text-muted)",
+                    fontSize: 9,
+                  }}
+                />
+              )}
               {sel && (
                 <ReferenceArea
-                  x1={points[sel.a]!.label}
-                  x2={points[sel.b]!.label}
+                  x1={
+                    useSessionAxis
+                      ? points[sel.a]!.sessionX!
+                      : points[sel.a]!.label
+                  }
+                  x2={
+                    useSessionAxis
+                      ? points[sel.b]!.sessionX!
+                      : points[sel.b]!.label
+                  }
                   fill={sel.ret >= 0 ? POS : NEG}
                   fillOpacity={0.12}
                 />

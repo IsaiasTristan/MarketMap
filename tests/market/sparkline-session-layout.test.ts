@@ -2,8 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   computeSeamLayout,
   computeSessionProgress,
+  computeTodayOnlyLayout,
   DEFAULT_PRIOR_ZONE_FRAC,
   mapSeriesToX,
+  sessionFractionToEtLabel,
+  timestampToSessionFraction,
 } from "../../src/lib/market/sparkline-session-layout";
 
 // Mon 2026-06-23 — summer weekday (EDT = UTC-4).
@@ -161,5 +164,51 @@ describe("computeSeamLayout", () => {
     expect(layout.extendedXRange).not.toBeNull();
     expect(layout.extendedXRange![0]).toBe(layout.joinX);
     expect(layout.extendedXRange![1]).toBe(totalWidth);
+  });
+});
+
+describe("timestampToSessionFraction", () => {
+  it("returns 0 at 09:30 ET open", () => {
+    expect(timestampToSessionFraction(et(9, 30).toISOString())).toBe(0);
+  });
+
+  it("returns ~0.385 at 12:00 ET midday", () => {
+    expect(timestampToSessionFraction(et(12, 0).toISOString())).toBeCloseTo(
+      150 / 390,
+      3,
+    );
+  });
+
+  it("returns 1 at 16:00 ET close", () => {
+    expect(timestampToSessionFraction(et(16, 0).toISOString())).toBe(1);
+  });
+});
+
+describe("sessionFractionToEtLabel", () => {
+  it("formats session open and close", () => {
+    expect(sessionFractionToEtLabel(0)).toBe("9:30 AM");
+    expect(sessionFractionToEtLabel(1)).toBe("4:00 PM");
+  });
+});
+
+describe("computeTodayOnlyLayout", () => {
+  it("today zone fills sessionProgress fraction of total width", () => {
+    const now = et(10, 9); // ~10% into regular session
+    const layout = computeTodayOnlyLayout({
+      hasToday: true,
+      hasExtended: false,
+      now,
+    });
+    expect(layout.todayXRange[1]).toBeCloseTo(layout.sessionProgress, 5);
+    expect(layout.todayXRange[1]).toBeCloseTo(0.1, 1);
+  });
+
+  it("starts today at 0 without prior zone", () => {
+    const layout = computeTodayOnlyLayout({
+      hasToday: true,
+      hasExtended: false,
+      now: et(12, 0),
+    });
+    expect(layout.todayXRange[0]).toBe(0);
   });
 });

@@ -5,11 +5,19 @@ import {
   Area,
   ComposedChart,
   Line,
+  ReferenceLine,
   ResponsiveContainer,
   XAxis,
   YAxis,
 } from "recharts";
 import { fmtPrice, fmtPct } from "@/components/analysis/overview/formatters";
+import {
+  computeTodayOnlyLayout,
+  mapSeriesToX,
+  sessionFractionToEtLabel,
+} from "@/lib/market/sparkline-session-layout";
+import { useSessionClock } from "@/lib/market/use-session-clock";
+import { getUsMarketSession } from "@/lib/market-map/market-session";
 
 const POS = "#26a269";
 const NEG = "#e0533d";
@@ -25,38 +33,53 @@ export interface LivePriceChartTileProps {
 }
 
 interface TilePoint {
-  idx: number;
+  sessionX: number;
   regular: number | null;
   extended: number | null;
 }
 
-function buildTilePoints(
+function buildSessionTilePoints(
   sparkline: number[],
   sparklineExtended: number[],
+  now: Date,
 ): TilePoint[] {
   const regular = sparkline.length >= 2 ? sparkline : [];
   const extended = sparklineExtended ?? [];
-  const out: TilePoint[] = regular.map((price, idx) => ({
-    idx,
+
+  const layout = computeTodayOnlyLayout({
+    hasToday: regular.length >= 2,
+    hasExtended: extended.length >= 2,
+    now,
+    clockSession: getUsMarketSession(now),
+  });
+
+  const [tStart, tEnd] = layout.todayXRange;
+  const out: TilePoint[] = regular.map((price, i) => ({
+    sessionX: mapSeriesToX(i, regular.length, tStart, tEnd),
     regular: price,
     extended: null,
   }));
-  const base = out.length;
-  for (let i = 0; i < extended.length; i++) {
-    out.push({
-      idx: base + i,
-      regular: null,
-      extended: extended[i]!,
-    });
+
+  const extRange = layout.extendedXRange;
+  if (extRange && extended.length >= 2) {
+    for (let i = 0; i < extended.length; i++) {
+      out.push({
+        sessionX: mapSeriesToX(i, extended.length, extRange[0], extRange[1]),
+        regular: null,
+        extended: extended[i]!,
+      });
+    }
   }
-  if (out.length === 0 && extended.length >= 2) {
-    return extended.map((price, idx) => ({
-      idx,
+
+  if (out.length === 0 && extended.length >= 2 && extRange) {
+    return extended.map((price, i) => ({
+      sessionX: mapSeriesToX(i, extended.length, extRange[0], extRange[1]),
       regular: null,
       extended: price,
     }));
   }
-  return out;
+
+  return out.sort((a, b) => a.sessionX - b.sessionX);
 }
 
 export function LivePriceChartTile({
@@ -68,9 +91,11 @@ export function LivePriceChartTile({
   chg1dPct,
   onClick,
 }: LivePriceChartTileProps) {
+  const now = useSessionClock(20_000);
+
   const points = useMemo(
-    () => buildTilePoints(sparkline, sparklineExtended),
-    [sparkline, sparklineExtended],
+    () => buildSessionTilePoints(sparkline, sparklineExtended, now),
+    [sparkline, sparklineExtended, now],
   );
 
   const last = currentPrice;
@@ -178,15 +203,42 @@ export function LivePriceChartTile({
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={120}>
-            <ComposedChart data={points} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+            <ComposedChart
+              data={points}
+              margin={{ top: 14, right: 4, bottom: 0, left: 0 }}
+            >
               <defs>
                 <linearGradient id={`tile-${ticker}`} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={color} stopOpacity={0.28} />
                   <stop offset="100%" stopColor={color} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <XAxis dataKey="idx" hide />
+              <XAxis
+                type="number"
+                dataKey="sessionX"
+                domain={[0, 1]}
+                ticks={[0, 1]}
+                tickFormatter={(v: number) => sessionFractionToEtLabel(v)}
+                tick={{ fontSize: 7, fill: "var(--text-muted)" }}
+                axisLine={{ stroke: "var(--bg-border)" }}
+                tickLine={false}
+                height={16}
+              />
               <YAxis domain={yDomain ?? ["auto", "auto"]} hide width={0} />
+              {prevClose > 0 && (
+                <ReferenceLine
+                  y={prevClose}
+                  stroke="var(--text-muted)"
+                  strokeDasharray="4 4"
+                  strokeWidth={1}
+                  label={{
+                    value: `Prev ${fmtPrice(prevClose)}`,
+                    position: "insideTopLeft",
+                    fill: "var(--text-muted)",
+                    fontSize: 7,
+                  }}
+                />
+              )}
               <Area
                 type="monotone"
                 dataKey="regular"
