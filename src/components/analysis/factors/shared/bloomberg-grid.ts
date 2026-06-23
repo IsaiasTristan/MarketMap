@@ -84,6 +84,12 @@ export function getCellDensity(
   }
 }
 
+/** Solid Bloomberg period block backgrounds (Overview holdings). */
+export const BB_PERIOD_POS_BG = "var(--bb-green)";
+export const BB_PERIOD_NEG_BG = "var(--bb-red)";
+export const BB_PERIOD_POS_TEXT = "#000000";
+export const BB_PERIOD_NEG_TEXT = "#ffffff";
+
 /** Inline base style spread for any grid header `<th>`. */
 export const BB_HEADER_BASE_STYLE: React.CSSProperties = {
   background: BB_GRID_HEADER_BG,

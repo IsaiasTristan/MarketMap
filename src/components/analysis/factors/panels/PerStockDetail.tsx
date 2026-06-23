@@ -33,16 +33,24 @@
  *   Σ_{i ≥ displayStartIndex} y_i ≡ Σ(β_t · r_t) + Σ α_t + Σ ε_t
  *   to floating-point precision (tested in factor-attribution-identity.test.ts).
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { PerStockResult } from "@/server/services/factor-per-stock.service";
-import { useAnalysisStore } from "@/store/analysis";
+import type {
+  PerStockPeriodSlice,
+  PerStockResult,
+} from "@/server/services/factor-per-stock.service";
+import {
+  useAnalysisStore,
+  type FactorPeriod,
+} from "@/store/analysis";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
 import { pickHeadlineValue } from "@/lib/factors/attribution/headline-picker";
 import { StockPriceChart } from "./StockPriceChart";
 import type { FactorCode } from "@/types/factors";
 import { Waterfall, type WaterfallSegment } from "../shared/Waterfall";
 import { FactorInfoIcon } from "../shared/FactorInfoIcon";
+import { FactorFreshnessBadge, type FactorFreshnessMode } from "../shared/FactorFreshnessBadge";
+import { getUsMarketSession, type MarketSession } from "@/lib/market-map/market-session";
 import {
   PerStockTimeSeries,
   isPerStockTimeSeriesPayload,
@@ -54,6 +62,33 @@ import { LogModeMethodology } from "./LogModeMethodology";
 interface PerStockDetailProps {
   data: PerStockResult;
   selectedTicker: string | null;
+  /**
+   * Optional surface-level override for the Attribution Period. When set,
+   * the panel uses this period for the waterfall instead of the global
+   * `factorPeriod` from the store. Used by the market-map popup so opening
+   * a stock from the grid always lands on the live 1D decomposition,
+   * independent of the Factors-tab Attribution Period control.
+   */
+  periodOverride?: FactorPeriod;
+}
+
+/** Live-1D endpoint response (mirrors the route's discriminated union). */
+type LiveOneDay =
+  | {
+      live: true;
+      asOf: string;
+      session: MarketSession;
+      slice: PerStockPeriodSlice;
+      stock: { price: number; prevClose: number; return1D: number };
+      missingLegs: string[];
+      factorsUsed: FactorCode[];
+    }
+  | { live: false; reason: string };
+
+function isLiveOneDay(x: unknown): x is LiveOneDay {
+  if (!x || typeof x !== "object") return false;
+  const o = x as { live?: unknown };
+  return o.live === true || o.live === false;
 }
 
 const sectionTitleStyle: React.CSSProperties = {
@@ -118,16 +153,75 @@ function VarGapBadge({ varGapPct }: { varGapPct: number }) {
   );
 }
 
-export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
+export function PerStockDetail({
+  data,
+  selectedTicker,
+  periodOverride,
+}: PerStockDetailProps) {
   const [tsMetric, setTsMetric] = useState<"return" | "risk" | "beta">("return");
   const factorTsRollingWindow = useAnalysisStore((s) => s.factorTsRollingWindow);
   const setFactorTsRollingWindow = useAnalysisStore((s) => s.setFactorTsRollingWindow);
   const attributionMode = useAnalysisStore((s) => s.factorAttributionMode);
-  const attributionPeriod = useAnalysisStore((s) => s.factorPeriod);
+  const storeAttributionPeriod = useAnalysisStore((s) => s.factorPeriod);
+  // Surface-level override (market-map popup defaults to 1D) wins over the
+  // global Factors-tab control. The Factors-tab Per-Stock view continues to
+  // pass no override so changing the Attribution Period there still flows.
+  const attributionPeriod: FactorPeriod = periodOverride ?? storeAttributionPeriod;
 
   const row = selectedTicker ? data.rows.find((r) => r.ticker === selectedTicker) : null;
   const factors = data.usableFactors;
   const tsRollingWindow = factorTsRollingWindow === "match" ? data.regressionWindow : factorTsRollingWindow;
+
+  // ---------- LIVE 1D wiring -------------------------------------------------
+  // When the user is looking at the 1D period and the US market is in regular
+  // hours, fetch the live 1D slice for THIS stock so the waterfall reflects
+  // TODAY's intraday move instead of the last completed close. Live mode never
+  // blocks rendering: any failure (session change, throttle, cache miss) makes
+  // the badge fall back to "at close" and the cached slice is used.
+  //
+  // Session check is re-evaluated every 30s alongside the live fetch so a
+  // browser left open through 4 PM ET cleanly drops back to at-close.
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (attributionPeriod !== "1D") return;
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, [attributionPeriod]);
+  const liveEnabled =
+    attributionPeriod === "1D" && !!selectedTicker && !!row;
+  const sessionNow = getUsMarketSession(new Date(now));
+  const pollIntervalMs = sessionNow === "REGULAR" ? 30_000 : 5 * 60_000;
+
+  const { data: liveRaw, isFetching: liveFetching } = useQuery<LiveOneDay | null>({
+    queryKey: [
+      "factor-per-stock-live-1d",
+      selectedTicker,
+      data.model,
+      data.regressionWindow,
+    ],
+    queryFn: () =>
+      fetch(
+        `/api/analysis/factors/per-stock/live-1d?ticker=${encodeURIComponent(
+          selectedTicker!,
+        )}&model=${data.model}&window=${data.regressionWindow}`,
+      )
+        .then((r) => r.json())
+        .then((d) => (isLiveOneDay(d) ? d : null)),
+    enabled: liveEnabled,
+    refetchInterval: liveEnabled ? pollIntervalMs : false,
+    staleTime: pollIntervalMs - 5_000,
+  });
+  const liveSlice =
+    liveRaw && liveRaw.live ? liveRaw.slice : null;
+  const liveAsOf = liveRaw && liveRaw.live ? liveRaw.asOf : null;
+  const liveSession = liveRaw && liveRaw.live ? liveRaw.session : null;
+  const liveBadgeMode: FactorFreshnessMode = liveSlice
+    ? liveSession === "REGULAR"
+      ? "live"
+      : "today-close"
+    : liveFetching && liveEnabled
+      ? "loading"
+      : "at-close";
 
   const { data: tsRaw, isLoading: tsLoading } = useQuery({
     queryKey: [
@@ -158,7 +252,11 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
   //
   // Identity over the slice: Σ y = Σ_f (β_f × Σr_f) + (α × days) + residual,
   // where residual is the plug, so the identity closes by construction.
-  const periodSlice = row?.periodSlices?.[attributionPeriod] ?? null;
+  // Live 1D slice takes precedence over the cached at-close slice when the
+  // server fetched one this refresh interval. Falls back automatically when
+  // `liveSlice` is null (session closed / throttle / cache miss / non-1D).
+  const periodSlice: PerStockPeriodSlice | null =
+    liveSlice ?? row?.periodSlices?.[attributionPeriod] ?? null;
   const logAvailable = periodSlice != null && periodSlice.alphaSumLog != null;
   // Log is the default; fall back to simple only when the log path was
   // strict-dropped for this stock (a daily 1+r ≤ 0 killed ln(1+r)).
@@ -779,7 +877,7 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
             )}
             <Waterfall
               title={
-                <>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   Excess return attribution
                   <FactorInfoIcon
                     tip={
@@ -801,7 +899,19 @@ export function PerStockDetail({ data, selectedTicker }: PerStockDetailProps) {
                     }
                     ariaLabel="Attribution window methodology"
                   />
-                </>
+                  {attributionPeriod === "1D" && (
+                    <FactorFreshnessBadge
+                      mode={liveBadgeMode}
+                      asOf={liveSlice ? liveAsOf : (windowEndDate || data.asOfDate)}
+                      surface="stock"
+                      trailing={
+                        liveSlice && liveRaw?.live
+                          ? `· ${liveRaw.factorsUsed.length}/${data.usableFactors.length} factors`
+                          : null
+                      }
+                    />
+                  )}
+                </span>
               }
               titleSub={
                 windowStartDate && windowEndDate

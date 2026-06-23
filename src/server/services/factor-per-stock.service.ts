@@ -71,6 +71,14 @@ const GRID_ROLLING_WINDOW = 60;
 export interface PerStockFactorCell {
   /** OLS beta of this stock to this factor. */
   beta: number;
+  /**
+   * Log-space OLS beta of this stock to this factor — same horizon fit as
+   * `beta` but on the log-design matrix (`y_log` regressed on `x_log`).
+   * Null when the log path failed for this stock. Persisted so the live 1D
+   * decomposition (POST market open) can recompute today's bar in either
+   * mode by applying β_log × ln(1 + r_live_factor) without re-running OLS.
+   */
+  betaLog: number | null;
   tStat: number;
   /**
    * Return contribution (simple space): β_simple × Σ_t r_{t,f} (additive,
@@ -242,6 +250,20 @@ export interface PerStockRow {
    * rolling sum is null.
    */
   residualCi95Half: number | null;
+
+  // ----- Daily intercepts (persisted for live recompute) -----------------
+  /**
+   * Raw daily intercept α (simple space) from the horizon OLS — i.e.
+   * `alphaAnnualized / 252`. Persisted so the live 1D recompute can apply
+   * the intercept directly to a single live day without re-running OLS or
+   * rederiving it from the annualised pill.
+   */
+  alphaDaily: number;
+  /**
+   * Raw daily intercept α (log space) from the parallel log-OLS. Null when
+   * the log path failed. Mirror of `alphaDaily` for log mode.
+   */
+  alphaDailyLog: number | null;
 
   // ----- Log-space variants (Attribution mode = "log") -----------------
   // Mirrors of the simple-space fields above, computed by running parallel
@@ -1063,6 +1085,7 @@ export async function runPerStockFactors(
       const riskContribution = decompAligned.factors[fi]?.pctVarianceContrib ?? 0;
       const cell: PerStockFactorCell = {
         beta,
+        betaLog: fitLog ? (fitLog.betas[fi] ?? null) : null,
         tStat,
         returnContribution,
         returnContributionLog,
@@ -1351,6 +1374,8 @@ export async function runPerStockFactors(
       realizedTotalReturn: realizedTotalReturnFullWindow,
       rSquared: fit.rSquared,
       alphaAnnualized: fit.alpha * TRADING_DAYS,
+      alphaDaily: fit.alpha,
+      alphaDailyLog: fitLog ? fitLog.alpha : null,
       alphaTStat: fit.alphaTStat,
       alphaStdError: fit.alphaStdError,
       alphaStdErrorAnnualized: fit.alphaStdError * TRADING_DAYS,

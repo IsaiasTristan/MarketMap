@@ -58,6 +58,7 @@ import type { FactorCode } from "@/types/factors";
 function makeCell(beta: number, tStat: number = beta * 5): PerStockFactorCell {
   return {
     beta,
+    betaLog: beta * 0.95,
     tStat,
     returnContribution: beta * 0.05,
     returnContributionLog: beta * 0.045,
@@ -97,6 +98,8 @@ function makeRow(o: RowOverrides): PerStockRow {
     alphaStdErrorAnnualized: 0.01 * 252,
     alphaCi95Half: o.alphaCi95Half ?? 1.96 * 0.01 * 252,
     alphaWindowSum: 0.05 * 252,
+    alphaDaily: (o.alphaAnnualized ?? 0.05) / 252,
+    alphaDailyLog: ((o.alphaAnnualized ?? 0.05) * 0.95) / 252,
     residualWindowSum: 0,
     observations: o.observations ?? 252,
     realizedAnnualizedVol: o.realizedAnnualizedVol ?? 0.2,

@@ -36,9 +36,22 @@ interface ChartCardProps {
   provenance?: ProvenanceBadgeProps;
   action?: ReactNode;
   style?: React.CSSProperties;
+  /** Flush content to card edges — no subtitle row, zero inner padding. */
+  compact?: boolean;
+  /** Stretch card and content area to fill the parent grid cell height. */
+  fillHeight?: boolean;
 }
 
-export function ChartCard({ title, subtitle, children, provenance, action, style }: ChartCardProps) {
+export function ChartCard({
+  title,
+  subtitle,
+  children,
+  provenance,
+  action,
+  style,
+  compact = false,
+  fillHeight = false,
+}: ChartCardProps) {
   return (
     <div
       style={{
@@ -46,6 +59,7 @@ export function ChartCard({ title, subtitle, children, provenance, action, style
         border: "1px solid var(--bg-border)",
         borderRadius: 0,
         overflow: "hidden",
+        ...(fillHeight ? { height: "100%", display: "flex", flexDirection: "column" } : {}),
         ...style,
       }}
     >
@@ -69,7 +83,7 @@ export function ChartCard({ title, subtitle, children, provenance, action, style
         {provenance && <ProvenanceBadge {...provenance} />}
         {action}
       </div>
-      {subtitle ? (
+      {!compact && subtitle ? (
         <div
           style={{
             padding: "6px 10px",
@@ -82,7 +96,14 @@ export function ChartCard({ title, subtitle, children, provenance, action, style
           {subtitle}
         </div>
       ) : null}
-      <div style={{ padding: "6px 8px" }}>{children}</div>
+      <div
+        style={{
+          padding: compact ? 0 : "6px 8px",
+          ...(fillHeight ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" } : {}),
+        }}
+      >
+        {children}
+      </div>
     </div>
   );
 }

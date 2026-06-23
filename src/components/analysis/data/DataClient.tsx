@@ -29,6 +29,12 @@ function PortfolioManager() {
   const { activePortfolioId, setActivePortfolio, addToast } = useAnalysisStore();
   const qc = useQueryClient();
 
+  const invalidatePortfolioPnl = useCallback(() => {
+    if (!activePortfolioId) return;
+    qc.invalidateQueries({ queryKey: ["pnl", activePortfolioId] });
+    qc.invalidateQueries({ queryKey: ["pnl-summary", activePortfolioId] });
+  }, [activePortfolioId, qc]);
+
   // Create new portfolio
   const [newName, setNewName] = useState("");
 
@@ -71,7 +77,7 @@ function PortfolioManager() {
       }).then((r) => r.json()),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["positions", activePortfolioId] });
-      qc.invalidateQueries({ queryKey: ["pnl", activePortfolioId] });
+      invalidatePortfolioPnl();
       setEditingPositionId(null);
       addToast({ severity: "success", message: "Position updated" });
     },
@@ -160,7 +166,7 @@ function PortfolioManager() {
       ),
     onSuccess: (_, posId) => {
       qc.invalidateQueries({ queryKey: ["positions", activePortfolioId] });
-      qc.invalidateQueries({ queryKey: ["pnl", activePortfolioId] });
+      invalidatePortfolioPnl();
       setConfirmDeletePositionId(null);
       const pos = positions.find((p) => p.id === posId);
       addToast({ severity: "success", message: `${pos?.ticker ?? "Position"} removed` });
@@ -199,6 +205,9 @@ function PortfolioManager() {
               setRenaming(false);
               setConfirmDeletePortfolio(false);
               setConfirmDeletePositionId(null);
+              qc.invalidateQueries({ queryKey: ["positions", p.id] });
+              qc.invalidateQueries({ queryKey: ["pnl", p.id] });
+              qc.invalidateQueries({ queryKey: ["pnl-summary", p.id] });
             }}
             style={{
               ...btnBase,
@@ -822,6 +831,8 @@ function ManualEntry() {
     if (r.ok) {
       addToast({ severity: "success", message: `${form.ticker.toUpperCase()} added` });
       qc.invalidateQueries({ queryKey: ["positions", activePortfolioId] });
+      qc.invalidateQueries({ queryKey: ["pnl", activePortfolioId] });
+      qc.invalidateQueries({ queryKey: ["pnl-summary", activePortfolioId] });
       setForm({ ticker: "", shares: "", isShort: false, sector: form.sector });
     } else {
       const text = await r.text();

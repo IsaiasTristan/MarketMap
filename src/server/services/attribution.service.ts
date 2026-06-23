@@ -21,12 +21,13 @@ import {
 } from "@/lib/factors/attribution/daily-log";
 import { computeCumulativeLogAttribution } from "@/lib/factors/attribution/cumulative-log";
 import { computePeriodLogAttribution } from "@/lib/factors/attribution/period-log";
+import { buildLivePortfolio1D } from "./live-portfolio-1d.service";
 import type {
   AttributionDayPointLog,
   AttributionResult,
   CumulativeAttributionPointLog,
-  PeriodAttributionSummaryLog,
   ModelPresetName,
+  PeriodAttributionSummaryLog,
 } from "@/types/factors";
 
 /**
@@ -157,15 +158,59 @@ export async function computeFactorAttribution(
       }
     : null;
 
+  // ---------------------------------------------------------------------
+  // Live 1D overlay. Build a live weighted portfolio return + live factor
+  // row and decompose with `endFit`/`endFitLog` betas. When successful,
+  // REPLACE the "1D" entries in `periods` and `periodsLog` so the UI's
+  // existing pickPeriodSummary machinery picks up live values automatically
+  // (no consumer-side branching).
+  // ---------------------------------------------------------------------
+  const liveResult = await buildLivePortfolio1D({
+    portfolioId,
+    factorCodes: factors,
+    endFitBetas: engineResult.endFit.betas,
+    endFitDailyAlpha: engineResult.endFit.alpha,
+    endFitLogBetas: engineResult.endFitLog?.betas ?? null,
+    endFitLogDailyAlpha: engineResult.endFitLog?.alpha ?? null,
+  });
+  const liveOverlay = liveResult.ok ? liveResult : null;
+
+  let periodsForReturn = periods;
+  let periodsLogForReturn = periodsLog;
+  if (liveOverlay) {
+    periodsForReturn = replace1D(periods, liveOverlay.summary);
+    if (periodsLog && liveOverlay.summaryLog) {
+      periodsLogForReturn = replace1D(periodsLog, liveOverlay.summaryLog);
+    }
+  }
+
   return {
     daily,
     cumulative,
-    periods,
+    periods: periodsForReturn,
     dailyLog,
     cumulativeLog,
-    periodsLog,
+    periodsLog: periodsLogForReturn,
     provenanceBadge,
+    live1D: liveOverlay
+      ? {
+          asOf: liveOverlay.live1D.asOf,
+          session: liveOverlay.live1D.session,
+          missingLegs: liveOverlay.live1D.missingLegs,
+          factorsUsed: liveOverlay.live1D.factorsUsed,
+          missingHoldings: liveOverlay.live1D.missingHoldings,
+        }
+      : null,
+    live1DFailureReason: liveResult.ok ? null : liveResult.reason,
   };
+}
+
+function replace1D<T extends { label: string }>(arr: T[], live: T): T[] {
+  const next = arr.slice();
+  const idx = next.findIndex((p) => p.label === "1D");
+  if (idx >= 0) next[idx] = live;
+  else next.unshift(live);
+  return next;
 }
 
 /**

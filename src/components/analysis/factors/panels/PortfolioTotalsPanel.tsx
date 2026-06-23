@@ -18,10 +18,18 @@
  * aligned-obs count, so a 484-aligned-vs-504-requested mismatch doesn't make
  * the labels read as a broken control.
  */
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Waterfall, type WaterfallSegment } from "../shared/Waterfall";
+import { FactorFreshnessBadge, type FactorFreshnessMode } from "../shared/FactorFreshnessBadge";
+import { getUsMarketSession } from "@/lib/market-map/market-session";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
-import { pickPeriodSummary } from "@/lib/factors/attribution/pick-period-summary";
+import {
+  mergeLive1DPeriodSummary,
+  pickPeriodSummary,
+  type PortfolioLive1DResponse,
+} from "@/lib/factors/attribution/pick-period-summary";
+import { todayEtIsoDate } from "@/lib/factors/attribution/today-et";
 import { pickPeriodRiskSummary } from "@/lib/factors/attribution/pick-period-risk";
 import { getHorizonPreset } from "@/lib/factors/definitions/horizon-presets";
 import type {
@@ -55,6 +63,17 @@ const IDIO_RESIDUAL_INFO = {
     "Daily factor contributions and residuals from the portfolio regression over the period slice.",
 };
 
+type PortfolioLive1DQuery =
+  | PortfolioLive1DResponse
+  | { live: false; reason: string }
+  | null;
+
+function isPortfolioLive1D(x: unknown): x is PortfolioLive1DQuery {
+  if (!x || typeof x !== "object") return false;
+  const o = x as { live?: unknown };
+  return o.live === true || o.live === false;
+}
+
 interface PortfolioTotalsPanelProps {
   exposure: FactorExposureSnapshot | null | undefined;
   attribution: AttributionResult | null | undefined;
@@ -71,9 +90,51 @@ export function PortfolioTotalsPanel({
   selectedPeriod,
   regressionWindow,
 }: PortfolioTotalsPanelProps) {
-  const attributionMode = useAnalysisStore((s) => s.factorAttributionMode);
+  const {
+    activePortfolioId,
+    factorModel,
+    factorWindow,
+    factorAttributionMode: attributionMode,
+  } = useAnalysisStore();
   const horizon = getHorizonPreset(regressionWindow);
   const horizonLabel = `${horizon.label} · ${horizon.value}d horizon`;
+
+  const isOneDay = selectedPeriod === "1D";
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (!isOneDay) return;
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, [isOneDay]);
+
+  const sessionNow = getUsMarketSession(new Date(now));
+  const pollIntervalMs = sessionNow === "REGULAR" ? 30_000 : 5 * 60_000;
+  const liveEnabled = isOneDay && !!activePortfolioId;
+
+  const { data: liveRaw, isFetching: liveFetching } = useQuery<PortfolioLive1DQuery>({
+    queryKey: [
+      "factor-attribution-live-1d",
+      activePortfolioId,
+      factorModel,
+      factorWindow,
+    ],
+    queryFn: () =>
+      fetch(
+        `/api/analysis/factors/attribution/live-1d?portfolioId=${encodeURIComponent(
+          activePortfolioId!,
+        )}&model=${factorModel}&window=${factorWindow}`,
+      )
+        .then((r) => r.json())
+        .then((d) => (isPortfolioLive1D(d) ? d : null)),
+    enabled: liveEnabled,
+    refetchInterval: liveEnabled ? pollIntervalMs : false,
+    staleTime: pollIntervalMs - 5_000,
+  });
+
+  const livePoll =
+    liveRaw && liveRaw.live === true ? (liveRaw as PortfolioLive1DResponse) : null;
+  const livePollFailure =
+    liveRaw && liveRaw.live === false ? liveRaw.reason : null;
 
   // Total Return waterfall — resolve the selected period + attribution mode
   // into one normalized summary. In log mode the headline is the geometric
@@ -82,7 +143,13 @@ export function PortfolioTotalsPanel({
   // exposure snapshot (clearly labelled) when no period bucket is available.
   const returnWaterfall = useMemo(() => {
     if (!exposure) return null;
-    const picked = pickPeriodSummary(attribution, selectedPeriod, attributionMode);
+    const basePicked = pickPeriodSummary(attribution, selectedPeriod, attributionMode);
+    const picked = mergeLive1DPeriodSummary(
+      basePicked,
+      selectedPeriod,
+      attributionMode,
+      livePoll,
+    );
     if (picked) {
       const segments: WaterfallSegment[] = picked.byFactor
         .map((b) => {
@@ -101,10 +168,6 @@ export function PortfolioTotalsPanel({
           };
         })
         .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
-      // In log mode the bars are additive in log space (sum to Σ y_log), but
-      // the headline shows the compounded geometric total exp(Σ y_log) − 1, so
-      // we drive bar-span scaling off the inner log sum and override only the
-      // headline (mirrors the per-stock waterfall).
       const innerTotal = picked.isLog && picked.totalLogReturn != null
         ? picked.totalLogReturn
         : picked.totalReturn;
@@ -127,9 +190,6 @@ export function PortfolioTotalsPanel({
           : undefined,
       };
     }
-    // Fallback: synthesize from exposure.pctReturnContrib (whole-window). The
-    // amber subtitle makes it explicit that period selection can't apply here
-    // (otherwise static numbers read as a broken control).
     const segments: WaterfallSegment[] = exposure.factors
       .map((f) => {
         const def = getFactorDef(f.code as FactorCode);
@@ -139,7 +199,7 @@ export function PortfolioTotalsPanel({
           value: f.pctReturnContrib,
           color: def.color,
           info: {
-            name: def.label,
+            name: f.label,
             definition: def.description,
             howCalculated: def.howCalculated,
             dataUsed: def.dataSource,
@@ -163,7 +223,16 @@ export function PortfolioTotalsPanel({
       segments,
       headlineOverride: undefined as undefined,
     };
-  }, [exposure, attribution, selectedPeriod, attributionMode, horizonLabel, horizon.label, horizon.value]);
+  }, [
+    exposure,
+    attribution,
+    selectedPeriod,
+    attributionMode,
+    horizonLabel,
+    horizon.label,
+    horizon.value,
+    livePoll,
+  ]);
 
   // Variance waterfall — period-sliced realised variance decomposition on the
   // same daily slice as the return waterfall (`pickPeriodRiskSummary`).
@@ -220,8 +289,6 @@ export function PortfolioTotalsPanel({
       };
     }
 
-    // Fallback — whole-window Euler model shares (legacy behaviour). Title
-    // explicitly notes the period control did not apply here.
     const totalVol = risk?.totalVolatility ?? 0;
     const realisedVol = exposure?.realizedAnnualizedVol ?? 0;
     const varGapPct = exposure?.varGapPct ?? 0;
@@ -263,7 +330,7 @@ export function PortfolioTotalsPanel({
           value: f.value,
           color: def.color,
           info: {
-            name: def.label,
+            name: f.label,
             definition: def.description,
             howCalculated:
               "Share of portfolio variance attributed to this factor via the whole-window Euler decomposition (β'Σβ).",
@@ -297,6 +364,62 @@ export function PortfolioTotalsPanel({
 
   if (!returnWaterfall && !riskWaterfall) return null;
 
+  const liveOverlay = livePoll?.live1D ?? attribution?.live1D ?? null;
+  const liveSession = liveOverlay
+    ? liveOverlay.session ?? getUsMarketSession(new Date(liveOverlay.asOf))
+    : null;
+  const staticOneDayEnd =
+    attribution?.periodsLog?.find((p) => p.label === "1D")?.endDate ??
+    attribution?.periods?.find((p) => p.label === "1D")?.endDate ??
+    null;
+  const todayEt = todayEtIsoDate();
+  const staticStale =
+    isOneDay &&
+    !liveOverlay &&
+    staticOneDayEnd != null &&
+    staticOneDayEnd !== todayEt;
+  const failureReason =
+    livePollFailure ??
+    attribution?.live1DFailureReason ??
+    null;
+
+  let badgeMode: FactorFreshnessMode;
+  if (liveOverlay) {
+    badgeMode = liveSession === "REGULAR" ? "live" : "today-close";
+  } else if (liveFetching && liveEnabled) {
+    badgeMode = "loading";
+  } else {
+    badgeMode = "at-close";
+  }
+
+  const returnTitleWithBadge = (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      {returnWaterfall?.title}
+      {isOneDay && (
+        <FactorFreshnessBadge
+          mode={badgeMode}
+          asOf={
+            liveOverlay
+              ? liveOverlay.asOf
+              : staticOneDayEnd
+          }
+          surface="portfolio"
+          staleLiveReason={
+            staticStale && failureReason ? failureReason : null
+          }
+          trailing={
+            liveOverlay
+              ? `· ${liveOverlay.factorsUsed.length} factors` +
+                (liveOverlay.missingHoldings.length > 0
+                  ? ` · ${liveOverlay.missingHoldings.length} holding(s) missing`
+                  : "")
+              : null
+          }
+        />
+      )}
+    </span>
+  );
+
   return (
     <div
       style={{
@@ -307,7 +430,7 @@ export function PortfolioTotalsPanel({
     >
       {returnWaterfall && (
         <Waterfall
-          title={returnWaterfall.title}
+          title={returnTitleWithBadge}
           subtitle={returnWaterfall.subtitle}
           total={returnWaterfall.total}
           totalLabel="Total Return"

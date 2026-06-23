@@ -111,7 +111,10 @@ export async function fetchYahooFundamentals(
   };
 }
 
-/** Fetch live quote for multiple tickers (price + volume snapshot). */
+/** Fetch live quote for multiple tickers (price + volume snapshot).
+ * @deprecated Yahoo v7 /quote returns HTTP 401 without a session crumb.
+ * Use `fetchYahooQuotesViaChart` from `yahoo-chart-http` instead.
+ */
 export async function fetchYahooQuotes(
   tickers: string[],
 ): Promise<Map<string, { price: number; volume: number; prevClose: number }>> {

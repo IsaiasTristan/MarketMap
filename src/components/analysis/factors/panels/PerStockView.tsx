@@ -15,6 +15,7 @@ import { SectorFactorHeatmap } from "./SectorFactorHeatmap";
 import { FactorScatterPanel } from "./FactorScatterPanel";
 import { FactorToolbar } from "../shared/FactorToolbar";
 import { FilterChips } from "../shared/FilterChips";
+import { FactorFreshnessBadge } from "../shared/FactorFreshnessBadge";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
 import {
   aggregateBySectorFactor,
@@ -243,6 +244,19 @@ export function PerStockView() {
 
   const cacheControls = (
     <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+      {/* When the user has the Attribution Period on 1D, the grid's Return
+          column is computed against the LAST CLOSE — full-grid live would be
+          hundreds of live quotes per refresh. Make that explicit with the
+          shared FactorFreshnessBadge so users drilling into a stock for
+          live values understand exactly why the two surfaces can disagree
+          intraday. */}
+      {factorPeriod === "1D" && (
+        <FactorFreshnessBadge
+          mode="at-close"
+          asOf={filtered.asOfDate}
+          surface="grid"
+        />
+      )}
       <span
         title={badgeTitle}
         style={{

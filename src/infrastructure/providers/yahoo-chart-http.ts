@@ -1,4 +1,10 @@
 import type { Bar } from "@/infrastructure/providers/market-data";
+import {
+  composeCurrentSparkline,
+  splitIntradayByEtDate,
+  splitIntradaySessions,
+} from "@/lib/holdings/intraday-split";
+import { classifyEtTimeOfDay, tradeDateEtFromUnix } from "@/lib/market-map/market-session";
 
 function toYahooDate(unix: number): string {
   return new Date(unix * 1000).toISOString().slice(0, 10);
@@ -330,4 +336,543 @@ export async function fetchYahooChartDaily(
   // For `delisted` we return [] rather than throw — benchmarks should never
   // be delisted; equity callers use the typed variant.
   return r.bars;
+}
+
+// ---------------------------------------------------------------------------
+// Live quote snapshot (with optional intraday sparkline) via the v8 chart
+// endpoint.
+//
+// Yahoo's v7 quote endpoint (`/v7/finance/quote`) now requires a session
+// crumb/cookie pair and returns HTTP 401 to anonymous traffic. The v8 chart
+// endpoint stays open and a single `range=1d&interval=5m` call gives us
+// everything the market ticker strip needs:
+//   - `meta.regularMarketPrice`    — live tape (or last close when shut)
+//   - `meta.chartPreviousClose`    — the prior trading-day's close
+//   - `indicators.quote[0].close`  — today's 5-minute closes (the sparkline)
+// ---------------------------------------------------------------------------
+
+type QuoteChartResult = {
+  timestamp?: number[];
+  meta?: {
+    regularMarketPrice?: number;
+    chartPreviousClose?: number;
+    previousClose?: number;
+    shortName?: string;
+    longName?: string;
+  };
+  indicators?: { quote?: { close?: (number | null)[] }[] };
+};
+
+/** Soft cap on intraday points returned per instrument. 80 points is plenty
+ *  for a 60px-wide sparkline and keeps the JSON payload compact across 12+
+ *  instruments. Decimation is by stride, preserving the first/last samples. */
+const SPARKLINE_MAX_POINTS = 80;
+
+function decimate(arr: number[], maxLen: number): number[] {
+  if (arr.length <= maxLen) return arr;
+  const stride = Math.ceil(arr.length / maxLen);
+  const out: number[] = [];
+  for (let i = 0; i < arr.length; i += stride) out.push(arr[i]!);
+  // Always include the most recent point so the sparkline ends at "now".
+  if (out[out.length - 1] !== arr[arr.length - 1]) out.push(arr[arr.length - 1]!);
+  return out;
+}
+
+export interface YahooStripQuote {
+  price: number;
+  prevClose: number;
+  /** Company display name when present in chart meta. */
+  displayName?: string;
+  /** Today's 5-minute closes, oldest -> newest, nulls stripped, capped to
+   *  `SPARKLINE_MAX_POINTS`. Empty when no intraday data is available
+   *  (off-hours weekend on equity-only instruments etc.). */
+  intradayCloses: number[];
+  /** Prior US trading session closes (holdings dashboard Previous Price). */
+  prevDayCloses: number[];
+  /** PRE/POST tail for Current Price (dashed gray in UI). */
+  extendedCloses: number[];
+  /** First intraday print (session open proxy). */
+  dayOpen: number;
+  /** Intraday low from today's bar series. */
+  dayLow: number;
+  /** Intraday high from today's bar series. */
+  dayHigh: number;
+}
+
+function buildStripQuoteFromChart(
+  r0: QuoteChartResult,
+  intradayCloses: number[],
+  prevDayCloses: number[],
+  options?: { allowSessionPrevClose?: boolean; extendedCloses?: number[] },
+): YahooStripQuote | null {
+  const meta = r0.meta ?? {};
+
+  let prevClose: number | null = null;
+  if (Number.isFinite(meta.chartPreviousClose)) {
+    prevClose = meta.chartPreviousClose as number;
+  } else if (Number.isFinite(meta.previousClose)) {
+    prevClose = meta.previousClose as number;
+  }
+  if (
+    (prevClose == null || !Number.isFinite(prevClose)) &&
+    options?.allowSessionPrevClose &&
+    prevDayCloses.length > 0
+  ) {
+    prevClose = prevDayCloses[prevDayCloses.length - 1]!;
+  }
+  if (prevClose == null || !Number.isFinite(prevClose)) return null;
+
+  const price = Number.isFinite(meta.regularMarketPrice)
+    ? (meta.regularMarketPrice as number)
+    : intradayCloses.length > 0
+      ? intradayCloses[intradayCloses.length - 1]!
+      : prevClose;
+
+  const allSessionCloses = [...intradayCloses, ...(options?.extendedCloses ?? [])];
+  const dayOpen =
+    intradayCloses.length > 0
+      ? intradayCloses[0]!
+      : allSessionCloses.length > 0
+        ? allSessionCloses[0]!
+        : price;
+  const dayLow =
+    allSessionCloses.length > 0 ? Math.min(...allSessionCloses) : price;
+  const dayHigh =
+    allSessionCloses.length > 0 ? Math.max(...allSessionCloses) : price;
+
+  const displayName =
+    (typeof meta.longName === "string" && meta.longName.trim()) ||
+    (typeof meta.shortName === "string" && meta.shortName.trim()) ||
+    undefined;
+
+  return {
+    price,
+    prevClose,
+    displayName,
+    intradayCloses,
+    prevDayCloses,
+    extendedCloses: options?.extendedCloses ?? [],
+    dayOpen,
+    dayLow,
+    dayHigh,
+  };
+}
+
+async function fetchQuoteChartResult(
+  ticker: string,
+  range: "1d" | "5d" | "1mo",
+  options: { includePrePost?: boolean } = {},
+): Promise<QuoteChartResult | null> {
+  const sym = encodeURIComponent(toYahooSymbol(ticker));
+  const includePrePost = options.includePrePost ? "true" : "false";
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=${range}&interval=5m&includePrePost=${includePrePost}`;
+
+  const MAX_ATTEMPTS = 3;
+  let res: Response | undefined;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      res = await fetch(url, {
+        headers: {
+          "User-Agent": "MarketMap/1.0 (+https://localhost)",
+          Accept: "application/json",
+        },
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      if (attempt === MAX_ATTEMPTS) return null;
+      await sleep(250 * 2 ** (attempt - 1));
+      continue;
+    }
+    if (res.status === 401 || res.status === 429 || res.status >= 500) {
+      if (attempt === MAX_ATTEMPTS) return null;
+      await sleep(400 * 2 ** (attempt - 1));
+      continue;
+    }
+    break;
+  }
+  if (!res || !res.ok) return null;
+
+  const json = (await res.json()) as {
+    chart?: { result?: QuoteChartResult[]; error?: unknown };
+  };
+  return json.chart?.result?.[0] ?? null;
+}
+
+async function fetchYahooQuoteWithSparkline(
+  ticker: string,
+): Promise<YahooStripQuote | null> {
+  const r0 = await fetchQuoteChartResult(ticker, "1d");
+  if (!r0) return null;
+
+  const closes = (r0.indicators?.quote?.[0]?.close ?? []).filter(
+    (c): c is number => c != null && Number.isFinite(c),
+  );
+
+  return buildStripQuoteFromChart(
+    r0,
+    decimate(closes, SPARKLINE_MAX_POINTS),
+    [],
+    { extendedCloses: [] },
+  );
+}
+
+function buildHoldingsSparklineQuote(r0: QuoteChartResult): YahooStripQuote | null {
+  const ts = r0.timestamp ?? [];
+  const rawCloses = r0.indicators?.quote?.[0]?.close ?? [];
+  const sessions = splitIntradaySessions(ts, rawCloses);
+  const { regular, extended } = composeCurrentSparkline(sessions);
+  const { prevDayCloses } = splitIntradayByEtDate(ts, rawCloses);
+
+  return buildStripQuoteFromChart(r0, regular, prevDayCloses, {
+    allowSessionPrevClose: true,
+    extendedCloses: extended,
+  });
+}
+
+/** Holdings dashboard: today + prior session sparklines from one 1mo chart call. */
+async function fetchYahooQuoteWithDualSparkline(
+  ticker: string,
+): Promise<YahooStripQuote | null> {
+  const r0 = await fetchQuoteChartResult(ticker, "1mo", { includePrePost: true });
+  if (!r0) return null;
+  return buildHoldingsSparklineQuote(r0);
+}
+
+async function fetchYahooQuoteWithSparklineHoldingsFallback(
+  ticker: string,
+): Promise<YahooStripQuote | null> {
+  const r0 = await fetchQuoteChartResult(ticker, "1d", { includePrePost: true });
+  if (!r0) return null;
+  return buildHoldingsSparklineQuote(r0);
+}
+
+/**
+ * Batch quote + intraday-sparkline snapshot via the v8 chart endpoint.
+ *
+ * Returns a Map keyed by the Yahoo-normalised symbol. Each entry carries the
+ * live price, the prior trading-day close, and today's decimated 5-minute
+ * close series (capped at `SPARKLINE_MAX_POINTS`).
+ *
+ * Requests run in parallel: callers are expected to keep `tickers` short
+ * (~12 instruments for the market strip) or apply their own worker pool.
+ */
+export async function fetchYahooQuotesWithSparkline(
+  tickers: string[],
+): Promise<Map<string, YahooStripQuote>> {
+  const out = new Map<string, YahooStripQuote>();
+  const results = await Promise.all(
+    tickers.map(async (t) => {
+      const q = await fetchYahooQuoteWithSparkline(t);
+      return q ? { sym: toYahooSymbol(t), q } : null;
+    }),
+  );
+  for (const r of results) {
+    if (r) out.set(r.sym, r.q);
+  }
+  return out;
+}
+
+/**
+ * Batch quote + sparkline fetch with bounded concurrency (Overview holdings).
+ * Keys by Yahoo-normalised symbol, same as {@link fetchYahooQuotesWithSparkline}.
+ */
+export async function fetchYahooQuotesWithSparklinePool(
+  tickers: string[],
+  options: { concurrency?: number; perRequestDelayMs?: number } = {},
+): Promise<Map<string, YahooStripQuote>> {
+  const concurrency = options.concurrency ?? 5;
+  const delay = options.perRequestDelayMs ?? 150;
+  const out = new Map<string, YahooStripQuote>();
+  const queue = [...tickers];
+  let cursor = 0;
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= queue.length) return;
+      const t = queue[idx]!;
+      try {
+        let q = await fetchYahooQuoteWithDualSparkline(t);
+        if (!q) q = await fetchYahooQuoteWithSparklineHoldingsFallback(t);
+        if (q) out.set(toYahooSymbol(t), q);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[yahoo-sparkline] ${t}: ${msg} — continuing batch`);
+      }
+      if (delay > 0) await sleep(delay);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+/**
+ * @deprecated Use `fetchYahooQuotesWithSparkline` instead — same Map shape
+ * plus an `intradayCloses` field for the sparkline. This thin wrapper is kept
+ * only for any future caller that wants quote-only with no intraday tail.
+ */
+export async function fetchYahooQuotesViaChart(
+  tickers: string[],
+): Promise<Map<string, { price: number; prevClose: number }>> {
+  const full = await fetchYahooQuotesWithSparkline(tickers);
+  const out = new Map<string, { price: number; prevClose: number }>();
+  for (const [sym, q] of full) {
+    out.set(sym, { price: q.price, prevClose: q.prevClose });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Extended-hours quote — Yahoo v8 chart with `includePrePost=true`. Returns
+// the latest non-null print along with the session that print falls into
+// (PRE / REGULAR / POST). Used by the server-side extended-hours sweep to
+// overlay today's pre/post-market move onto the market-map grid without
+// persisting anything to the daily PriceHistory table.
+// ---------------------------------------------------------------------------
+
+/** Subset of Yahoo's `meta.currentTradingPeriod` used to classify a bar's session. */
+export interface YahooTradingPeriodWindow {
+  start: number; // epoch seconds
+  end: number; // epoch seconds
+}
+
+export interface YahooCurrentTradingPeriod {
+  pre?: YahooTradingPeriodWindow;
+  regular?: YahooTradingPeriodWindow;
+  post?: YahooTradingPeriodWindow;
+}
+
+/**
+ * Result of parsing one Yahoo extended-hours chart response.
+ *   - `price`: most recent non-null close in the bar series
+ *   - `session`: which trading-period window that bar's timestamp falls into
+ *   - `asOfUnix`: bar timestamp (epoch seconds), used for staleness / display
+ *   - `prevClose`: prior regular-session close (`meta.chartPreviousClose`)
+ *     — handy when callers want to compute a % change directly
+ *   - `regularClose`: today's regular-session close if available
+ *     (`meta.regularMarketPrice` captured at 16:00 ET). When POST is active
+ *     this is "today's close" used as the basis for the post-market move.
+ */
+export interface YahooExtendedQuote {
+  price: number;
+  session: "PRE" | "REGULAR" | "POST";
+  asOfUnix: number;
+  prevClose: number | null;
+  regularClose: number | null;
+}
+
+type ExtendedChartResult = {
+  meta?: {
+    regularMarketPrice?: number;
+    chartPreviousClose?: number;
+    previousClose?: number;
+    currentTradingPeriod?: YahooCurrentTradingPeriod;
+  };
+  timestamp?: number[];
+  indicators?: { quote?: { close?: (number | null)[] }[] };
+};
+
+/**
+ * Pure parser — given a single Yahoo v8 chart result fetched with
+ * `includePrePost=true`, return the latest PRE or POST print, or null if
+ * none exists. REGULAR-session bars are skipped when walking backward so a
+ * 4pm close does not mask an earlier after-hours print (GLW case).
+ */
+export function parseYahooExtendedQuote(
+  r0: ExtendedChartResult | null | undefined,
+): YahooExtendedQuote | null {
+  if (!r0) return null;
+  const ts = r0.timestamp ?? [];
+  const closes = r0.indicators?.quote?.[0]?.close ?? [];
+  if (ts.length === 0) return null;
+
+  const period = r0.meta?.currentTradingPeriod;
+
+  // Walk back from the end for the latest finite PRE/POST bar.
+  let idx = -1;
+  for (let i = ts.length - 1; i >= 0; i--) {
+    const c = closes[i];
+    if (c == null || !Number.isFinite(c)) continue;
+    const unix = ts[i] as number;
+    const session = classifyBarSession(unix, period);
+    if (session === "PRE" || session === "POST") {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) return null;
+
+  const price = closes[idx] as number;
+  const asOfUnix = ts[idx] as number;
+  const session = classifyBarSession(asOfUnix, period);
+
+  const meta = r0.meta ?? {};
+  const prevClose =
+    meta.chartPreviousClose != null && Number.isFinite(meta.chartPreviousClose)
+      ? (meta.chartPreviousClose as number)
+      : meta.previousClose != null && Number.isFinite(meta.previousClose)
+        ? (meta.previousClose as number)
+        : null;
+
+  let regularClose: number | null = null;
+  if (session === "POST") {
+    if (
+      period?.post &&
+      asOfUnix >= period.post.start &&
+      asOfUnix < period.post.end &&
+      meta.regularMarketPrice != null &&
+      Number.isFinite(meta.regularMarketPrice)
+    ) {
+      regularClose = meta.regularMarketPrice as number;
+    } else {
+      const barTradeDate = tradeDateEtFromUnix(asOfUnix);
+      for (let j = idx - 1; j >= 0; j--) {
+        const cj = closes[j];
+        if (cj == null || !Number.isFinite(cj)) continue;
+        const uj = ts[j] as number;
+        if (tradeDateEtFromUnix(uj) !== barTradeDate) break;
+        if (classifyBarSession(uj, period) === "REGULAR") {
+          regularClose = cj as number;
+          break;
+        }
+      }
+    }
+  }
+
+  return { price, session, asOfUnix, prevClose, regularClose };
+}
+
+/**
+ * Classify an epoch-seconds bar timestamp into PRE / REGULAR / POST.
+ *
+ * Primary: Yahoo's `currentTradingPeriod` (the only reliable source on early
+ * closes / holidays). The windows describe TODAY's sessions in epoch seconds,
+ * so when a bar matches one of them we trust it.
+ *
+ * Fallback: ET time-of-day classification — used when no window matches the
+ * bar (the common case for a `range=5d` backfill query reaching back to
+ * yesterday's POST or Friday's POST during a weekend boot). Without this
+ * fallback every prior-day bar would silently default to REGULAR and the
+ * sweep would drop it.
+ */
+function classifyBarSession(
+  unix: number,
+  period: YahooCurrentTradingPeriod | undefined,
+): "PRE" | "REGULAR" | "POST" {
+  if (period) {
+    if (period.pre && unix >= period.pre.start && unix < period.pre.end) {
+      return "PRE";
+    }
+    if (
+      period.regular &&
+      unix >= period.regular.start &&
+      unix < period.regular.end
+    ) {
+      return "REGULAR";
+    }
+    if (period.post && unix >= period.post.start && unix < period.post.end) {
+      return "POST";
+    }
+  }
+  return classifyEtTimeOfDay(unix);
+}
+
+/**
+ * Fetch one extended-hours quote. Reuses the same retry/backoff policy as
+ * the rest of the file. Returns null on a non-recoverable error (delisted /
+ * persistent throttle / parse failure) so the batch worker can skip the
+ * symbol without aborting.
+ *
+ * `range` controls how far back Yahoo searches:
+ *   - "1d" (default): today's bars only — used during PRE/POST when we want
+ *     the freshest print and don't care about anything older.
+ *   - "5d": last 5 trading days of bars — used during CLOSED-startup
+ *     backfill so we can recover the most recent POST print whether it was
+ *     earlier tonight or last Friday (weekend boot).
+ */
+export async function fetchYahooExtendedQuote(
+  ticker: string,
+  range: "1d" | "5d" = "1d",
+): Promise<YahooExtendedQuote | null> {
+  const sym = encodeURIComponent(toYahooSymbol(ticker));
+  // 5-minute bars give a fine enough granularity that the "latest non-null
+  // close" is at most 5 minutes stale during an active session; `range`
+  // widens the search window for backfill (see JSDoc above).
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=${range}&interval=5m&includePrePost=true`;
+
+  const MAX_ATTEMPTS = 3;
+  let res: Response | undefined;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      res = await fetch(url, {
+        headers: {
+          "User-Agent": "MarketMap/1.0 (+https://localhost)",
+          Accept: "application/json",
+        },
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      if (attempt === MAX_ATTEMPTS) return null;
+      await sleep(250 * 2 ** (attempt - 1));
+      continue;
+    }
+    if (res.status === 401 || res.status === 429 || res.status >= 500) {
+      if (attempt === MAX_ATTEMPTS) return null;
+      await sleep(400 * 2 ** (attempt - 1));
+      continue;
+    }
+    break;
+  }
+  if (!res || !res.ok) return null;
+
+  let json: { chart?: { result?: ExtendedChartResult[] } };
+  try {
+    json = (await res.json()) as { chart?: { result?: ExtendedChartResult[] } };
+  } catch {
+    return null;
+  }
+  return parseYahooExtendedQuote(json.chart?.result?.[0]);
+}
+
+/**
+ * Batch extended-hours quote fetch with a bounded-concurrency worker pool,
+ * mirroring the universe-ingest pattern (low concurrency + small per-request
+ * delay) so we don't burst Yahoo's anonymous endpoint into HTTP 429.
+ *
+ * Returns a Map keyed by the INPUT ticker (not the Yahoo-normalised symbol)
+ * so callers don't have to re-normalise — extended-hours overlay matches
+ * back to universe constituents by their user-facing ticker.
+ */
+export async function fetchYahooExtendedQuotes(
+  tickers: string[],
+  options: {
+    concurrency?: number;
+    perRequestDelayMs?: number;
+    /** Yahoo `range` window — "1d" for live sweeps, "5d" for backfill (see
+     *  `fetchYahooExtendedQuote`). Defaults to "1d". */
+    range?: "1d" | "5d";
+  } = {},
+): Promise<Map<string, YahooExtendedQuote>> {
+  const concurrency = options.concurrency ?? 5;
+  const delay = options.perRequestDelayMs ?? 150;
+  const range = options.range ?? "1d";
+  const out = new Map<string, YahooExtendedQuote>();
+  const queue = [...tickers];
+  let cursor = 0;
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= queue.length) return;
+      const t = queue[idx]!;
+      try {
+        const q = await fetchYahooExtendedQuote(t, range);
+        if (q) out.set(t, q);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[extended-quote] ${t}: ${msg} — continuing batch`);
+      }
+      if (delay > 0) await sleep(delay);
+    }
+  });
+  await Promise.all(workers);
+  return out;
 }

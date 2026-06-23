@@ -32,5 +32,16 @@ export async function register() {
         e,
       );
     }
+    try {
+      const { startExtendedHoursRunner } = await import(
+        "@/server/services/extended-hours-runner"
+      );
+      startExtendedHoursRunner();
+    } catch (e) {
+      console.error(
+        "[instrumentation] failed to start extended-hours runner:",
+        e,
+      );
+    }
   }
 }

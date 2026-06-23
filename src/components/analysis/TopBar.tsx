@@ -139,7 +139,7 @@ export function TopBar() {
               }}
             >
               {pnlPositive ? "+" : ""}
-              {pnl.dailyPnlPct.toFixed(2)}%
+              {(pnl.dailyPnlPct * 100).toFixed(2)}%
             </span>
             <span style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 10, color: "#fff" }}>
               ({pnlPositive ? "+" : ""}$

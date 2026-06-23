@@ -14,6 +14,7 @@ import { useAnalysisStore } from "@/store/analysis";
 import { FloatingPerStockDetail } from "@/components/analysis/factors/panels/FloatingPerStockDetail";
 import type { PerStockResult } from "@/server/services/factor-per-stock.service";
 import { isExcludedSector } from "@/lib/market-map/excluded-sectors";
+import type { MarketSession } from "@/lib/market-map/market-session";
 
 type ApiRow = {
   key: string;
@@ -25,6 +26,23 @@ type ApiRow = {
   lastDate?: string | null;
 };
 
+type ApiExtendedInfo = {
+  requested: boolean;
+  applied: boolean;
+  /** True when the server has a usable extended-hours snapshot in memory
+   *  right now. Drives the toggle's visibility during CLOSED periods so
+   *  users can still flip between regular-close and the most recent
+   *  PRE/POST overlay overnight / over weekends. */
+  available: boolean;
+  /** Which session the in-memory snapshot was captured under — `POST`
+   *  for overnight/weekend after a normal trading day, `PRE` for the rare
+   *  PRE→CLOSED transition. Drives the toggle's label and accent colour
+   *  when the clock session is CLOSED. */
+  session: MarketSession | null;
+  asOf: string | null;
+  tickerCount: number;
+};
+
 type ApiPayload = {
   ok: boolean;
   metric: MetricKind;
@@ -34,6 +52,7 @@ type ApiPayload = {
   horizons: Horizon[];
   columnRanges: { min: Record<string, number>; max: Record<string, number> };
   rows: ApiRow[];
+  extended?: ApiExtendedInfo;
 };
 
 type SortState = { horizon: Horizon; dir: "asc" | "desc" } | null;
@@ -89,6 +108,15 @@ type DisplayRow =
 
 const TOTAL_COLS = 3 + HORIZON_ORDER.length;
 
+/** One active ticker whose last bar trails the universe's freshest bar by
+ *  more than STALE_TICKER_DAYS. Surfaced in the top-bar warning popup. */
+export type StaleTickerInfo = {
+  ticker: string;
+  name: string;
+  lastDate: string;
+  daysBehind: number;
+};
+
 export type MarketMapLoadedInfo = {
   asOf: string | null;
   staleCalendarDays: number | null;
@@ -98,6 +126,9 @@ export type MarketMapLoadedInfo = {
   staleTickerCount: number;
   /** Total number of active tickers represented in the grid (denominator). */
   activeTickerCount: number;
+  /** Per-ticker detail for the stale tickers, newest-trailing first, so the
+   *  top-bar warning popup can name the affected stocks and their time gap. */
+  staleTickers: StaleTickerInfo[];
 };
 
 /** A ticker is "stale" if its last bar trails the universe's freshest bar by
@@ -109,11 +140,22 @@ export function MarketMapClient({
   universeId,
   reloadToken = 0,
   onLoaded,
+  session = "CLOSED",
 }: {
   universeId: string;
   reloadToken?: number;
   onLoaded?: (info: MarketMapLoadedInfo) => void;
+  session?: MarketSession;
 }) {
+  // Whenever the server reports a usable extended-hours snapshot (live
+  // during PRE/POST, or carried over into CLOSED until the next REGULAR
+  // session wipes it) the user can flip between the overlaid grid and the
+  // regular-close grid. Defaults ON so the most recent print is visible by
+  // default. Sending `extended=1` to the API when there's nothing to
+  // overlay is harmless — the route returns `applied: false` and the
+  // close-based grid.
+  const [showExtended, setShowExtended] = useState(true);
+  const inExtendedSession = session === "PRE" || session === "POST";
   const [metric, setMetric] = useState<MetricKind>("RETURN");
   const [benchmark, setBenchmark] = useState<"SP500" | "NASDAQ" | "DOW">(
     "SP500"
@@ -175,8 +217,14 @@ export function MarketMapClient({
     u.set("metric", metric);
     u.set("rowLevel", "COMPANY");
     u.set("benchmark", benchmark);
+    // Opt in to the overlay whenever the user wants it. The server is
+    // responsible for deciding whether a snapshot actually exists to
+    // apply; if not, it returns the close-based grid with
+    // `extended.applied = false` and `extended.available` tells us
+    // whether the toggle should be visible at all.
+    if (showExtended) u.set("extended", "1");
     return u.toString();
-  }, [metric, benchmark]);
+  }, [metric, benchmark, showExtended]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -192,23 +240,35 @@ export function MarketMapClient({
       // INDEX & MACRO) at the boundary so every downstream surface — main
       // grid, Top Movers, top-bar telemetry — sees the same filtered universe.
       const filteredRows = j.rows.filter((r) => !isExcludedSector(r.sector));
-      setData({ ...j, rows: filteredRows });
+      setData({ ...j, rows: filteredRows, extended: j.extended });
       const tickerDates = filteredRows
         .map((r) => r.lastDate)
         .filter((d): d is string => !!d);
       const newestLastDate = tickerDates.length
         ? tickerDates.reduce((a, b) => (a > b ? a : b))
         : null;
-      const staleTickerCount = newestLastDate
-        ? tickerDates.filter(
-            (d) => calendarDaysBetween(d, newestLastDate) > STALE_TICKER_DAYS
-          ).length
-        : 0;
+      const staleTickers: StaleTickerInfo[] = newestLastDate
+        ? filteredRows
+            .filter(
+              (r): r is ApiRow & { lastDate: string } =>
+                !!r.lastDate &&
+                calendarDaysBetween(r.lastDate, newestLastDate) >
+                  STALE_TICKER_DAYS
+            )
+            .map((r) => ({
+              ticker: r.ticker ?? r.label,
+              name: r.label,
+              lastDate: r.lastDate,
+              daysBehind: calendarDaysBetween(r.lastDate, newestLastDate),
+            }))
+            .sort((a, b) => b.daysBehind - a.daysBehind)
+        : [];
       onLoaded?.({
         asOf: j.asOf ?? null,
         staleCalendarDays: j.asOf ? calendarDaysBetween(j.asOf, isoToday()) : null,
-        staleTickerCount,
+        staleTickerCount: staleTickers.length,
         activeTickerCount: filteredRows.length,
+        staleTickers,
       });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -416,6 +476,21 @@ export function MarketMapClient({
         >
           {sectorsAllExpanded ? "Hide sub-themes" : "Show sub-themes"}
         </button>
+        {/* The toggle is visible whenever the server has snapshot data to
+            display — actively during PRE/POST (clock-driven, shown even
+            before the first response so the chip doesn't blink in), and
+            during CLOSED whenever the API reports an available snapshot
+            (i.e. a recent PRE/POST sweep still in memory). Hidden during
+            REGULAR (no overlay applies) and during CLOSED with no
+            snapshot (toggle would be a no-op). */}
+        {(inExtendedSession || data?.extended?.available) && (
+          <ExtendedHoursToggle
+            clockSession={session}
+            showExtended={showExtended}
+            onToggle={() => setShowExtended((v) => !v)}
+            extended={data?.extended ?? null}
+          />
+        )}
         {loading && (
           <span style={{ color: "var(--text-secondary)", fontSize: "12px" }}>
             Loading…
@@ -570,7 +645,13 @@ export function MarketMapClient({
         companyLeaves={
           metric === "RETURN"
             ? sortedTree.flatMap((s) =>
-                s.subThemes.flatMap((st) => st.companies),
+                s.subThemes.flatMap((st) =>
+                  st.companies.map((c) => ({
+                    ...c,
+                    sector: s.sector,
+                    subTheme: st.subTheme,
+                  })),
+                ),
               )
             : null
         }
@@ -584,6 +665,12 @@ export function MarketMapClient({
             key={panel.ticker}
             panel={panel}
             data={perStockData}
+            // Market-map popup always opens on the live 1D decomposition —
+            // the chart price header already shows the live 1D move, and the
+            // factor waterfall now mirrors it via /api/analysis/factors/
+            // per-stock/live-1d. The Factors-tab Per-Stock view continues
+            // to honour the global Attribution Period control.
+            periodOverride="1D"
           />
         ))}
       {perStockLoading && openFactorDetailPanels.length > 0 && !perStockData && (
@@ -610,6 +697,81 @@ export function MarketMapClient({
       )}
     </div>
   );
+}
+
+function ExtendedHoursToggle({
+  clockSession,
+  showExtended,
+  onToggle,
+  extended,
+}: {
+  clockSession: MarketSession;
+  showExtended: boolean;
+  onToggle: () => void;
+  extended: ApiExtendedInfo | null;
+}) {
+  // The displayed session label and accent colour follow the SNAPSHOT
+  // session whenever one is available — so during CLOSED-after-POST the
+  // toggle still says "Show after-hours" with the dark-red accent that
+  // matches the prior status chip, not whatever the clock thinks.
+  // Falls back to the clock during the brief interval before the first
+  // API response lands.
+  const displaySession: "PRE" | "POST" =
+    extended?.session === "PRE" || extended?.session === "POST"
+      ? extended.session
+      : clockSession === "PRE"
+        ? "PRE"
+        : "POST";
+
+  // The "Closed" clock session is a meaningful staleness signal: the
+  // snapshot is no longer being refreshed; the user is looking at the
+  // most recent extended-hours move (e.g. last night's POST, or Friday's
+  // POST on a Saturday). Surface that subtly in the title so users don't
+  // misread an overnight snapshot as live.
+  const isCarryover = clockSession === "CLOSED";
+
+  // Two distinct verbs depending on what the toggle does next:
+  //   showExtended = true  -> button reverts to close-based grid
+  //   showExtended = false -> button restores the extended-hours overlay
+  const label = showExtended
+    ? "Revert to close"
+    : displaySession === "PRE"
+      ? "Show pre-market"
+      : "Show after-hours";
+  const title = showExtended
+    ? "Switch the grid back to regular-session close prices."
+    : displaySession === "PRE"
+      ? `Overlay ${isCarryover ? "the most recent" : "today's"} pre-market prints onto every horizon column.`
+      : `Overlay ${isCarryover ? "the most recent" : "today's"} post-market prints onto every horizon column.`;
+
+  const asOfHint =
+    showExtended && extended?.applied && extended.asOf
+      ? `${displaySession === "PRE" ? "Pre-market" : "After-hours"} as of ${formatExtendedAsOf(extended.asOf)}`
+      : null;
+  return (
+    <span style={extendedToggleWrap}>
+      <button
+        type="button"
+        onClick={onToggle}
+        style={
+          showExtended ? extendedToggleActive(displaySession) : extendedToggleIdle
+        }
+        title={title}
+      >
+        {label}
+      </button>
+      {asOfHint && <span style={extendedAsOf}>{asOfHint}</span>}
+    </span>
+  );
+}
+
+function formatExtendedAsOf(iso: string): string {
+  // ISO timestamp -> HH:MM in the user's local time zone. Falls back to the
+  // raw string if Date parsing fails, so a malformed snapshot never blanks
+  // the chip.
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function SectorTableRow({
@@ -1302,4 +1464,35 @@ const btnGhostActive: CSSProperties = {
   background: "var(--bg-elevated)",
   borderColor: "var(--color-accent)",
   color: "var(--text-primary)",
+};
+
+const extendedToggleWrap: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "6px",
+};
+
+const extendedToggleIdle: CSSProperties = {
+  ...btnGhost,
+  fontFamily:
+    'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
+};
+
+function extendedToggleActive(session: MarketSession): CSSProperties {
+  const accent =
+    session === "PRE" ? "var(--color-accent)" : "#8b1f1f";
+  return {
+    ...btnGhost,
+    borderColor: accent,
+    color: accent,
+    fontFamily:
+      'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
+  };
+}
+
+const extendedAsOf: CSSProperties = {
+  fontSize: "11px",
+  color: "var(--text-secondary)",
+  fontFamily:
+    'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
 };

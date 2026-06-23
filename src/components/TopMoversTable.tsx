@@ -7,6 +7,7 @@ import { HORIZON_ORDER } from "@/domain/entities/horizons";
 import { heatmapRgb } from "@/domain/calculations/heatmap";
 import { HORIZON_LABEL, formatMetricValue } from "@/lib/format";
 import { isExcludedSector } from "@/lib/market-map/excluded-sectors";
+import { sectorColor, subThemeColor } from "@/lib/market-map/sector-colors";
 
 /**
  * TopMoversTable — bottom-of-page ranking of the top 20 best and worst
@@ -32,6 +33,8 @@ const RANK_LIMIT = 20;
 type CompanyLeaf = {
   ticker: string;
   name: string;
+  sector: string;
+  subTheme: string;
   cells: Record<Horizon, number | null>;
   lastDate?: string | null;
 };
@@ -100,6 +103,8 @@ export function TopMoversTable({
         name: r.label.includes("\u2014")
           ? r.label.split("\u2014").slice(1).join("\u2014").trim()
           : r.label,
+        sector: r.sector ?? "Unknown",
+        subTheme: r.subTheme ?? "Unknown",
         cells: r.cells,
         lastDate: r.lastDate ?? null,
       }));
@@ -222,6 +227,8 @@ function MoversList({
             <th style={{ ...thStyle, textAlign: "left", width: "1%" }}>
               Ticker
             </th>
+            <th style={{ ...thStyle, textAlign: "left" }}>Sector</th>
+            <th style={{ ...thStyle, textAlign: "left" }}>Sub-Theme</th>
             <th style={{ ...thStyle, textAlign: "right", width: "1%" }}>
               {HORIZON_LABEL[horizon]}
             </th>
@@ -233,6 +240,8 @@ function MoversList({
             const bg = heatmapRgb(v, "RETURN", range.min, range.max);
             const isSelected = selectedTickers.has(c.ticker);
             const rowBg = isSelected ? SELECTED_ROW_BG : COMPANY_BG;
+            const sectorClr = sectorColor(c.sector);
+            const subThemeClr = subThemeColor(c.sector, c.subTheme);
             return (
               <tr
                 key={c.ticker}
@@ -249,6 +258,22 @@ function MoversList({
                   <span style={tickerSymbolText}>{c.ticker}</span>
                 </td>
                 <td
+                  style={{ ...sectorCell, background: rowBg, color: sectorClr }}
+                  title={c.sector}
+                >
+                  {c.sector}
+                </td>
+                <td
+                  style={{
+                    ...subThemeCell,
+                    background: rowBg,
+                    color: subThemeClr,
+                  }}
+                  title={c.subTheme}
+                >
+                  {c.subTheme}
+                </td>
+                <td
                   style={{
                     ...returnCell,
                     background: bg,
@@ -263,7 +288,7 @@ function MoversList({
           {rows.length === 0 && (
             <tr>
               <td
-                colSpan={4}
+                colSpan={6}
                 style={{ ...emptyStateCell, color: "var(--text-secondary)" }}
               >
                 {emptyHint}
@@ -339,7 +364,7 @@ const horizonBtn: CSSProperties = {
 const horizonBtnActive: CSSProperties = {
   ...horizonBtn,
   background: "var(--bg-elevated)",
-  borderColor: "var(--color-accent)",
+  border: "1px solid var(--color-accent)",
   color: "var(--text-primary)",
 };
 
@@ -404,6 +429,25 @@ const nameCell: CSSProperties = {
 const tickerCell: CSSProperties = {
   ...cellBase,
   width: "1%",
+};
+
+const sectorCell: CSSProperties = {
+  ...cellBase,
+  maxWidth: "16ch",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  fontWeight: 600,
+  fontSize: "11px",
+  letterSpacing: "0.02em",
+};
+
+const subThemeCell: CSSProperties = {
+  ...cellBase,
+  maxWidth: "16ch",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  fontWeight: 500,
+  fontSize: "11px",
 };
 
 const returnCell: CSSProperties = {

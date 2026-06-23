@@ -61,12 +61,9 @@ vi.mock("@/infrastructure/db/client", () => ({
   },
 }));
 
-vi.mock("@/infrastructure/providers/yahoo-fundamentals", () => ({
-  fetchYahooQuotes: vi.fn(async () => new Map()),
-}));
-
 vi.mock("@/infrastructure/providers/yahoo-chart-http", () => ({
   toYahooSymbol: (s: string) => s,
+  fetchYahooQuotesViaChart: vi.fn(async () => new Map()),
 }));
 
 // Risk service is mocked so the test pins exactly which 1-day VaR each

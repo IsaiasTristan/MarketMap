@@ -33,6 +33,12 @@ import {
   currentDrawdown,
 } from "@/domain/calculations/risk-adjusted";
 import { rollingBeta, vasicekBeta, ols } from "@/domain/calculations/beta";
+import { sharpeRatio } from "@/domain/calculations/sharpe";
+import {
+  rollingVolSparkline,
+  rollingSharpeSparkline,
+} from "@/domain/calculations/rolling-risk-series";
+import { riskFreeAnnual } from "@/infrastructure/config/env";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -49,7 +55,19 @@ export interface PositionRisk {
   componentVar: number;
   vol21d: number;
   vol63d: number;
+  vol126d: number;
   vol252d: number;
+  sharpe21d: number;
+  sharpe63d: number;
+  sharpe126d: number;
+  /** Historical expected shortfall (1-day 95%) in dollars. */
+  cvar95: number;
+  vol21Spark: number[];
+  vol63Spark: number[];
+  vol126Spark: number[];
+  sharpe21Spark: number[];
+  sharpe63Spark: number[];
+  sharpe126Spark: number[];
   beta: number;
 }
 
@@ -131,11 +149,6 @@ async function getMarketReturns(windowDays = 1260): Promise<number[]> {
   return dailyReturnsFromAdjustedCloses(rows.reverse().map((r) => Number(r.adjClose)));
 }
 
-function returnsToNWindow(returns: number[], n: number): number[] {
-  return returns.slice(-n);
-}
-
-// ── Main exports ───────────────────────────────────────────────────────────
 
 export async function computePositionRisk(
   portfolioId: string,
@@ -175,18 +188,25 @@ export async function computePositionRisk(
   const totalValue = posValues.reduce((s, pv) => s + pv.marketValue, 0);
 
   const mktReturns = await getMarketReturns(252);
+  const annualRf = riskFreeAnnual();
 
   const positionRisks: PositionRisk[] = [];
 
   for (const pv of posValues) {
-    // Position-level risk still uses 252-day window for the per-column vol display
-    const returns252 = await getSecurityReturns(pv.secId, 252);
-    const returns63 = returnsToNWindow(returns252, 63);
-    const returns21 = returnsToNWindow(returns252, 21);
+    const returns504 = await getSecurityReturns(pv.secId, 504);
+    const returns252 = returns504.slice(-252);
+    const returns126 = returns504.slice(-126);
+    const returns63 = returns504.slice(-63);
+    const returns21 = returns504.slice(-21);
 
     const vol252 = annualizedRealizedVolatility(returns252) ?? 0;
+    const vol126 = annualizedRealizedVolatility(returns126) ?? 0;
     const vol63 = annualizedRealizedVolatility(returns63) ?? 0;
     const vol21 = annualizedRealizedVolatility(returns21) ?? 0;
+
+    const sharpe21 = sharpeRatio(returns21, annualRf) ?? 0;
+    const sharpe63 = sharpeRatio(returns63, annualRf) ?? 0;
+    const sharpe126 = sharpeRatio(returns126, annualRf) ?? 0;
 
     const weight = totalValue > 0 ? pv.marketValue / totalValue : 0;
 
@@ -195,6 +215,9 @@ export async function computePositionRisk(
 
     const var95 = parametricVaR(weight, totalValue, vol252, Z_95);
     const var99 = parametricVaR(weight, totalValue, vol252, Z_99);
+
+    const dailyPnl252 = returns252.map((r) => r * pv.marketValue);
+    const cvar95 = Math.abs(expectedShortfall(dailyPnl252, 0.05));
 
     positionRisks.push({
       ticker: pv.ticker,
@@ -208,7 +231,18 @@ export async function computePositionRisk(
       componentVar: 0,
       vol21d: vol21,
       vol63d: vol63,
+      vol126d: vol126,
       vol252d: vol252,
+      sharpe21d: sharpe21,
+      sharpe63d: sharpe63,
+      sharpe126d: sharpe126,
+      cvar95,
+      vol21Spark: rollingVolSparkline(returns504, 21),
+      vol63Spark: rollingVolSparkline(returns504, 63),
+      vol126Spark: rollingVolSparkline(returns504, 126),
+      sharpe21Spark: rollingSharpeSparkline(returns504, 21, annualRf),
+      sharpe63Spark: rollingSharpeSparkline(returns504, 63, annualRf),
+      sharpe126Spark: rollingSharpeSparkline(returns504, 126, annualRf),
       beta,
     });
   }

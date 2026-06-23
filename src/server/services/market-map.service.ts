@@ -5,6 +5,7 @@ import type { Horizon } from "@/domain/entities/horizons";
 import type { DateClose } from "@/domain/calculations/alignment";
 import { securityHorizonMetrics } from "@/domain/calculations/security-metrics";
 import { riskFreeAnnual } from "@/infrastructure/config/env";
+import type { ExtendedTickerQuote } from "@/server/services/extended-hours.service";
 
 function dec(x: { toString(): string }): number {
   return Number(x.toString());
@@ -126,13 +127,129 @@ export type MarketMapApiRow = {
   lastDate?: string | null;
 };
 
+/** Calendar days between two yyyy-MM-dd strings (exclusive of start, inclusive span). */
+function calendarDaysBetween(startIso: string, endIso: string): number {
+  const start = Date.parse(`${startIso}T12:00:00Z`);
+  const end = Date.parse(`${endIso}T12:00:00Z`);
+  return Math.round((end - start) / 86_400_000);
+}
+
+export type ExtendedOverlayResult = {
+  series: DateClose[];
+  applied: boolean;
+  ahOnly1D: number | null;
+  skipReason?: "empty" | "bad_price" | "future_bar" | "stale_db";
+};
+
+/**
+ * After-hours-only 1D: POST uses extended price vs regular close; PRE uses
+ * extended price vs the last stored close before the print date.
+ */
+export function computeAhOnly1DReturn(
+  quote: ExtendedTickerQuote,
+  priorDbClose: number | null,
+): number | null {
+  if (
+    quote.session === "POST" &&
+    quote.regularClose != null &&
+    quote.regularClose > 0 &&
+    Number.isFinite(quote.regularClose)
+  ) {
+    return quote.price / quote.regularClose - 1;
+  }
+  if (
+    quote.session === "PRE" &&
+    priorDbClose != null &&
+    priorDbClose > 0 &&
+    Number.isFinite(priorDbClose)
+  ) {
+    return quote.price / priorDbClose - 1;
+  }
+  return null;
+}
+
+/**
+ * Anchor extended-hours overlay on the print's ET trade date (not wall clock).
+ * Skips overlay when the DB series lags the print by more than one trading
+ * day (Fri→Mon gap = 3 calendar days is allowed).
+ */
+export function applyExtendedQuoteOverlay(
+  series: DateClose[],
+  quote: ExtendedTickerQuote,
+): ExtendedOverlayResult {
+  const skip = (
+    s: DateClose[],
+    reason: ExtendedOverlayResult["skipReason"],
+  ): ExtendedOverlayResult => ({
+    series: s,
+    applied: false,
+    ahOnly1D: null,
+    skipReason: reason,
+  });
+
+  if (series.length === 0) return skip(series, "empty");
+  if (!Number.isFinite(quote.price)) return skip(series, "bad_price");
+
+  const { tradeDateEt, price } = quote;
+  const last = series[series.length - 1]!;
+  const priorDbClose = last.adjClose;
+
+  if (last.date > tradeDateEt) return skip(series, "future_bar");
+
+  if (last.date === tradeDateEt) {
+    const out = series.slice(0, -1);
+    out.push({ date: tradeDateEt, adjClose: price });
+    return {
+      series: out,
+      applied: true,
+      ahOnly1D: computeAhOnly1DReturn(quote, priorDbClose),
+    };
+  }
+
+  const gapDays = calendarDaysBetween(last.date, tradeDateEt);
+  if (gapDays > 3) return skip(series, "stale_db");
+
+  const out = [...series, { date: tradeDateEt, adjClose: price }];
+  return {
+    series: out,
+    applied: true,
+    ahOnly1D: computeAhOnly1DReturn(quote, priorDbClose),
+  };
+}
+
+/**
+ * @deprecated Use {@link applyExtendedQuoteOverlay} — kept for unit tests.
+ */
+export function applyExtendedOverlay(
+  series: DateClose[],
+  price: number,
+  todayIso: string,
+): DateClose[] {
+  if (series.length === 0) return series;
+  if (!Number.isFinite(price)) return series;
+  const last = series[series.length - 1]!;
+  if (last.date === todayIso) {
+    const out = series.slice(0, -1);
+    out.push({ date: todayIso, adjClose: price });
+    return out;
+  }
+  if (last.date > todayIso) return series;
+  return [...series, { date: todayIso, adjClose: price }];
+}
+
+export interface ComputeMarketMapOptions {
+  /** Optional ticker -> extended-hours quote overlay (PRE / POST sessions). */
+  extendedQuotes?: Map<string, ExtendedTickerQuote>;
+}
+
 export async function computeMarketMap(
   db: PrismaClient,
   universeId: string,
   metric: MetricKind,
   rowLevel: RowLevel,
   benchmark: BenchmarkCode,
-  filters: { sector?: string; subTheme?: string }
+  filters: { sector?: string; subTheme?: string },
+  options: ComputeMarketMapOptions = {}
 ): Promise<{ rows: MarketMapApiRow[]; asOf: string | null; warnings: string[] }> {
   const warnings: string[] = [];
   const rf = riskFreeAnnual();
@@ -171,15 +288,36 @@ export async function computeMarketMap(
   );
 
   const companies: CompanyRow[] = [];
+  const overlay = options.extendedQuotes;
 
   for (const c of constituents) {
-    const series = pricesBySecurity.get(c.securityId) ?? [];
+    let series = pricesBySecurity.get(c.securityId) ?? [];
+    let ahOnly1D: number | null = null;
+
+    if (overlay) {
+      const quote = overlay.get(c.security.ticker);
+      if (quote) {
+        const result = applyExtendedQuoteOverlay(series, quote);
+        series = result.series;
+        if (result.applied) {
+          ahOnly1D = result.ahOnly1D;
+        } else if (result.skipReason === "stale_db") {
+          warnings.push(
+            `Extended overlay skipped for ${c.security.ticker} (DB stale vs print date ${quote.tradeDateEt})`,
+          );
+        }
+      }
+    }
+
     const lastDate = series.length ? series[series.length - 1]!.date : null;
     if (series.length < 5) {
       warnings.push(`Insufficient prices for ${c.security.ticker}`);
       continue;
     }
     const metrics = securityHorizonMetrics(series, benchForStock, rf);
+    if (ahOnly1D != null && Number.isFinite(ahOnly1D)) {
+      metrics.D1.return = ahOnly1D;
+    }
     companies.push({
       ticker: c.security.ticker,
       name: c.security.name,

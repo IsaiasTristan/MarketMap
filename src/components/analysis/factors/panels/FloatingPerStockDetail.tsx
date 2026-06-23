@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   type FactorDetailPanel,
+  type FactorPeriod,
   useAnalysisStore,
 } from "@/store/analysis";
 import type { PerStockResult } from "@/server/services/factor-per-stock.service";
@@ -16,6 +17,13 @@ import { PerStockDetail } from "./PerStockDetail";
 interface FloatingPerStockDetailProps {
   panel: FactorDetailPanel;
   data: PerStockResult;
+  /**
+   * Optional surface-level override for the Attribution Period — threaded
+   * straight to `PerStockDetail`. The market-map popup passes `"1D"` so the
+   * factor decomposition lands on the live intraday slice by default,
+   * independent of the Factors-tab Attribution Period.
+   */
+  periodOverride?: FactorPeriod;
 }
 
 const MIN_W = 360;
@@ -29,7 +37,11 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-export function FloatingPerStockDetail({ panel, data }: FloatingPerStockDetailProps) {
+export function FloatingPerStockDetail({
+  panel,
+  data,
+  periodOverride,
+}: FloatingPerStockDetailProps) {
   const moveFactorDetailPanel = useAnalysisStore((s) => s.moveFactorDetailPanel);
   const resizeFactorDetailPanel = useAnalysisStore((s) => s.resizeFactorDetailPanel);
   const closeFactorDetailPanel = useAnalysisStore((s) => s.closeFactorDetailPanel);
@@ -196,7 +208,11 @@ export function FloatingPerStockDetail({ panel, data }: FloatingPerStockDetailPr
       </div>
 
       <div style={{ flex: 1, minHeight: 0 }}>
-        <PerStockDetail data={data} selectedTicker={panel.ticker} />
+        <PerStockDetail
+          data={data}
+          selectedTicker={panel.ticker}
+          periodOverride={periodOverride}
+        />
       </div>
 
       <div

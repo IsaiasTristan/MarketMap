@@ -424,6 +424,40 @@ export interface AttributionResult {
     proxyFrom: string;
     proxyTo: string;
   } | null;
+  /**
+   * Live 1D overlay (only present in REGULAR US market hours).
+   *
+   * When set, the "1D" entries inside `periods` and `periodsLog` have been
+   * REPLACED with values computed from today's live ETF + holdings quotes,
+   * using the horizon end-fit betas + intercept. The cached at-close 1D
+   * bucket is overwritten — there is no parallel "at-close" 1D number on
+   * the result object, mirroring the per-stock detail panel's behaviour
+   * (live takes precedence; at-close is the fallback when live is null).
+   *
+   * The UI reads this to render the live-vs-at-close freshness badge.
+   *
+   * Optional in the type so call sites that don't compute live data (legacy
+   * snapshots, tests, alternative entry points) still build a valid result.
+   */
+  live1D?: {
+    /** ISO timestamp when the live row was composed. */
+    asOf: string;
+    /** US market session at fetch time. */
+    session?: import("@/lib/market-map/market-session").MarketSession;
+    /** ETF legs that were missing — surfaces in the badge tooltip. */
+    missingLegs: string[];
+    /** Factors that were live-decomposed (intersection of endFit and live row). */
+    factorsUsed: FactorCode[];
+    /** Names of holdings without a live quote — degrades the live weighted return. */
+    missingHoldings: string[];
+  } | null;
+  /** Set when inline live 1D overlay failed on the full attribution fetch. */
+  live1DFailureReason?:
+    | "ENGINE_UNAVAILABLE"
+    | "NO_LIVE_FACTORS"
+    | "NO_POSITIONS"
+    | "NO_HOLDING_QUOTES"
+    | null;
 }
 
 // ---------------------------------------------------------------------------

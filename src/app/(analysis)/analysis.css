@@ -168,6 +168,31 @@ html {
   border-bottom: 1px solid var(--bg-border);
 }
 
+.bb-holdings-table {
+  font-family: var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+}
+
+.bb-holdings-table .spark-col-prev,
+.bb-holdings-table .spark-col-curr {
+  overflow: visible;
+}
+
+.bb-holdings-table .spark-col-prev svg,
+.bb-holdings-table .spark-col-curr svg {
+  width: 100%;
+  height: 18px;
+  display: block;
+}
+
+.bb-holdings-table .range-col svg {
+  width: 100%;
+  height: 12px;
+  display: block;
+}
+
 /* Module tabs (TopBar strip 2 + Factors) */
 .bb-tab-row {
   display: flex;

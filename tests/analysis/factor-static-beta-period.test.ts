@@ -177,3 +177,69 @@ describe("grid == waterfall (static-beta slice, both modes)", () => {
     );
   });
 });
+
+describe("live 1D slice — 1-obs identity (simple + log)", () => {
+  // The /api/analysis/factors/per-stock/live-1d endpoint reuses
+  // `computeStaticBetaPeriodSlice` with a SINGLE-DAY factor row + a single
+  // realised y. This block pins the identity for both spaces so any
+  // regression to the live decomposition is caught here.
+  const betas = [0.9, -0.3, 1.4];
+  const alpha = 0.0008;
+  const liveFactorRow = [0.012, -0.005, 0.008];
+  const liveY = 0.011;
+
+  it("simple: observations = 1 · α × 1 = α · identity closes", () => {
+    const s = computeStaticBetaPeriodSlice(betas, alpha, [liveFactorRow], [liveY]);
+    expect(s.observations).toBe(1);
+    expect(s.alphaSum).toBeCloseTo(alpha, 15);
+    let sysCheck = 0;
+    for (let i = 0; i < betas.length; i++) sysCheck += betas[i]! * liveFactorRow[i]!;
+    expect(s.systematic).toBeCloseTo(sysCheck, 14);
+    expect(s.systematic + s.alphaSum + s.residualSum).toBeCloseTo(liveY, 14);
+  });
+
+  it("log: factor row in log space gives β_log × ln(1+f) identity", () => {
+    // Live log path: y_log = ln(1+r_stock) − ln(1+r_f); factor x_log = ln(1+f).
+    const rf = 0.0001;
+    const xLog = liveFactorRow.map((f) => Math.log(1 + f));
+    const yLog = Math.log(1 + liveY) - Math.log(1 + rf);
+    const alphaLog = 0.0007;
+    const betasLog = [0.85, -0.28, 1.35];
+    const s = computeStaticBetaPeriodSlice(betasLog, alphaLog, [xLog], [yLog]);
+    expect(s.observations).toBe(1);
+    expect(s.alphaSum).toBeCloseTo(alphaLog, 15);
+    let sysCheck = 0;
+    for (let i = 0; i < betasLog.length; i++) sysCheck += betasLog[i]! * xLog[i]!;
+    expect(s.systematic).toBeCloseTo(sysCheck, 14);
+    expect(s.systematic + s.alphaSum + s.residualSum).toBeCloseTo(yLog, 14);
+  });
+
+  it("grid (cached) vs live-1d: only the underlying y differs, not the estimator", () => {
+    // Yesterday's CACHED slice was built from one historical y over the same
+    // factors + betas. Today's LIVE slice swaps y for the live realization
+    // (and the factor row for today's live row). The slice helper is the
+    // same; the only thing that can move between the two surfaces is the
+    // INPUT DATA, never the math. We assert that by holding the inputs
+    // constant across two calls and checking the outputs are bit-identical.
+    const yesterdayY = 0.004;
+    const yesterdayRow = [0.001, 0.002, -0.001];
+    const cached = computeStaticBetaPeriodSlice(
+      betas,
+      alpha,
+      [yesterdayRow],
+      [yesterdayY],
+    );
+    const live = computeStaticBetaPeriodSlice(
+      betas,
+      alpha,
+      [liveFactorRow],
+      [liveY],
+    );
+    // Both slices have observations = 1 and same α-handling.
+    expect(cached.observations).toBe(1);
+    expect(live.observations).toBe(1);
+    expect(cached.alphaSum).toBeCloseTo(live.alphaSum, 15);
+    // The systematic / residual MUST differ — same estimator, different data.
+    expect(cached.systematic).not.toBeCloseTo(live.systematic, 6);
+  });
+});

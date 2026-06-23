@@ -1,6 +1,9 @@
 "use client";
 import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import {
+  BB_GRID_FONT_STACK,
+} from "@/components/analysis/factors/shared/bloomberg-grid";
+import {
   PieChart,
   Pie,
   Cell,
@@ -22,7 +25,6 @@ export interface DonutSlice {
   secondary?: string;
 }
 
-// recharts needs resolved colors — we use explicit hex fallbacks
 const CHART_COLORS_HEX = [
   "var(--chart-1)",
   "#22c55e",
@@ -36,7 +38,8 @@ const CHART_COLORS_HEX = [
   "#84cc16",
 ];
 
-const NEGATIVE_OUTLINE = "#ef4444";
+const NEGATIVE_OUTLINE = "var(--bb-red)";
+const MIN_DONUT_SIZE = 120;
 
 interface DonutProps {
   data: DonutSlice[];
@@ -62,127 +65,50 @@ export function Donut({
   centerLabel,
   centerSub,
   centerColor,
-  height = 280,
+  height = 260,
   formatter = (v: unknown) => `${(v as number).toFixed(1)}%`,
 }: DonutProps) {
   return (
     <div
       style={{
         display: "flex",
+        flexDirection: "row",
         alignItems: "stretch",
-        gap: 12,
-        height,
+        height: "100%",
+        minHeight: height,
         width: "100%",
+        gap: 8,
       }}
     >
-      {/* Donut (fills available height; legend lives to the right) */}
-      <div style={{ position: "relative", flex: "1 1 auto", minWidth: 0 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie
-              data={data}
-              cx="50%"
-              cy="50%"
-              innerRadius="58%"
-              outerRadius="92%"
-              paddingAngle={2}
-              dataKey="value"
-              label={false}
-              startAngle={90}
-              endAngle={-270}
-              isAnimationActive={false}
-            >
-              {data.map((entry, i) => (
-                <Cell
-                  key={entry.name}
-                  fill={entry.color ?? CHART_COLORS_HEX[i % CHART_COLORS_HEX.length]}
-                  stroke={entry.negative ? NEGATIVE_OUTLINE : undefined}
-                  strokeWidth={entry.negative ? 2 : 0}
-                />
-              ))}
-            </Pie>
-            <Tooltip
-              formatter={formatter}
-              contentStyle={{ ...bbTooltipStyle, fontSize: 13 }}
-              labelStyle={{ color: "#fff" }}
-              itemStyle={{ color: "var(--text-secondary)" }}
-            />
-          </PieChart>
-        </ResponsiveContainer>
-
-        {/* HTML center overlay — sits over the pie hole so wrapping is reliable */}
-        {(centerLabel || centerSub) && (
-          <div
-            style={{
-              position: "absolute",
-              top: "50%",
-              left: "50%",
-              transform: "translate(-50%, -50%)",
-              textAlign: "center",
-              pointerEvents: "none",
-              lineHeight: 1.2,
-            }}
-          >
-            {centerLabel && (
-              <div
-                style={{
-                  fontSize: 20,
-                  fontWeight: 700,
-                  color: centerColor ?? "var(--text-primary)",
-                  fontFamily: "var(--font-mono, monospace)",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {centerLabel}
-              </div>
-            )}
-            {centerSub && (
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--text-secondary)",
-                  marginTop: 2,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {centerSub}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Custom legend — supports optional secondary value per slice */}
       <div
         style={{
-          flex: "0 0 140px",
-          maxHeight: "100%",
+          flex: "0 0 auto",
+          maxWidth: 180,
           overflowY: "auto",
-          fontSize: 12,
+          fontSize: 11,
           color: "var(--text-secondary)",
-          display: "flex",
-          flexDirection: "column",
-          justifyContent: "center",
-          gap: 4,
-          paddingRight: 4,
+          fontFamily: BB_GRID_FONT_STACK,
+          padding: "4px 0 4px 6px",
         }}
       >
         {data.map((slice, i) => (
           <div
             key={slice.name}
             style={{
-              display: "flex",
+              display: "grid",
+              gridTemplateColumns: "8px auto auto",
               alignItems: "center",
               gap: 6,
-              minWidth: 0,
+              padding: "1px 4px 1px 0",
+              minHeight: 14,
             }}
           >
             <span
               style={{
-                flex: "0 0 8px",
                 width: 8,
                 height: 8,
                 borderRadius: "50%",
+                flexShrink: 0,
                 background:
                   slice.color ?? CHART_COLORS_HEX[i % CHART_COLORS_HEX.length],
                 outline: slice.negative ? `1.5px solid ${NEGATIVE_OUTLINE}` : "none",
@@ -191,21 +117,21 @@ export function Donut({
             />
             <span
               style={{
-                flex: "1 1 auto",
+                whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
               }}
+              title={slice.name}
             >
               {slice.name}
             </span>
             {slice.secondary && (
               <span
                 style={{
-                  flex: "0 0 auto",
                   color: "var(--text-tertiary, #94a3b8)",
-                  fontFamily: "var(--font-mono, monospace)",
-                  fontSize: 11,
+                  fontFamily: BB_GRID_FONT_STACK,
+                  fontSize: 10,
+                  whiteSpace: "nowrap",
                 }}
               >
                 {slice.secondary}
@@ -213,6 +139,104 @@ export function Donut({
             )}
           </div>
         ))}
+      </div>
+
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          minHeight: 0,
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 8,
+          containerType: "size",
+        }}
+      >
+        <div
+          style={{
+            position: "relative",
+            width: `max(${MIN_DONUT_SIZE}px, min(100cqw, 100cqh))`,
+            height: `max(${MIN_DONUT_SIZE}px, min(100cqw, 100cqh))`,
+            flexShrink: 0,
+            containerType: "size",
+          }}
+        >
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={data}
+                cx="50%"
+                cy="50%"
+                innerRadius="58%"
+                outerRadius="92%"
+                paddingAngle={2}
+                dataKey="value"
+                label={false}
+                startAngle={90}
+                endAngle={-270}
+                isAnimationActive={false}
+              >
+                {data.map((entry, i) => (
+                  <Cell
+                    key={entry.name}
+                    fill={entry.color ?? CHART_COLORS_HEX[i % CHART_COLORS_HEX.length]}
+                    stroke={entry.negative ? NEGATIVE_OUTLINE : undefined}
+                    strokeWidth={entry.negative ? 2 : 0}
+                  />
+                ))}
+              </Pie>
+              <Tooltip
+                formatter={formatter}
+                contentStyle={{ ...bbTooltipStyle, fontSize: 11 }}
+                labelStyle={{ color: "#fff" }}
+                itemStyle={{ color: "var(--text-secondary)" }}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+
+          {(centerLabel || centerSub) && (
+            <div
+              style={{
+                position: "absolute",
+                top: "50%",
+                left: "50%",
+                transform: "translate(-50%, -50%)",
+                textAlign: "center",
+                pointerEvents: "none",
+                lineHeight: 1.2,
+              }}
+            >
+              {centerLabel && (
+                <div
+                  style={{
+                    fontSize: "clamp(12px, 4cqw, 16px)",
+                    fontWeight: 700,
+                    color: centerColor ?? "var(--text-primary)",
+                    fontFamily: BB_GRID_FONT_STACK,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {centerLabel}
+                </div>
+              )}
+              {centerSub && (
+                <div
+                  style={{
+                    fontSize: "clamp(8px, 2.5cqw, 10px)",
+                    color: "var(--text-secondary)",
+                    marginTop: 2,
+                    whiteSpace: "nowrap",
+                    fontFamily: BB_GRID_FONT_STACK,
+                  }}
+                >
+                  {centerSub}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

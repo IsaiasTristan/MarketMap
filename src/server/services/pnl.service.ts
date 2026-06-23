@@ -7,9 +7,9 @@
 
 import { prisma as db } from "@/infrastructure/db/client";
 import {
-  fetchYahooQuotes,
-} from "@/infrastructure/providers/yahoo-fundamentals";
-import { toYahooSymbol } from "@/infrastructure/providers/yahoo-chart-http";
+  fetchYahooQuotesViaChart,
+  toYahooSymbol,
+} from "@/infrastructure/providers/yahoo-chart-http";
 import type { PositionRow } from "./position.service";
 import { computePositionRisk } from "./risk.service";
 
@@ -96,6 +96,11 @@ function boundaryIso(type: "MTD" | "QTD" | "YTD"): string {
   return `${now.getFullYear()}-01-01`;
 }
 
+/** Calendar start date for MTD / QTD / YTD period lookups. */
+export function periodBoundaryIso(type: "MTD" | "QTD" | "YTD"): string {
+  return boundaryIso(type);
+}
+
 // ── ADV from stored PriceHistory ─────────────────────────────────────────
 
 async function getAdv20d(securityId: string): Promise<number> {
@@ -167,10 +172,13 @@ export async function getPortfolioPnl(
     return { summary: zero, positionsWithPnl: [] };
   }
 
-  // On weekends markets are closed — use stored prices rather than live Yahoo quotes
+  // On weekends markets are closed — use stored prices rather than live Yahoo quotes.
+  // Weekdays use the v8 chart endpoint (v7 /quote returns 401 without a session crumb).
   const weekend = isWeekend();
   const tickers = [...new Set(positions.map((p) => p.ticker))];
-  const quotes = weekend ? new Map<string, { price: number; volume: number; prevClose: number }>() : await fetchYahooQuotes(tickers);
+  const quotes = weekend
+    ? new Map<string, { price: number; prevClose: number }>()
+    : await fetchYahooQuotesViaChart(tickers);
 
   // Look up security IDs for DB queries
   const securities = await db.security.findMany({
@@ -214,13 +222,13 @@ export async function getPortfolioPnl(
     const sec = secMap.get(pos.ticker);
     const secId = sec?.id;
 
-    // Period start prices + ADV + optional weekend stored-price lookup
+    // Period start prices + ADV + stored-price fallback (weekends + missing live quotes)
     const [mtdPrice, qtdPrice, ytdPrice, adv, storedPrices] = await Promise.all([
       secId ? getPriceAt(secId, mtdStart) : null,
       secId ? getPriceAt(secId, qtdStart) : null,
       secId ? getPriceAt(secId, ytdStart) : null,
       secId ? getAdv20d(secId) : Promise.resolve(0),
-      weekend && secId ? getLastStoredPrices(secId) : Promise.resolve(null),
+      secId ? getLastStoredPrices(secId) : Promise.resolve(null),
     ]);
 
     let currentPrice: number;
@@ -232,8 +240,17 @@ export async function getPortfolioPnl(
       snapshotDate = storedPrices.date; // last market close date (e.g. Friday)
     } else {
       const quote = quotes.get(toYahooSymbol(pos.ticker));
-      currentPrice = quote?.price ?? 0;
-      prevClose = quote?.prevClose ?? currentPrice;
+      if (quote) {
+        currentPrice = quote.price;
+        prevClose = quote.prevClose;
+      } else if (storedPrices) {
+        currentPrice = storedPrices.currentPrice;
+        prevClose = storedPrices.prevClose;
+        snapshotDate = storedPrices.date;
+      } else {
+        currentPrice = 0;
+        prevClose = 0;
+      }
     }
 
     // Direction sign: short positions invert P&L (gain when price drops).
@@ -365,6 +382,19 @@ export function getContributors(
 
 export type AllocationHorizon = "1D" | "5D" | "1M" | "6M" | "1Y" | "2Y" | "5Y";
 
+/** Custom horizons for the Overview holdings table dropdown. */
+export type HoldingsHorizon = "10D" | "30D" | "3M" | "6M" | "1Y" | "2Y" | "5Y";
+
+export const HOLDINGS_HORIZONS: HoldingsHorizon[] = [
+  "10D",
+  "30D",
+  "3M",
+  "6M",
+  "1Y",
+  "2Y",
+  "5Y",
+];
+
 export const ALLOCATION_HORIZONS: AllocationHorizon[] = [
   "1D",
   "5D",
@@ -405,6 +435,29 @@ const HORIZON_CALENDAR_DAYS: Record<AllocationHorizon, number> = {
   "2Y": 730,
   "5Y": 1825,
 };
+
+const HOLDINGS_HORIZON_CALENDAR_DAYS: Record<HoldingsHorizon, number> = {
+  "10D": 14,
+  "30D": 42,
+  "3M": 90,
+  "6M": 180,
+  "1Y": 365,
+  "2Y": 730,
+  "5Y": 1825,
+};
+
+export function holdingsHorizonStartDateIso(
+  horizon: HoldingsHorizon,
+  refDate: Date = new Date(),
+): string {
+  const d = new Date(refDate);
+  d.setUTCDate(d.getUTCDate() - HOLDINGS_HORIZON_CALENDAR_DAYS[horizon]);
+  return d.toISOString().slice(0, 10);
+}
+
+export function isValidHoldingsHorizon(h: string): h is HoldingsHorizon {
+  return (HOLDINGS_HORIZONS as string[]).includes(h);
+}
 
 export function scaleVarToHorizon(
   var1d: number,
@@ -510,7 +563,7 @@ export async function getReturnRiskAllocation(
   const weekend = isWeekend();
   const tickers = positions.map((p) => p.security.ticker);
   const quotes =
-    horizon === "1D" && !weekend ? await fetchYahooQuotes(tickers) : null;
+    horizon === "1D" && !weekend ? await fetchYahooQuotesViaChart(tickers) : null;
 
   // Single risk pass per request — sqrt-time scaling below derives every
   // horizon's VaR from the 1-day baseline without re-fitting volatility.
@@ -543,8 +596,16 @@ export async function getReturnRiskAllocation(
         }
       } else {
         const q = quotes?.get(toYahooSymbol(ticker));
-        currentPrice = q?.price ?? 0;
-        startPrice = q?.prevClose ?? currentPrice;
+        if (q) {
+          currentPrice = q.price;
+          startPrice = q.prevClose;
+        } else {
+          const stored = await getLastStoredPrices(pos.securityId);
+          if (stored) {
+            currentPrice = stored.currentPrice;
+            startPrice = stored.prevClose;
+          }
+        }
       }
     } else {
       const [latest, startRow] = await Promise.all([

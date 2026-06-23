@@ -3,9 +3,17 @@
 import type { CSSProperties } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MarketMapClient, type MarketMapLoadedInfo } from "@/components/MarketMapClient";
+import {
+  MarketMapClient,
+  type MarketMapLoadedInfo,
+  type StaleTickerInfo,
+} from "@/components/MarketMapClient";
 import { ManageTickersModal } from "@/components/ManageTickersModal";
 import { useIsAdmin } from "@/lib/api/useMe";
+import {
+  getUsMarketSession,
+  type MarketSession,
+} from "@/lib/market-map/market-session";
 
 const AUTO_REFRESH_MS = 30_000;
 /** While the US equity session is open we tail-refresh Yahoo prices on this
@@ -31,6 +39,8 @@ export function MarketMapPageInner() {
   const [dataAsOf, setDataAsOf] = useState<string | null>(null);
   const [staleTickerCount, setStaleTickerCount] = useState(0);
   const [activeTickerCount, setActiveTickerCount] = useState(0);
+  const [staleTickers, setStaleTickers] = useState<StaleTickerInfo[]>([]);
+  const [staleHover, setStaleHover] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [ingesting, setIngesting] = useState(false);
   const [ingestErr, setIngestErr] = useState<string | null>(null);
@@ -217,8 +227,8 @@ export function MarketMapPageInner() {
       if (typeof document !== "undefined" && document.visibilityState !== "visible") {
         return;
       }
-      const status = getUsMarketStatus(new Date());
-      if (status.label !== "Open") return;
+      const session = getUsMarketSession(new Date());
+      if (session !== "REGULAR") return;
       if (ingestingRef.current) return;
       void triggerIngestRef.current(resolvedUniverseId, ["tail"]);
     };
@@ -226,7 +236,11 @@ export function MarketMapPageInner() {
     return () => clearInterval(t);
   }, [resolvedUniverseId, isAdmin]);
 
-  const marketStatus = useMemo(() => getUsMarketStatus(new Date(now)), [now]);
+  const session = useMemo<MarketSession>(
+    () => getUsMarketSession(new Date(now)),
+    [now]
+  );
+  const marketStatus = useMemo(() => describeSession(session), [session]);
   const refreshLabel = useMemo(
     () => formatAgo(lastRefreshedAt, now),
     [lastRefreshedAt, now]
@@ -242,6 +256,7 @@ export function MarketMapPageInner() {
     setDataAsOf(info.asOf);
     setStaleTickerCount(info.staleTickerCount);
     setActiveTickerCount(info.activeTickerCount);
+    setStaleTickers(info.staleTickers);
   }, []);
 
   const onApplied = useCallback(() => {
@@ -267,8 +282,10 @@ export function MarketMapPageInner() {
             </button>
           )}
           <span style={dot(marketStatus.color)} aria-hidden="true" />
-          <span style={statusText}>{marketStatus.label}</span>
-          {marketStatus.label === "Open" && (
+          <span style={{ ...statusText, color: marketStatus.color, fontWeight: marketStatus.bold ? 600 : undefined }}>
+            {marketStatus.label}
+          </span>
+          {session === "REGULAR" && (
             <span
               style={liveBadge}
               title={`Live tail-refresh every ${LIVE_REFRESH_MS / 1000}s during market hours`}
@@ -288,24 +305,57 @@ export function MarketMapPageInner() {
                 ·
               </span>
               <span
-                style={{
-                  ...statusText,
-                  color:
-                    staleTickerCount > 0
-                      ? "var(--color-negative)"
-                      : statusText.color,
-                }}
-                title={
-                  staleTickerCount > 0
-                    ? `${staleTickerCount} of ${activeTickerCount} tickers have not refreshed (likely delisted / acquired). Click ↻ to force a full refresh; the next ingest will auto-deactivate any ticker still > 21d behind.`
-                    : "Most recent trading-date represented in the grid."
-                }
+                style={statusText}
+                title="Most recent trading-date represented in the grid."
               >
                 Bars through {dataAsOf}
-                {staleTickerCount > 0
-                  ? ` (${staleTickerCount} of ${activeTickerCount} tickers stale)`
-                  : ""}
               </span>
+              {staleTickerCount > 0 && (
+                <span
+                  style={stalePopoverAnchor}
+                  onMouseEnter={() => setStaleHover(true)}
+                  onMouseLeave={() => setStaleHover(false)}
+                >
+                  <span
+                    role="img"
+                    aria-label={`${staleTickerCount} of ${activeTickerCount} tickers have stale price data`}
+                    tabIndex={0}
+                    onFocus={() => setStaleHover(true)}
+                    onBlur={() => setStaleHover(false)}
+                    style={staleTriangle}
+                  >
+                    ▲
+                  </span>
+                  {staleHover && (
+                    <div role="tooltip" style={stalePopover}>
+                      <div style={stalePopoverTitle}>
+                        Stale price data — {staleTickerCount} of{" "}
+                        {activeTickerCount} tickers
+                      </div>
+                      <div style={stalePopoverBody}>
+                        These tickers have not refreshed to the latest bar (
+                        {dataAsOf}); likely delisted / acquired or a failed
+                        fetch. Next ingest auto-removes any still &gt; 21d behind.
+                      </div>
+                      <ul style={staleList}>
+                        {staleTickers.slice(0, 12).map((t) => (
+                          <li key={t.ticker} style={staleListItem}>
+                            <span style={staleListTicker}>{t.ticker}</span>
+                            <span style={staleListMeta}>
+                              last {t.lastDate} · {t.daysBehind}d behind
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                      {staleTickers.length > 12 && (
+                        <div style={staleMore}>
+                          +{staleTickers.length - 12} more
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </span>
+              )}
             </>
           )}
           {isAdmin && (
@@ -340,6 +390,7 @@ export function MarketMapPageInner() {
             universeId={resolvedUniverseId}
             reloadToken={reloadToken}
             onLoaded={onDataLoaded}
+            session={session}
           />
         ) : !resolveErr ? (
           <p style={{ color: "var(--text-secondary)" }}>Loading universe…</p>
@@ -360,32 +411,32 @@ export function MarketMapPageInner() {
   );
 }
 
-type MarketStatus = { label: string; color: string };
+type MarketStatusPresentation = { label: string; color: string; bold: boolean };
 
 /**
- * Very simple US equity session heuristic (9:30–16:00 ET, Mon–Fri). Does not
- * account for holidays; intended as a lightweight top-bar indicator only.
+ * Presentation map for the four-state {@link MarketSession}. The session
+ * machine itself is a pure clock heuristic in
+ * `@/lib/market-map/market-session`; this function picks the user-facing
+ * label and colour for the top-bar chip.
+ *
+ * Colours:
+ *   - REGULAR (Live)        light green via `--color-positive` (#00c800)
+ *   - PRE    (Pre-market)   orange via `--color-accent` (#fa8000)
+ *   - POST   (After-hours)  dark red literal (#8b1f1f)
+ *   - CLOSED                muted secondary text
  */
-function getUsMarketStatus(now: Date): MarketStatus {
-  const etFormatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    weekday: "short",
-    hour: "numeric",
-    minute: "numeric",
-    hour12: false,
-  });
-  const parts = etFormatter.formatToParts(now);
-  const weekday = parts.find((p) => p.type === "weekday")?.value ?? "";
-  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
-  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
-  const minutesInDay = hour * 60 + minute;
-  const isWeekday = ["Mon", "Tue", "Wed", "Thu", "Fri"].includes(weekday);
-  const open = 9 * 60 + 30;
-  const close = 16 * 60;
-  if (isWeekday && minutesInDay >= open && minutesInDay < close) {
-    return { label: "Open", color: "var(--color-positive)" };
+function describeSession(session: MarketSession): MarketStatusPresentation {
+  switch (session) {
+    case "REGULAR":
+      return { label: "Live", color: "var(--color-positive)", bold: true };
+    case "PRE":
+      return { label: "Pre-market", color: "var(--color-accent)", bold: true };
+    case "POST":
+      return { label: "After-hours", color: "#8b1f1f", bold: true };
+    case "CLOSED":
+    default:
+      return { label: "Closed", color: "var(--text-secondary)", bold: false };
   }
-  return { label: "Closed", color: "var(--text-secondary)" };
 }
 
 function formatAgo(at: number | null, now: number): string {
@@ -464,6 +515,90 @@ const liveBadge: CSSProperties = {
   lineHeight: "12px",
   fontFamily:
     'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
+};
+
+const stalePopoverAnchor: CSSProperties = {
+  position: "relative",
+  display: "inline-flex",
+  alignItems: "center",
+};
+
+const staleTriangle: CSSProperties = {
+  color: "var(--color-negative)",
+  fontSize: "11px",
+  lineHeight: 1,
+  cursor: "help",
+  outline: "none",
+};
+
+const stalePopover: CSSProperties = {
+  position: "absolute",
+  top: "calc(100% + 6px)",
+  right: 0,
+  zIndex: 50,
+  width: "280px",
+  padding: "8px 10px",
+  background: "var(--bg-surface)",
+  border: "1px solid var(--color-negative)",
+  borderRadius: 0,
+  boxShadow: "0 4px 16px rgba(0, 0, 0, 0.45)",
+  textAlign: "left",
+  cursor: "default",
+};
+
+const stalePopoverTitle: CSSProperties = {
+  color: "var(--color-negative)",
+  fontSize: "11px",
+  fontWeight: 700,
+  letterSpacing: "0.04em",
+  textTransform: "uppercase",
+  marginBottom: "4px",
+};
+
+const stalePopoverBody: CSSProperties = {
+  color: "var(--text-secondary)",
+  fontSize: "11px",
+  lineHeight: 1.4,
+  marginBottom: "6px",
+};
+
+const staleList: CSSProperties = {
+  listStyle: "none",
+  margin: 0,
+  padding: 0,
+  maxHeight: "200px",
+  overflowY: "auto",
+  display: "flex",
+  flexDirection: "column",
+  gap: "2px",
+};
+
+const staleListItem: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "baseline",
+  gap: "8px",
+  fontSize: "11px",
+  lineHeight: 1.3,
+};
+
+const staleListTicker: CSSProperties = {
+  color: "var(--text-primary)",
+  fontWeight: 600,
+  fontFamily:
+    'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
+};
+
+const staleListMeta: CSSProperties = {
+  color: "var(--text-secondary)",
+  fontSize: "10px",
+  whiteSpace: "nowrap",
+};
+
+const staleMore: CSSProperties = {
+  color: "var(--text-secondary)",
+  fontSize: "10px",
+  marginTop: "4px",
 };
 
 const content: CSSProperties = {

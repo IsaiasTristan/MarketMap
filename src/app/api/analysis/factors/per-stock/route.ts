@@ -115,11 +115,24 @@ export async function GET(req: NextRequest) {
             )
           : false,
       );
+    // Self-heal caches that predate the live-1D coefficient persistence
+    // (2026-06-22): the live decomposition needs each cell's `betaLog` and
+    // each row's `alphaDaily` / `alphaDailyLog`. An old cache has neither,
+    // so the live-1D endpoint would silently degrade to last-close. Probe a
+    // representative row + cell and force a fresh compute + write-through.
+    const cacheHasLiveCoeffs =
+      cached != null &&
+      cached.rows.some(
+        (r) =>
+          "alphaDaily" in r &&
+          Object.values(r.cells).some((c) => c && "betaLog" in c),
+      );
     const cacheUsable =
       cached != null &&
       (!period || cached.rows.some((r) => r.periodSlices)) &&
       cacheHasRealized &&
-      cacheHasStaticBeta;
+      cacheHasStaticBeta &&
+      cacheHasLiveCoeffs;
     if (cached && cacheUsable) {
       const overlaid = period ? applyPeriodOverlay(cached, period as PeriodLabel) : cached;
       return NextResponse.json({

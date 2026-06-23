@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { AnalysisProviders } from "@/components/analysis/providers";
 import { TopBar } from "@/components/analysis/TopBar";
+import { MarketTickerStrip } from "@/components/analysis/MarketTickerStrip";
 import { ToastContainer } from "@/components/analysis/ui/Toast";
 import "./analysis.css";
 
@@ -19,6 +20,7 @@ export default function AnalysisLayout({ children }: { children: ReactNode }) {
       <AnalysisProviders>
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
           <TopBar />
+          <MarketTickerStrip />
           <main style={{ flex: 1, padding: "4px", overflowY: "auto" }}>
             {children}
           </main>

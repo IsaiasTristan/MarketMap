@@ -111,6 +111,15 @@ export const marketMapQuery = z.object({
   benchmark: z.enum(["SP500", "NASDAQ", "DOW"]).optional(),
   sector: z.string().optional(),
   subTheme: z.string().optional(),
+  /** Opt-in extended-hours overlay (pre/post-market price replacement on the
+   *  series endpoint). Server only honours the flag when the in-memory
+   *  extended-hours snapshot is fresh for a PRE/POST session; otherwise the
+   *  response is identical to the close-based grid (and `extended.applied`
+   *  reads `false`). String form "1" / "true" accepted. */
+  extended: z
+    .string()
+    .optional()
+    .transform((v) => v === "1" || v === "true"),
 });
 
 export const factorPerformanceQuery = z.object({
