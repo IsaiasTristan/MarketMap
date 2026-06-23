@@ -347,7 +347,10 @@ export async function fetchYahooChartDaily(
 // endpoint stays open and a single `range=1d&interval=5m` call gives us
 // everything the market ticker strip needs:
 //   - `meta.regularMarketPrice`    — live tape (or last close when shut)
-//   - `meta.chartPreviousClose`    — the prior trading-day's close
+//   - `meta.previousClose`         — the prior trading-day's regular close
+//                                    (range-independent; preferred for 1D return)
+//   - `meta.chartPreviousClose`    — close before the chart window start
+//                                    (== previousClose only on a 1d range)
 //   - `indicators.quote[0].close`  — today's 5-minute closes (the sparkline)
 // ---------------------------------------------------------------------------
 
@@ -407,11 +410,16 @@ function buildStripQuoteFromChart(
 ): YahooStripQuote | null {
   const meta = r0.meta ?? {};
 
+  // `previousClose` is the genuine prior regular-session close regardless of the
+  // requested chart range. `chartPreviousClose` is anchored to the bar before the
+  // window start, so on a multi-day range (e.g. the holdings 1mo pull) it is the
+  // close from ~1 range ago, not yesterday — using it would turn a 1D return into
+  // a multi-day return. Prefer `previousClose`; they are equal on a 1d range.
   let prevClose: number | null = null;
-  if (Number.isFinite(meta.chartPreviousClose)) {
-    prevClose = meta.chartPreviousClose as number;
-  } else if (Number.isFinite(meta.previousClose)) {
+  if (Number.isFinite(meta.previousClose)) {
     prevClose = meta.previousClose as number;
+  } else if (Number.isFinite(meta.chartPreviousClose)) {
+    prevClose = meta.chartPreviousClose as number;
   }
   if (
     (prevClose == null || !Number.isFinite(prevClose)) &&

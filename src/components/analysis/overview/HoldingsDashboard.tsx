@@ -282,8 +282,13 @@ export function HoldingsDashboard({ rows, loading, error }: HoldingsDashboardPro
   const { top, bottom, rest } = useMemo(() => {
     const sorted = [...rows].sort((a, b) => b.chg1dPct - a.chg1dPct);
     const top = sorted.slice(0, TOP_N);
-    const bottom = sorted.slice(-BOTTOM_N).reverse();
     const topSet = new Set(top.map((r) => r.ticker));
+    // Exclude top rows so a row never lands in both sections when the portfolio
+    // has <= TOP_N + BOTTOM_N holdings and the two slices would otherwise overlap.
+    const bottom = sorted
+      .slice(-BOTTOM_N)
+      .reverse()
+      .filter((r) => !topSet.has(r.ticker));
     const bottomSet = new Set(bottom.map((r) => r.ticker));
     const rest = sorted.filter(
       (r) => !topSet.has(r.ticker) && !bottomSet.has(r.ticker),
