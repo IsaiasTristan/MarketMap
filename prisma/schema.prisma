@@ -201,18 +201,21 @@ model Portfolio {
 /// User supplies ticker + shares + L/S direction; weights are derived at
 /// read time from shares × current price (gross + signed) so they reflect
 /// today's allocation rather than a frozen snapshot.
+/// Cash rows use isCash=true, cashAmount (dollars), shares=0, securityId=null.
 model PortfolioPosition {
   id          String   @id @default(cuid())
   portfolioId String
-  securityId  String
+  securityId  String?
   shares      Decimal  @db.Decimal(20, 8)
   isShort     Boolean  @default(false)
+  isCash      Boolean  @default(false)
+  cashAmount  Decimal? @db.Decimal(20, 8)
   sector      String?  // optional override; falls back to Security.sector
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
-  security  Security  @relation(fields: [securityId], references: [id], onDelete: Restrict)
+  security  Security? @relation(fields: [securityId], references: [id], onDelete: Restrict)
 
   @@unique([portfolioId, securityId])
   @@index([securityId])

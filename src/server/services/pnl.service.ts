@@ -175,7 +175,8 @@ export async function getPortfolioPnl(
   // On weekends markets are closed — use stored prices rather than live Yahoo quotes.
   // Weekdays use the v8 chart endpoint (v7 /quote returns 401 without a session crumb).
   const weekend = isWeekend();
-  const tickers = [...new Set(positions.map((p) => p.ticker))];
+  const equityTickers = positions.filter((p) => !p.isCash).map((p) => p.ticker);
+  const tickers = [...new Set(equityTickers)];
   const quotes = weekend
     ? new Map<string, { price: number; prevClose: number }>()
     : await fetchYahooQuotesViaChart(tickers);
@@ -219,6 +220,33 @@ export async function getPortfolioPnl(
   const positionsWithPnl: PositionWithPnl[] = [];
 
   for (const pos of positions) {
+    if (pos.isCash) {
+      const cashAmount = pos.cashAmount ?? 0;
+      totalValue += cashAmount;
+      netValue += cashAmount;
+      netDailyPrev += cashAmount;
+      netMtdStart += cashAmount;
+      netQtdStart += cashAmount;
+      netYtdStart += cashAmount;
+
+      positionsWithPnl.push({
+        ticker: pos.ticker,
+        name: pos.name,
+        sector: "Cash",
+        country: null,
+        shares: 0,
+        isShort: false,
+        currentPrice: 1,
+        marketValue: cashAmount,
+        dailyPnl: 0,
+        dailyPnlPct: 0,
+        weight: 0,
+        adv20d: 0,
+        daysToLiquidate: 0,
+      });
+      continue;
+    }
+
     const sec = secMap.get(pos.ticker);
     const secId = sec?.id;
 
@@ -486,6 +514,8 @@ export interface ReturnSlice {
   negative: boolean;
   /** Gross market value at the end of the horizon, for legend context. */
   marketValue: number;
+  /** Signed dollar P&L over the horizon. */
+  dollar: number;
 }
 
 export interface RiskSlice {
@@ -561,7 +591,8 @@ export async function getReturnRiskAllocation(
   if (!positions.length) return empty;
 
   const weekend = isWeekend();
-  const tickers = positions.map((p) => p.security.ticker);
+  const equityPositions = positions.filter((p) => !p.isCash && p.securityId);
+  const tickers = equityPositions.map((p) => p.security!.ticker);
   const quotes =
     horizon === "1D" && !weekend ? await fetchYahooQuotesViaChart(tickers) : null;
 
@@ -580,8 +611,30 @@ export async function getReturnRiskAllocation(
   let totalVar = 0;
 
   for (const pos of positions) {
+    if (pos.isCash) {
+      const cashAmount = Number(pos.cashAmount ?? 0);
+      grossValue += cashAmount;
+      byReturn.push({
+        name: "CASH",
+        value: 0,
+        signed: 0,
+        negative: false,
+        marketValue: cashAmount,
+        dollar: 0,
+      });
+      byRisk.push({
+        name: "CASH",
+        value: 0,
+        pct: 0,
+        dollar: 0,
+        negative: false,
+        marketValue: cashAmount,
+      });
+      continue;
+    }
+
     const shares = Number(pos.shares);
-    const ticker = pos.security.ticker;
+    const ticker = pos.security!.ticker;
     const sign = pos.isShort ? -1 : 1;
 
     let currentPrice = 0;
@@ -589,7 +642,7 @@ export async function getReturnRiskAllocation(
 
     if (horizon === "1D") {
       if (weekend) {
-        const stored = await getLastStoredPrices(pos.securityId);
+        const stored = await getLastStoredPrices(pos.securityId!);
         if (stored) {
           currentPrice = stored.currentPrice;
           startPrice = stored.prevClose;
@@ -600,7 +653,7 @@ export async function getReturnRiskAllocation(
           currentPrice = q.price;
           startPrice = q.prevClose;
         } else {
-          const stored = await getLastStoredPrices(pos.securityId);
+          const stored = await getLastStoredPrices(pos.securityId!);
           if (stored) {
             currentPrice = stored.currentPrice;
             startPrice = stored.prevClose;
@@ -610,11 +663,11 @@ export async function getReturnRiskAllocation(
     } else {
       const [latest, startRow] = await Promise.all([
         db.priceHistory.findFirst({
-          where: { securityId: pos.securityId },
+          where: { securityId: pos.securityId! },
           orderBy: { tradeDate: "desc" },
           select: { adjClose: true },
         }),
-        getPriceAt(pos.securityId, startCutoff!),
+        getPriceAt(pos.securityId!, startCutoff!),
       ]);
       currentPrice = latest ? Number(latest.adjClose) : 0;
       startPrice = startRow ?? currentPrice;
@@ -625,7 +678,8 @@ export async function getReturnRiskAllocation(
 
     const retPctSigned =
       startPrice > 0 ? (sign * (currentPrice - startPrice)) / startPrice : 0;
-    returnDollar += sign * shares * (currentPrice - startPrice);
+    const dollarPnl = sign * shares * (currentPrice - startPrice);
+    returnDollar += dollarPnl;
 
     byReturn.push({
       name: ticker,
@@ -633,6 +687,7 @@ export async function getReturnRiskAllocation(
       signed: retPctSigned,
       negative: retPctSigned < 0,
       marketValue,
+      dollar: dollarPnl,
     });
 
     const var1d = riskByTicker.get(ticker)?.varDollar95 ?? 0;

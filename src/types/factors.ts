@@ -496,6 +496,55 @@ export interface DriversResult {
 }
 
 // ---------------------------------------------------------------------------
+// Factor top movers (universe-wide, per-factor return-contribution ranking)
+// ---------------------------------------------------------------------------
+
+/** A single stock entry in a factor's top-movers list. */
+export interface FactorTopMoverEntry {
+  ticker: string;
+  name: string;
+  sector: string;
+  subTheme: string;
+  /**
+   * Return contribution = β_stock,factor × factor return over the horizon
+   * (simple space, decimal). For the live 1D horizon this is β × today's
+   * live factor move; for 5D+ it is the cached `periodSlices` value.
+   */
+  value: number;
+}
+
+/** Per-factor top/bottom movers + the factor's own return over the horizon. */
+export interface FactorTopMoversFactor {
+  code: FactorCode;
+  label: string;
+  /** The factor's own return over the selected horizon (live for 1D). */
+  factorReturn: number | null;
+  positive: FactorTopMoverEntry[];
+  negative: FactorTopMoverEntry[];
+  /** Min/max of all finite contributions for this factor — drives heat scaling. */
+  range: { min: number; max: number };
+}
+
+export interface FactorTopMoversResult {
+  /** Selected horizon key (Horizon). */
+  horizon: string;
+  /** Regression window (trading days) the betas were fit on. */
+  window: number;
+  /** Attribution space used for the contribution values ("simple" | "log"). */
+  mode: "simple" | "log";
+  /** As-of date of the underlying per-stock grid cache. */
+  asOf: string | null;
+  /** True when the 1D live overlay was applied (saved betas × live factor moves). */
+  live: boolean;
+  /** US market session at fetch time (MarketSession), null when not computed live. */
+  session: string | null;
+  /** Factors ordered by performance over the horizon (descending). */
+  factors: FactorTopMoversFactor[];
+  /** ETF legs missing from the live composition (when live). */
+  missingLegs?: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Scenarios
 // ---------------------------------------------------------------------------
 

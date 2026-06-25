@@ -85,20 +85,24 @@ export async function runHistoricalScenarios(
   if (!positions.length) return [];
 
   // Get last prices + weights
+  const equityPositions = positions.filter((p) => !p.isCash && p.securityId);
   const lastPrices = await Promise.all(
-    positions.map((p) =>
+    equityPositions.map((p) =>
       db.priceHistory.findFirst({
-        where: { securityId: p.securityId },
+        where: { securityId: p.securityId! },
         orderBy: { tradeDate: "desc" },
         select: { adjClose: true, securityId: true },
       }),
     ),
   );
 
-  // Signed dollar exposure (long +, short −) so the impact formula
-  // (beta × shock × exposure) gives correct P&L sign for shorts.
-  const marketValues = positions.map((p, i) => {
-    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0;
+  let equityIdx = 0;
+  const marketValues = positions.map((p) => {
+    if (p.isCash) {
+      return Number(p.cashAmount ?? 0);
+    }
+    const price = lastPrices[equityIdx] ? Number(lastPrices[equityIdx]!.adjClose) : 0;
+    equityIdx++;
     return (p.isShort ? -1 : 1) * Number(p.shares) * price;
   });
   const totalValue = marketValues.reduce((s, v) => s + Math.abs(v), 0);
@@ -116,9 +120,10 @@ export async function runHistoricalScenarios(
   const mktReturns = dailyReturnsFromAdjustedCloses(mktPrices.reverse().map((r) => Number(r.adjClose)));
 
   const betas = await Promise.all(
-    positions.map(async (p, i) => {
+    positions.map(async (p) => {
+      if (p.isCash) return 0;
       const ph = await db.priceHistory.findMany({
-        where: { securityId: p.securityId },
+        where: { securityId: p.securityId! },
         orderBy: { tradeDate: "desc" },
         take: 253,
         select: { adjClose: true },
@@ -135,11 +140,10 @@ export async function runHistoricalScenarios(
   for (const scenario of HISTORICAL_SCENARIOS) {
     const { spy } = await getMarketReturnsDuring(scenario.start, scenario.end);
 
-    const positionPnls = positions.map((p, i) => {
-      const betaScaled = spy * betas[i];
-      const impact = betaScaled * marketValues[i];
-      return { ticker: p.security.ticker, estimatedPnl: impact };
-    });
+    const positionPnls = positions.map((p, i) => ({
+      ticker: p.isCash ? "CASH" : p.security!.ticker,
+      estimatedPnl: p.isCash ? 0 : spy * betas[i]! * marketValues[i]!,
+    }));
 
     const totalPnl = positionPnls.reduce((s, p) => s + p.estimatedPnl, 0);
     const worstPositions = [...positionPnls].sort((a, b) => a.estimatedPnl - b.estimatedPnl).slice(0, 5);
@@ -170,22 +174,23 @@ export async function runCustomShock(
   });
   if (!positions.length) return { estimatedPnlDollar: 0, estimatedPnlPct: 0, positionImpacts: [] };
 
+  const equityPositions = positions.filter((p) => !p.isCash && p.securityId);
   const lastPrices = await Promise.all(
-    positions.map((p) =>
+    equityPositions.map((p) =>
       db.priceHistory.findFirst({
-        where: { securityId: p.securityId },
+        where: { securityId: p.securityId! },
         orderBy: { tradeDate: "desc" },
         select: { adjClose: true },
       }),
     ),
   );
 
-  // Signed dollar exposure (long +, short −) so the shock × exposure product
-  // gives the correct dollar P&L sign for shorts under each scenario.
-  const marketValues = positions.map((p, i) => {
-    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0;
-    const signed = (p.isShort ? -1 : 1) * Number(p.shares) * price;
-    return signed;
+  let equityIdx = 0;
+  const marketValues = positions.map((p) => {
+    if (p.isCash) return Number(p.cashAmount ?? 0);
+    const price = lastPrices[equityIdx] ? Number(lastPrices[equityIdx]!.adjClose) : 0;
+    equityIdx++;
+    return (p.isShort ? -1 : 1) * Number(p.shares) * price;
   });
   const totalValue = marketValues.reduce((s, v) => s + Math.abs(v), 0);
 
@@ -202,8 +207,11 @@ export async function runCustomShock(
 
   const positionImpacts = await Promise.all(
     positions.map(async (p, i) => {
+      if (p.isCash) {
+        return { ticker: "CASH", sector: "Cash", estimatedPnl: 0 };
+      }
       const ph = await db.priceHistory.findMany({
-        where: { securityId: p.securityId },
+        where: { securityId: p.securityId! },
         orderBy: { tradeDate: "desc" },
         take: 253,
         select: { adjClose: true },
@@ -213,23 +221,20 @@ export async function runCustomShock(
       const { beta } = ols(rets.slice(-n), mktReturns.slice(-n));
       const adjBeta = vasicekBeta(beta);
 
-      const sector = p.sector ?? p.security.sector ?? "Other";
+      const sector = p.sector ?? p.security!.sector ?? "Other";
 
-      // SPX shock (via beta)
       let totalReturn = (shock.spxChange ?? 0) * adjBeta;
 
-      // Rate shock for rate-sensitive sectors
       if (shock.rateChangeBps && RATE_SENSITIVE_SECTORS.has(sector)) {
-        totalReturn += -(shock.rateChangeBps / 10000) * 5; // approximate duration sensitivity
+        totalReturn += -(shock.rateChangeBps / 10000) * 5;
       }
 
-      // Sector override
       if (shock.sectorOverrides?.[sector] !== undefined) {
         totalReturn += shock.sectorOverrides[sector];
       }
 
-      const estimatedPnl = totalReturn * marketValues[i];
-      return { ticker: p.security.ticker, sector, estimatedPnl };
+      const estimatedPnl = totalReturn * marketValues[i]!;
+      return { ticker: p.security!.ticker, sector, estimatedPnl };
     }),
   );
 
@@ -258,44 +263,55 @@ export async function runCorrelationStress(
   });
   if (!positions.length) return { normalVar95: 0, stressedVar95: 0, diversificationBenefit: 0, totalValue: 0 };
 
+  const equityPositions = positions.filter((p) => !p.isCash && p.securityId);
   const lastPrices = await Promise.all(
-    positions.map((p) =>
+    equityPositions.map((p) =>
       db.priceHistory.findFirst({
-        where: { securityId: p.securityId },
+        where: { securityId: p.securityId! },
         orderBy: { tradeDate: "desc" },
         select: { adjClose: true },
       }),
     ),
   );
 
-  // Gross dollar exposure per name; signed weights so a short hedges
-  // correctly under shock scenarios (negative weight × down-shock = gain).
-  const grossValues = positions.map((p, i) => {
-    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0;
+  let equityIdx = 0;
+  const grossValues = positions.map((p) => {
+    if (p.isCash) return Number(p.cashAmount ?? 0);
+    const price = lastPrices[equityIdx] ? Number(lastPrices[equityIdx]!.adjClose) : 0;
+    equityIdx++;
     return Math.abs(Number(p.shares) * price);
   });
   const totalValue = grossValues.reduce((s, v) => s + v, 0);
   const weights = positions.map((p, i) => {
     const gross = totalValue > 0 ? grossValues[i]! / totalValue : 0;
-    return (p.isShort ? -1 : 1) * gross;
+    return p.isCash ? gross : (p.isShort ? -1 : 1) * gross;
   });
-  const marketValues = grossValues;
 
-  const returnSeries = await Promise.all(
-    positions.map((p) =>
-      db.priceHistory.findMany({
-        where: { securityId: p.securityId },
+  const returnBySecId = new Map<string, number[]>();
+  await Promise.all(
+    equityPositions.map(async (p) => {
+      const rows = await db.priceHistory.findMany({
+        where: { securityId: p.securityId! },
         orderBy: { tradeDate: "desc" },
         take: 253,
         select: { adjClose: true },
-      }).then((rows) => dailyReturnsFromAdjustedCloses(rows.reverse().map((r) => Number(r.adjClose)))),
-    ),
+      });
+      returnBySecId.set(
+        p.securityId!,
+        dailyReturnsFromAdjustedCloses(rows.reverse().map((r) => Number(r.adjClose))),
+      );
+    }),
   );
 
-  const minLen = Math.min(...returnSeries.map((r) => r.length));
-  const aligned = returnSeries.map((r) => r.slice(-minLen));
+  const minLen = equityPositions.length
+    ? Math.min(...equityPositions.map((p) => returnBySecId.get(p.securityId!)!.length))
+    : 0;
+  const aligned = positions.map((p) => {
+    if (p.isCash) return Array(minLen).fill(0);
+    return returnBySecId.get(p.securityId!)!.slice(-minLen);
+  });
   const vols = aligned.map((r) => annualizedRealizedVolatility(r) ?? 0);
-  const corrMat = correlationMatrix(aligned);
+  const corrMat = aligned.length > 0 ? correlationMatrix(aligned) : [];
 
   const normalVar = portfolioParametricVaR(weights, corrMat, vols, totalValue, Z_95);
   const stressed = stressedVaR(weights, vols, totalValue, Z_95);

@@ -4,6 +4,16 @@ export interface ChartGridRow extends HoldingRow {
   absDailyMove: number;
 }
 
+/** Sort items by |dollar| descending (largest absolute move first). */
+export function sortByAbsDollarDesc<T>(
+  items: readonly T[],
+  getDollar: (item: T) => number,
+): T[] {
+  return [...items].sort(
+    (a, b) => Math.abs(getDollar(b)) - Math.abs(getDollar(a)),
+  );
+}
+
 /**
  * Sort holdings by absolute daily dollar P&L (largest move first).
  */

@@ -108,6 +108,27 @@ export function heatPercentileBloomberg(
 }
 
 /**
+ * Resolve which heat range to color a cell against. Prefer the shared
+ * market-map scale; fall back to the caller's own range when the market scale
+ * is missing or degenerate ({0,0}, e.g. the grid has not loaded yet) so cells
+ * don't flash fully saturated against a 1e-9 span.
+ */
+export function resolveHeatRange(
+  market: { min: number; max: number } | undefined,
+  fallback: { min: number; max: number },
+): { min: number; max: number } {
+  if (
+    market &&
+    Number.isFinite(market.min) &&
+    Number.isFinite(market.max) &&
+    !(market.min === 0 && market.max === 0)
+  ) {
+    return market;
+  }
+  return fallback;
+}
+
+/**
  * Desaturated/dim version of any heat color. Used to mute the row-level
  * summary heat (R², Vol) on rows where every factor cell was masked by the
  * sig gate — keeps the cell readable but takes the visual emphasis away.
@@ -145,4 +166,37 @@ export function heatmapRgb(
 
   const span = Math.max(Math.abs(colMax), Math.abs(colMin), 1e-9);
   return heatSignedBloomberg(value, span);
+}
+
+/**
+ * Fixed annualized-vol buckets for Risk Summary Ann/Dly % cells.
+ * `annualVol` is a decimal (0.25 = 25%). Boundaries are lower-inclusive.
+ *
+ * Hex values anchor on `--heat-*` tokens in `analysis.css` with interpolated mid-tones.
+ */
+const VOL_HEAT_NEUTRAL = "#464646"; // --heat-neutral
+
+const VOL_HEAT_BUCKETS: { max: number; color: string }[] = [
+  { max: 0.1, color: "#123812" }, // extremely low — darkest green
+  { max: 0.15, color: "#1e5a1e" }, // very low — --heat-pos-strong
+  { max: 0.2, color: "#1a701a" }, // low — medium green
+  { max: 0.25, color: "#1e961e" }, // moderately low — --heat-pos-bright
+  { max: 0.3, color: "#2d7a2d" }, // slightly below average — light green
+  { max: 0.35, color: "#3d6a3d" }, // lower-middle — pale green
+  { max: 0.4, color: VOL_HEAT_NEUTRAL }, // middle — light gray
+  { max: 0.5, color: "#6a4545" }, // slightly above average — pale red
+  { max: 0.6, color: "#8a4040" }, // moderately high — light red
+  { max: 0.75, color: "#9a2828" }, // high — medium red
+  { max: 0.9, color: "#b41e1e" }, // very high — --heat-neg-bright
+  { max: 1.25, color: "#5a1e1e" }, // extremely high — --heat-neg-strong
+  { max: 1.75, color: "#451010" }, // severe — very dark red
+  { max: Infinity, color: "#2a0808" }, // exceptional / distressed — darkest red
+];
+
+export function heatVolClassification(annualVol: number): string {
+  if (!Number.isFinite(annualVol) || annualVol < 0) return VOL_HEAT_NEUTRAL;
+  for (const bucket of VOL_HEAT_BUCKETS) {
+    if (annualVol < bucket.max) return bucket.color;
+  }
+  return VOL_HEAT_BUCKETS[VOL_HEAT_BUCKETS.length - 1]!.color;
 }

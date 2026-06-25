@@ -195,7 +195,8 @@ export async function getPortfolioHoldings(
   if (!positions.length) return { rows: [] };
 
   const weekend = isWeekend();
-  const portfolioTickers = [...new Set(positions.map((p) => p.ticker))];
+  const equityPositions = positions.filter((p) => !p.isCash);
+  const portfolioTickers = [...new Set(equityPositions.map((p) => p.ticker))];
 
   const universe = await getOrCreateDefaultUniverse(db);
   const universeRows = await db.universeConstituent.findMany({
@@ -291,6 +292,37 @@ export async function getPortfolioHoldings(
   const nameUpdates: { id: string; name: string }[] = [];
 
   for (const pos of positions) {
+    if (pos.isCash) {
+      const cashAmount = pos.cashAmount ?? 0;
+      rows.push({
+        ticker: "CASH",
+        name: "Cash",
+        shares: 0,
+        isShort: false,
+        currentPrice: 1,
+        marketValue: cashAmount,
+        sparkline: [],
+        prevDaySparkline: [],
+        sparklineExtended: [],
+        prevClose: 1,
+        dayOpen: 1,
+        dayLow: 1,
+        dayHigh: 1,
+        sector: "Cash",
+        subTheme: "Cash",
+        chg1dPct: 0,
+        chg5dPct: 0,
+        chgMtdPct: 0,
+        chgQtdPct: 0,
+        chgYtdPct: 0,
+        sectorPctile: null,
+        subThemePctile: null,
+        sectorDist: [],
+        subThemeDist: [],
+      });
+      continue;
+    }
+
     const sec = secMap.get(pos.ticker);
     const secId = sec?.id;
     const ur = universeByTicker.get(pos.ticker);

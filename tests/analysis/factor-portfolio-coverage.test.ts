@@ -114,6 +114,29 @@ describe("buildCoverageWeightedReturns (portfolio-coverage)", () => {
     expect(coverage.droppedLowCoverageDates).toBe(2);
   });
 
+  it("cash dilutes portfolio return as a zero-return drag", () => {
+    const dates = makeDates(3);
+    const stockMap = new Map<string, number>([
+      [dates[0]!, 100],
+      [dates[1]!, 110],
+      [dates[2]!, 121],
+    ]);
+    const cashMap = new Map<string, number>([
+      [dates[0]!, 1],
+      [dates[1]!, 1],
+      [dates[2]!, 1],
+    ]);
+    const positions: CoveragePositionInput[] = [
+      { ticker: "STOCK", priceByDate: stockMap, firstDate: dates[0]!, weight: 0.5, gross: 50 },
+      { ticker: "CASH", priceByDate: cashMap, firstDate: dates[0]!, weight: 0.5, gross: 50 },
+    ];
+
+    const { returns } = buildCoverageWeightedReturns(dates, positions, 0.5);
+
+    expect(returns[0]).toBeCloseTo(0.05, 10);
+    expect(returns[1]).toBeCloseTo(0.05, 10);
+  });
+
   it("flags a position with no overlap as excluded", () => {
     const dates = makeDates(10);
     const positions: CoveragePositionInput[] = [

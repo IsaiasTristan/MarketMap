@@ -3,6 +3,7 @@
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
 import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import { fmt$, fmtPct } from "@/components/analysis/overview/formatters";
+import { sortByAbsDollarDesc } from "@/lib/holdings/sort-chart-grid";
 import { BB_GRID_FONT_STACK } from "@/components/analysis/factors/shared/bloomberg-grid";
 import {
   BarChart,
@@ -238,7 +239,7 @@ function tickerColumnWidth(tickers: string[]): number {
 }
 
 export function ContributorsChart({ positions }: ContributorsChartProps) {
-  const contribData = [...positions].sort((a, b) => b.dailyPnl - a.dailyPnl);
+  const contribData = sortByAbsDollarDesc(positions, (p) => p.dailyPnl);
   const rowCount = contribData.length;
   const minPlotHeight = Math.max(MIN_ROW_HEIGHT, rowCount * MIN_ROW_HEIGHT);
   const colWidth = tickerColumnWidth(contribData.map((d) => d.ticker));

@@ -105,6 +105,12 @@ export const saveConstituentsBody = z.object({
   rows: z.array(constituentRow).min(1),
 });
 
+export const updateConstituentBody = z.object({
+  companyName: z.string().min(1),
+  sector: z.string().min(1),
+  subTheme: z.string().min(1),
+});
+
 export const marketMapQuery = z.object({
   metric: z.enum(["RETURN", "EXCESS_RETURN", "VOLATILITY", "SHARPE"]),
   rowLevel: z.enum(["SECTOR", "SUB_THEME", "COMPANY"]),
@@ -130,11 +136,38 @@ export const factorPerformanceQuery = z.object({
   benchmark: z.enum(["SP500", "NASDAQ", "DOW"]).optional().default("SP500"),
 });
 
+/** Per-factor top-movers query (universe-driven; horizon drives the period). */
+export const factorTopMoversQuery = z.object({
+  horizon: z.enum(["D1", "D5", "M1", "M3", "M6", "Y1"]).optional().default("D1"),
+  mode: z.enum(["simple", "log"]).optional().default("log"),
+  window: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(20, Math.min(2520, Number(v))) : 252))
+    .pipe(z.number().int().min(20).max(2520)),
+  limit: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(1, Math.min(50, Number(v))) : 20))
+    .pipe(z.number().int().min(1).max(50)),
+});
+
 export const portfolioPositionRow = z.object({
-  ticker: z.string().min(1),
-  shares: z.number().positive(),
+  ticker: z.string().min(1).optional(),
+  shares: z.number().positive().optional(),
   isShort: z.boolean().optional().default(false),
   sector: z.string().nullable().optional(),
+  isCash: z.boolean().optional().default(false),
+  cashAmount: z.number().positive().optional(),
+}).refine(
+  (row) => row.isCash ? row.cashAmount != null : (row.ticker && row.shares != null),
+  { message: "Equity rows need ticker + shares; cash rows need cashAmount" },
+);
+
+export const addCashPositionBody = z.object({
+  portfolioId: z.string().min(1),
+  isCash: z.literal(true),
+  cashAmount: z.number().positive(),
 });
 
 export const portfolioPositionsBody = z.object({

@@ -32,15 +32,15 @@ async function getThresholds(portfolioId: string): Promise<AlertThresholds> {
 export async function generateAlerts(portfolioId: string): Promise<void> {
   const thresholds = await getThresholds(portfolioId);
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId },
+    where: { portfolioId, isCash: false, securityId: { not: null } },
     include: { security: true },
   });
 
   // 1. Portfolio drawdown alert
-  const secIds = positions.map((p) => p.securityId);
+  const secIds = positions.map((p) => p.securityId!);
   if (secIds.length > 0) {
     const priceHistory = await db.priceHistory.findMany({
-      where: { securityId: secIds[0] },
+      where: { securityId: secIds[0]! },
       orderBy: { tradeDate: "desc" },
       take: 253,
       select: { adjClose: true },
@@ -75,7 +75,7 @@ export async function generateAlerts(portfolioId: string): Promise<void> {
   for (const pos of positions) {
     // Crowding via shortRatio
     const fund = await db.securityFundamentals.findFirst({
-      where: { securityId: pos.securityId },
+      where: { securityId: pos.securityId! },
       orderBy: { asOfDate: "desc" },
       select: { shortRatio: true },
     });
@@ -84,8 +84,8 @@ export async function generateAlerts(portfolioId: string): Promise<void> {
         data: {
           severity: "INFO",
           type: "crowding",
-          message: `${pos.security.ticker} has high short interest ratio: ${Number(fund.shortRatio).toFixed(1)} days to cover (threshold: ${thresholds.crowdingShortRatio})`,
-          contextJson: { ticker: pos.security.ticker, shortRatio: Number(fund.shortRatio) },
+          message: `${pos.security!.ticker} has high short interest ratio: ${Number(fund.shortRatio).toFixed(1)} days to cover (threshold: ${thresholds.crowdingShortRatio})`,
+          contextJson: { ticker: pos.security!.ticker, shortRatio: Number(fund.shortRatio) },
         },
       });
     }

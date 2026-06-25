@@ -51,6 +51,8 @@ export function ManageTickersModal({
   const [msg, setMsg] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [removingTicker, setRemovingTicker] = useState<string | null>(null);
+  const [editingTicker, setEditingTicker] = useState<string | null>(null);
+  const [updatingTicker, setUpdatingTicker] = useState<string | null>(null);
   const [addingStock, setAddingStock] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -93,6 +95,7 @@ export function ManageTickersModal({
     setParseErr(null);
     setPreview(null);
     setPreviewFormat(null);
+    setEditingTicker(null);
     void loadUniverse();
   }, [open, loadUniverse]);
 
@@ -301,6 +304,61 @@ export function ManageTickersModal({
     [universe, loadUniverse, onApplied]
   );
 
+  const onUpdateStock = useCallback(
+    async (
+      ticker: string,
+      fields: { companyName: string; sector: string; subTheme: string }
+    ): Promise<boolean> => {
+      if (!universe) return false;
+      setUpdatingTicker(ticker);
+      setMsg(null);
+      try {
+        const res = await fetch(
+          `/api/universes/${universe.id}/constituents?ticker=${encodeURIComponent(ticker)}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              companyName: fields.companyName.trim(),
+              sector: fields.sector.trim(),
+              subTheme: fields.subTheme.trim(),
+            }),
+          }
+        );
+        const body = (await res.json().catch(() => null)) as
+          | { ok?: boolean; error?: string }
+          | null;
+        if (!res.ok || !body?.ok) {
+          throw new Error(
+            body?.error ?? `Failed to update ${ticker} (HTTP ${res.status})`
+          );
+        }
+        setConstituents((prev) =>
+          prev.map((c) =>
+            c.ticker === ticker
+              ? {
+                  ...c,
+                  name: fields.companyName.trim(),
+                  sector: fields.sector.trim(),
+                  subTheme: fields.subTheme.trim(),
+                }
+              : c
+          )
+        );
+        setEditingTicker(null);
+        setMsg(`Updated ${ticker}.`);
+        onApplied?.();
+        return true;
+      } catch (e) {
+        setMsg(e instanceof Error ? e.message : String(e));
+        return false;
+      } finally {
+        setUpdatingTicker(null);
+      }
+    },
+    [universe, onApplied]
+  );
+
   const onFile = async (file: File) => {
     const text = await file.text();
     setCsvText(text);
@@ -482,6 +540,11 @@ export function ManageTickersModal({
               removingTicker={removingTicker}
               onAdd={onAddStock}
               adding={addingStock}
+              editingTicker={editingTicker}
+              updatingTicker={updatingTicker}
+              onStartEdit={setEditingTicker}
+              onCancelEdit={() => setEditingTicker(null)}
+              onUpdate={onUpdateStock}
             />
           )}
         </div>
@@ -578,6 +641,188 @@ function PreviewTable({ rows }: { rows: ParsedUniverseRow[] }) {
   );
 }
 
+function computeSectorOptions(rows: Constituent[]): string[] {
+  const set = new Set<string>();
+  for (const r of rows) if (r.sector) set.add(r.sector);
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+function computeSubThemeOptions(rows: Constituent[], sector: string): string[] {
+  const s = sector.trim().toLowerCase();
+  const set = new Set<string>();
+  for (const r of rows) {
+    if (!r.subTheme) continue;
+    if (s && r.sector.trim().toLowerCase() !== s) continue;
+    set.add(r.subTheme);
+  }
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+function ConstituentRow({
+  row,
+  allRows,
+  isEditing,
+  isUpdating,
+  actionsDisabled,
+  onStartEdit,
+  onCancelEdit,
+  onSave,
+  onRemove,
+  isRemoving,
+}: {
+  row: Constituent;
+  allRows: Constituent[];
+  isEditing: boolean;
+  isUpdating: boolean;
+  actionsDisabled: boolean;
+  onStartEdit: () => void;
+  onCancelEdit: () => void;
+  onSave: (fields: {
+    companyName: string;
+    sector: string;
+    subTheme: string;
+  }) => Promise<boolean>;
+  onRemove: () => void;
+  isRemoving: boolean;
+}) {
+  const [name, setName] = useState(row.name);
+  const [sector, setSector] = useState(row.sector);
+  const [subTheme, setSubTheme] = useState(row.subTheme);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isEditing) {
+      setName(row.name);
+      setSector(row.sector);
+      setSubTheme(row.subTheme);
+      setErr(null);
+    }
+  }, [isEditing, row.name, row.sector, row.subTheme]);
+
+  const sectorOptions = useMemo(() => computeSectorOptions(allRows), [allRows]);
+  const subThemeOptions = useMemo(
+    () => computeSubThemeOptions(allRows, sector),
+    [allRows, sector]
+  );
+
+  const sectorListId = `edit-sector-${row.ticker}`;
+  const subThemeListId = `edit-subtheme-${row.ticker}`;
+
+  const save = useCallback(async () => {
+    setErr(null);
+    if (!name.trim() || !sector.trim() || !subTheme.trim()) {
+      setErr("Name, theme and sub-theme are all required.");
+      return;
+    }
+    await onSave({
+      companyName: name.trim(),
+      sector: sector.trim(),
+      subTheme: subTheme.trim(),
+    });
+  }, [name, sector, subTheme, onSave]);
+
+  return (
+    <tr>
+      <td style={tdTicker}>{row.ticker}</td>
+      {isEditing ? (
+        <>
+          <td style={td}>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              style={cellInput}
+              aria-label={`Name for ${row.ticker}`}
+            />
+          </td>
+          <td style={td}>
+            <input
+              list={sectorListId}
+              value={sector}
+              onChange={(e) => setSector(e.target.value)}
+              style={cellInput}
+              aria-label={`Theme for ${row.ticker}`}
+            />
+            <datalist id={sectorListId}>
+              {sectorOptions.map((s) => (
+                <option key={s} value={s} />
+              ))}
+            </datalist>
+          </td>
+          <td style={tdSub}>
+            <input
+              list={subThemeListId}
+              value={subTheme}
+              onChange={(e) => setSubTheme(e.target.value)}
+              style={cellInput}
+              aria-label={`Subtheme for ${row.ticker}`}
+            />
+            <datalist id={subThemeListId}>
+              {subThemeOptions.map((s) => (
+                <option key={s} value={s} />
+              ))}
+            </datalist>
+          </td>
+          <td style={actionTd}>
+            <div style={actionGroup}>
+              <button
+                type="button"
+                onClick={() => void save()}
+                disabled={isUpdating}
+                style={{ ...btnPrimary, ...btnCompact }}
+              >
+                {isUpdating ? "Saving…" : "Save"}
+              </button>
+              <button
+                type="button"
+                onClick={onCancelEdit}
+                disabled={isUpdating}
+                style={{ ...btnGhost, ...btnCompact }}
+              >
+                Cancel
+              </button>
+            </div>
+            {err && (
+              <div style={{ color: "#ff8d8d", fontSize: "0.75rem", marginTop: 2 }}>
+                {err}
+              </div>
+            )}
+          </td>
+        </>
+      ) : (
+        <>
+          <td style={td}>{row.name}</td>
+          <td style={td}>{row.sector}</td>
+          <td style={tdSub}>{row.subTheme}</td>
+          <td style={actionTd}>
+            <div style={actionGroup}>
+              <button
+                type="button"
+                onClick={onStartEdit}
+                disabled={actionsDisabled}
+                title={`Edit ${row.ticker}`}
+                aria-label={`Edit ${row.ticker}`}
+                style={editBtn}
+              >
+                ✎
+              </button>
+              <button
+                type="button"
+                onClick={onRemove}
+                disabled={actionsDisabled || isRemoving}
+                title={`Remove ${row.ticker}`}
+                aria-label={`Remove ${row.ticker}`}
+                style={removeBtn}
+              >
+                {isRemoving ? "…" : "×"}
+              </button>
+            </div>
+          </td>
+        </>
+      )}
+    </tr>
+  );
+}
+
 function CurrentTab({
   rows,
   loading,
@@ -586,6 +831,11 @@ function CurrentTab({
   removingTicker,
   onAdd,
   adding,
+  editingTicker,
+  updatingTicker,
+  onStartEdit,
+  onCancelEdit,
+  onUpdate,
 }: {
   rows: Constituent[];
   loading: boolean;
@@ -594,6 +844,14 @@ function CurrentTab({
   removingTicker: string | null;
   onAdd: (row: ParsedUniverseRow) => Promise<boolean>;
   adding: boolean;
+  editingTicker: string | null;
+  updatingTicker: string | null;
+  onStartEdit: (ticker: string) => void;
+  onCancelEdit: () => void;
+  onUpdate: (
+    ticker: string,
+    fields: { companyName: string; sector: string; subTheme: string }
+  ) => Promise<boolean>;
 }) {
   const [ticker, setTicker] = useState("");
   const [name, setName] = useState("");
@@ -651,7 +909,7 @@ function CurrentTab({
               <th style={th}>Name</th>
               <th style={th}>Theme</th>
               <th style={th}>Subtheme</th>
-              <th style={{ ...th, width: 60, textAlign: "right" }} aria-label="Actions" />
+              <th style={{ ...th, minWidth: 120, textAlign: "right" }} aria-label="Actions" />
             </tr>
           </thead>
           <tbody>
@@ -669,26 +927,26 @@ function CurrentTab({
               </tr>
             ) : (
               filtered.map((r) => {
-                const isRemoving = removingTicker === r.ticker;
+                const isEditing = editingTicker === r.ticker;
+                const isUpdating = updatingTicker === r.ticker;
+                const actionsDisabled =
+                  (editingTicker !== null && !isEditing) ||
+                  updatingTicker !== null ||
+                  removingTicker !== null;
                 return (
-                  <tr key={r.ticker}>
-                    <td style={tdTicker}>{r.ticker}</td>
-                    <td style={td}>{r.name}</td>
-                    <td style={td}>{r.sector}</td>
-                    <td style={tdSub}>{r.subTheme}</td>
-                    <td style={{ ...td, textAlign: "right", padding: "0.25rem 0.5rem" }}>
-                      <button
-                        type="button"
-                        onClick={() => onRemove(r.ticker)}
-                        disabled={isRemoving || removingTicker !== null}
-                        title={`Remove ${r.ticker}`}
-                        aria-label={`Remove ${r.ticker}`}
-                        style={removeBtn}
-                      >
-                        {isRemoving ? "…" : "×"}
-                      </button>
-                    </td>
-                  </tr>
+                  <ConstituentRow
+                    key={r.ticker}
+                    row={r}
+                    allRows={rows}
+                    isEditing={isEditing}
+                    isUpdating={isUpdating}
+                    actionsDisabled={actionsDisabled}
+                    onStartEdit={() => onStartEdit(r.ticker)}
+                    onCancelEdit={onCancelEdit}
+                    onSave={(fields) => onUpdate(r.ticker, fields)}
+                    onRemove={() => onRemove(r.ticker)}
+                    isRemoving={removingTicker === r.ticker}
+                  />
                 );
               })
             )}
@@ -720,24 +978,14 @@ function AddStockForm({
   const [lookingUp, setLookingUp] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const sectorOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const r of rows) if (r.sector) set.add(r.sector);
-    return [...set].sort((a, b) => a.localeCompare(b));
-  }, [rows]);
+  const sectorOptions = useMemo(() => computeSectorOptions(rows), [rows]);
 
   // Sub-themes already used under the chosen sector (free typing still allowed
   // via the datalist); fall back to all sub-themes when no sector is chosen.
-  const subThemeOptions = useMemo(() => {
-    const s = sector.trim().toLowerCase();
-    const set = new Set<string>();
-    for (const r of rows) {
-      if (!r.subTheme) continue;
-      if (s && r.sector.trim().toLowerCase() !== s) continue;
-      set.add(r.subTheme);
-    }
-    return [...set].sort((a, b) => a.localeCompare(b));
-  }, [rows, sector]);
+  const subThemeOptions = useMemo(
+    () => computeSubThemeOptions(rows, sector),
+    [rows, sector]
+  );
 
   const onTickerBlur = useCallback(async () => {
     const t = ticker.trim().toUpperCase();
@@ -1081,6 +1329,21 @@ const removeBtn: CSSProperties = {
   cursor: "pointer",
   padding: 0,
 };
+const editBtn: CSSProperties = {
+  ...removeBtn,
+  color: "#8c99a8",
+  fontSize: "0.85rem",
+};
+const actionGroup: CSSProperties = {
+  display: "flex",
+  gap: "0.35rem",
+  justifyContent: "flex-end",
+  alignItems: "center",
+};
+const btnCompact: CSSProperties = {
+  padding: "0.25rem 0.5rem",
+  fontSize: "0.78rem",
+};
 const errStyle: CSSProperties = {
   color: "#ff8d8d",
   fontSize: "0.85rem",
@@ -1121,4 +1384,15 @@ const tdTicker: CSSProperties = {
 const tdSub: CSSProperties = {
   ...td,
   color: "#6aa6ff",
+};
+const actionTd: CSSProperties = {
+  ...td,
+  textAlign: "right",
+  padding: "0.25rem 0.5rem",
+  verticalAlign: "middle",
+};
+const cellInput: CSSProperties = {
+  ...input,
+  padding: "0.25rem 0.4rem",
+  fontSize: "0.85rem",
 };

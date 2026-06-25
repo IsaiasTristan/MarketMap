@@ -49,6 +49,8 @@ export interface PositionRisk {
   weight: number;
   isShort: boolean;
   marketValue: number;
+  /** Latest adjClose — used for per-share daily vol ($/sh). */
+  lastPrice: number;
   varDollar95: number;
   varDollar99: number;
   marginalVar: number;
@@ -149,37 +151,204 @@ async function getMarketReturns(windowDays = 1260): Promise<number[]> {
   return dailyReturnsFromAdjustedCloses(rows.reverse().map((r) => Number(r.adjClose)));
 }
 
+type PortfolioPositionRow = {
+  securityId: string | null;
+  shares: unknown;
+  isShort: boolean;
+  isCash: boolean;
+  cashAmount?: unknown;
+  security?: { ticker: string; name: string; sector?: string | null } | null;
+};
 
-export async function computePositionRisk(
-  portfolioId: string,
-): Promise<{ positions: PositionRisk[]; portfolioValue: number }> {
-  const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId },
-    include: { security: true },
-  });
+interface PortfolioReturnBundle {
+  weights: number[];
+  totalValue: number;
+  aligned: number[][];
+  portReturns: number[];
+}
 
-  if (!positions.length) return { positions: [], portfolioValue: 0 };
+/**
+ * Signed-weight portfolio return series aligned to the shortest constituent history.
+ */
+async function loadPortfolioReturnBundle(
+  positions: PortfolioPositionRow[],
+  windowDays: number,
+): Promise<PortfolioReturnBundle | null> {
+  if (!positions.length) return null;
 
-  const secIds = positions.map((p) => p.securityId);
+  const equityPositions = positions.filter((p) => !p.isCash && p.securityId);
+  const returnBySecId = new Map<string, number[]>();
+  await Promise.all(
+    equityPositions.map(async (p) => {
+      returnBySecId.set(p.securityId!, await getSecurityReturns(p.securityId!, windowDays));
+    }),
+  );
+
+  const equityLengths = equityPositions.map((p) => returnBySecId.get(p.securityId!)!.length);
+  const minLen = equityLengths.length ? Math.min(...equityLengths) : 0;
+  if (minLen === 0) return null;
+
   const lastPrices = await Promise.all(
-    secIds.map((id) =>
+    equityPositions.map((p) =>
       db.priceHistory.findFirst({
-        where: { securityId: id },
+        where: { securityId: p.securityId! },
         orderBy: { tradeDate: "desc" },
         select: { adjClose: true },
       }),
     ),
   );
 
-  const posValues = positions.map((p, i) => ({
-    secId: p.securityId,
-    ticker: p.security.ticker,
-    name: p.security.name,
-    shares: Number(p.shares),
-    isShort: p.isShort,
-    lastPrice: lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0,
-    marketValue: 0,
-  }));
+  const grossValues: number[] = [];
+  const aligned: number[][] = [];
+  let equityIdx = 0;
+
+  for (const p of positions) {
+    if (p.isCash) {
+      const cashAmount = p.cashAmount != null ? Number(p.cashAmount) : 0;
+      grossValues.push(cashAmount);
+      aligned.push(Array(minLen).fill(0));
+      continue;
+    }
+    const price = lastPrices[equityIdx] ? Number(lastPrices[equityIdx]!.adjClose) : 0;
+    grossValues.push(Math.abs(Number(p.shares) * price));
+    aligned.push(returnBySecId.get(p.securityId!)!.slice(-minLen));
+    equityIdx++;
+  }
+
+  const totalValue = grossValues.reduce((s, v) => s + v, 0);
+  const weights = positions.map((p, i) => {
+    const gross = totalValue > 0 ? grossValues[i]! / totalValue : 0;
+    return p.isCash ? gross : (p.isShort ? -1 : 1) * gross;
+  });
+
+  const portReturns = aligned[0]!.map((_, t) =>
+    weights.reduce((s, w, i) => s + w * (aligned[i]![t] ?? 0), 0),
+  );
+
+  return { weights, totalValue, aligned, portReturns };
+}
+
+async function buildPortfolioTotalRisk(
+  bundle: PortfolioReturnBundle,
+): Promise<PositionRisk> {
+  const { weights, totalValue, aligned, portReturns } = bundle;
+  const annualRf = riskFreeAnnual();
+
+  const returns252 = portReturns.slice(-252);
+  const returns126 = portReturns.slice(-126);
+  const returns63 = portReturns.slice(-63);
+  const returns21 = portReturns.slice(-21);
+
+  const vol252 = annualizedRealizedVolatility(returns252) ?? 0;
+  const vol126 = annualizedRealizedVolatility(returns126) ?? 0;
+  const vol63 = annualizedRealizedVolatility(returns63) ?? 0;
+  const vol21 = annualizedRealizedVolatility(returns21) ?? 0;
+
+  const sharpe21 = sharpeRatio(returns21, annualRf) ?? 0;
+  const sharpe63 = sharpeRatio(returns63, annualRf) ?? 0;
+  const sharpe126 = sharpeRatio(returns126, annualRf) ?? 0;
+
+  const win1y = Math.min(252, portReturns.length);
+  const aligned1y = aligned.map((r) => r.slice(-win1y));
+  const individualVols = aligned1y.map((r) => annualizedRealizedVolatility(r) ?? 0);
+  const corrMat = correlationMatrix(aligned1y);
+
+  const var95 = portfolioParametricVaR(weights, corrMat, individualVols, totalValue, Z_95);
+  const var99 = portfolioParametricVaR(weights, corrMat, individualVols, totalValue, Z_99);
+
+  const dailyPnl1y = portReturns.slice(-win1y).map((r) => r * totalValue);
+  const cvar95 = Math.abs(expectedShortfall(dailyPnl1y, 0.05));
+
+  const mktReturns = await getMarketReturns(252);
+  const { beta: rawBeta } = ols(returns252, mktReturns.slice(-returns252.length));
+  const beta = vasicekBeta(rawBeta);
+
+  return {
+    ticker: "TOTAL",
+    name: "Total Portfolio",
+    weight: 1,
+    isShort: false,
+    marketValue: totalValue,
+    lastPrice: 0,
+    varDollar95: var95,
+    varDollar99: var99,
+    marginalVar: 0,
+    componentVar: 0,
+    vol21d: vol21,
+    vol63d: vol63,
+    vol126d: vol126,
+    vol252d: vol252,
+    sharpe21d: sharpe21,
+    sharpe63d: sharpe63,
+    sharpe126d: sharpe126,
+    cvar95,
+    vol21Spark: rollingVolSparkline(portReturns, 21),
+    vol63Spark: rollingVolSparkline(portReturns, 63),
+    vol126Spark: rollingVolSparkline(portReturns, 126),
+    sharpe21Spark: rollingSharpeSparkline(portReturns, 21, annualRf),
+    sharpe63Spark: rollingSharpeSparkline(portReturns, 63, annualRf),
+    sharpe126Spark: rollingSharpeSparkline(portReturns, 126, annualRf),
+    beta,
+  };
+}
+
+export async function computePositionRisk(
+  portfolioId: string,
+): Promise<{
+  positions: PositionRisk[];
+  portfolioValue: number;
+  portfolioTotal: PositionRisk | null;
+}> {
+  const positions = await db.portfolioPosition.findMany({
+    where: { portfolioId },
+    include: { security: true },
+  });
+
+  if (!positions.length) {
+    return { positions: [], portfolioValue: 0, portfolioTotal: null };
+  }
+
+  const equityPositions = positions.filter((p) => !p.isCash && p.securityId);
+  const lastPrices = await Promise.all(
+    equityPositions.map((p) =>
+      db.priceHistory.findFirst({
+        where: { securityId: p.securityId! },
+        orderBy: { tradeDate: "desc" },
+        select: { adjClose: true },
+      }),
+    ),
+  );
+
+  let equityIdx = 0;
+  const posValues = positions.map((p) => {
+    if (p.isCash) {
+      const cashAmount = p.cashAmount != null ? Number(p.cashAmount) : 0;
+      return {
+        secId: null as string | null,
+        ticker: "CASH",
+        name: "Cash",
+        shares: 0,
+        isShort: false,
+        isCash: true,
+        lastPrice: 1,
+        marketValue: cashAmount,
+      };
+    }
+    const lastPrice = lastPrices[equityIdx]
+      ? Number(lastPrices[equityIdx]!.adjClose)
+      : 0;
+    equityIdx++;
+    return {
+      secId: p.securityId,
+      ticker: p.security!.ticker,
+      name: p.security!.name,
+      shares: Number(p.shares),
+      isShort: p.isShort,
+      isCash: false,
+      lastPrice,
+      marketValue: 0,
+    };
+  });
   // marketValue is gross (always positive) — total portfolio value is the
   // gross capital deployed, used as the dollar base for VaR scaling.
   posValues.forEach((pv) => {
@@ -193,7 +362,39 @@ export async function computePositionRisk(
   const positionRisks: PositionRisk[] = [];
 
   for (const pv of posValues) {
-    const returns504 = await getSecurityReturns(pv.secId, 504);
+    if (pv.isCash) {
+      const weight = totalValue > 0 ? pv.marketValue / totalValue : 0;
+      positionRisks.push({
+        ticker: pv.ticker,
+        name: pv.name,
+        weight,
+        isShort: false,
+        marketValue: pv.marketValue,
+        lastPrice: 1,
+        varDollar95: 0,
+        varDollar99: 0,
+        marginalVar: 0,
+        componentVar: 0,
+        vol21d: 0,
+        vol63d: 0,
+        vol126d: 0,
+        vol252d: 0,
+        sharpe21d: 0,
+        sharpe63d: 0,
+        sharpe126d: 0,
+        cvar95: 0,
+        vol21Spark: [],
+        vol63Spark: [],
+        vol126Spark: [],
+        sharpe21Spark: [],
+        sharpe63Spark: [],
+        sharpe126Spark: [],
+        beta: 0,
+      });
+      continue;
+    }
+
+    const returns504 = await getSecurityReturns(pv.secId!, 504);
     const returns252 = returns504.slice(-252);
     const returns126 = returns504.slice(-126);
     const returns63 = returns504.slice(-63);
@@ -225,6 +426,7 @@ export async function computePositionRisk(
       weight,
       isShort: pv.isShort,
       marketValue: pv.marketValue,
+      lastPrice: pv.lastPrice,
       varDollar95: var95,
       varDollar99: var99,
       marginalVar: 0,
@@ -247,7 +449,10 @@ export async function computePositionRisk(
     });
   }
 
-  return { positions: positionRisks, portfolioValue: totalValue };
+  const bundle504 = await loadPortfolioReturnBundle(positions, 504);
+  const portfolioTotal = bundle504 ? await buildPortfolioTotalRisk(bundle504) : null;
+
+  return { positions: positionRisks, portfolioValue: totalValue, portfolioTotal };
 }
 
 export async function computePortfolioRisk(
@@ -259,43 +464,10 @@ export async function computePortfolioRisk(
   });
   if (!positions.length) return null;
 
-  const secIds = positions.map((p) => p.securityId);
+  const bundle = await loadPortfolioReturnBundle(positions, 1260);
+  if (!bundle) return null;
 
-  // Fetch up to 5Y (1260 days) of return history per security.
-  const returnSeries = await Promise.all(
-    secIds.map((id) => getSecurityReturns(id, 1260)),
-  );
-
-  const lastPrices = await Promise.all(
-    secIds.map((id) =>
-      db.priceHistory.findFirst({
-        where: { securityId: id },
-        orderBy: { tradeDate: "desc" },
-        select: { adjClose: true },
-      }),
-    ),
-  );
-  // Gross capital per name and signed weights (long +, short −) so the
-  // portfolio return series correctly reflects long/short P&L.
-  const grossValues = positions.map((p, i) => {
-    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0;
-    return Math.abs(Number(p.shares) * price);
-  });
-  const totalValue = grossValues.reduce((s, v) => s + v, 0);
-  const weights = positions.map((p, i) => {
-    const gross = totalValue > 0 ? grossValues[i]! / totalValue : 0;
-    return (p.isShort ? -1 : 1) * gross;
-  });
-
-  // Align all return series to the shortest available — typically limited by
-  // the newest position or any security with limited price history.
-  const minLen = Math.min(...returnSeries.map((r) => r.length));
-  const aligned = returnSeries.map((r) => r.slice(-minLen));
-
-  // Weighted portfolio return series (full available history, up to 5Y).
-  const portReturns = aligned[0].map((_, t) =>
-    weights.reduce((s, w, i) => s + w * (aligned[i][t] ?? 0), 0),
-  );
+  const { weights, totalValue, aligned, portReturns } = bundle;
 
   // ── Volatility ──────────────────────────────────────────────────────────
   // vol5y: annualized vol over the full available window (up to 1260 days).
@@ -331,6 +503,7 @@ export async function computePortfolioRisk(
   // If BenchmarkPriceHistory is empty (no data refresh run yet), getMarketReturns
   // returns [] and OLS returns rSquared=0, so idiosyncraticShare=1. Run a data
   // refresh to populate the benchmark and get real decomposition.
+  const minLen = portReturns.length;
   const mktReturns = await getMarketReturns(minLen);
   const mktAligned = mktReturns.slice(-minLen);
   const { systematicShare, idiosyncraticShare } = volDecomposition(portReturns, mktAligned);
@@ -358,16 +531,17 @@ export async function computeCorrelationMatrix(
   portfolioId: string,
 ): Promise<CorrelationPayload> {
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId },
+    where: { portfolioId, isCash: false, securityId: { not: null } },
     include: { security: true },
     distinct: ["securityId"],
   });
 
-  // Correlation matrix uses 252-day window (1Y) — same as VaR.
+  if (!positions.length) return { tickers: [], matrix: [] };
+
   const returnSeries = await Promise.all(
-    positions.map((p) => getSecurityReturns(p.securityId, 252)),
+    positions.map((p) => getSecurityReturns(p.securityId!, 252)),
   );
-  const tickers = positions.map((p) => p.security.ticker);
+  const tickers = positions.map((p) => p.security!.ticker);
 
   const minLen = Math.min(...returnSeries.map((r) => r.length));
   const aligned = returnSeries.map((r) => r.slice(-minLen));
@@ -385,46 +559,23 @@ export async function computePortfolioRiskSeries(
   });
   if (!positions.length) return { dates: [], drawdown: [], rollingVol252: [] };
 
-  const secIds = positions.map((p) => p.securityId);
+  const bundle = await loadPortfolioReturnBundle(positions, 1260);
+  if (!bundle) return { dates: [], drawdown: [], rollingVol252: [] };
 
-  // Fetch full 5Y window so the drawdown chart covers the same horizon as vol5y.
-  const returnSeries = await Promise.all(
-    secIds.map((id) => getSecurityReturns(id, 1260)),
-  );
-  const minLen = Math.min(...returnSeries.map((r) => r.length));
-  const aligned = returnSeries.map((r) => r.slice(-minLen));
+  const { portReturns } = bundle;
+  const firstEquity = positions.find((p) => !p.isCash && p.securityId);
+  if (!firstEquity) return { dates: [], drawdown: [], rollingVol252: [] };
 
-  const lastPrices = await Promise.all(
-    secIds.map((id) =>
-      db.priceHistory.findFirst({ where: { securityId: id }, orderBy: { tradeDate: "desc" }, select: { adjClose: true } }),
-    ),
-  );
-  const grossValues = positions.map((p, i) => {
-    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0;
-    return Math.abs(Number(p.shares) * price);
-  });
-  const totalValue = grossValues.reduce((s, v) => s + v, 0);
-  const weights = positions.map((p, i) => {
-    const gross = totalValue > 0 ? grossValues[i]! / totalValue : 0;
-    return (p.isShort ? -1 : 1) * gross;
-  });
-
-  const portReturns = aligned[0].map((_, t) =>
-    weights.reduce((s, w, i) => s + w * (aligned[i][t] ?? 0), 0),
-  );
-
-  // Dates: pull from the first security's price history, matching the aligned window.
   const priceRows = await db.priceHistory.findMany({
-    where: { securityId: secIds[0] },
+    where: { securityId: firstEquity.securityId! },
     orderBy: { tradeDate: "desc" },
-    take: minLen + 1,
+    take: portReturns.length + 1,
     select: { tradeDate: true },
   });
   const dates = priceRows.reverse().slice(1).map((r) => r.tradeDate.toISOString().slice(0, 10));
 
   const dd = drawdownSeries(portReturns);
 
-  // Rolling 252-day vol: starts producing values at day 252.
   const rollingVol: number[] = new Array(portReturns.length).fill(NaN);
   for (let i = 252; i <= portReturns.length; i++) {
     rollingVol[i - 1] = annualizedRealizedVolatility(portReturns.slice(i - 252, i)) ?? NaN;

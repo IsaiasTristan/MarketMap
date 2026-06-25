@@ -9,6 +9,8 @@ import {
   type StaleTickerInfo,
 } from "@/components/MarketMapClient";
 import { ManageTickersModal } from "@/components/ManageTickersModal";
+import { TickerSearchCombobox } from "@/components/analysis/shared/TickerSearchCombobox";
+import { useAnalysisStore } from "@/store/analysis";
 import { useIsAdmin } from "@/lib/api/useMe";
 import {
   getUsMarketSession,
@@ -27,6 +29,7 @@ export function MarketMapPageInner() {
   const sp = useSearchParams();
   const router = useRouter();
   const isAdmin = useIsAdmin();
+  const openFactorDetailPanel = useAnalysisStore((s) => s.openFactorDetailPanel);
   const universeIdParam = sp.get("universeId");
 
   const [resolvedUniverseId, setResolvedUniverseId] = useState<string | null>(
@@ -270,7 +273,7 @@ export function MarketMapPageInner() {
   return (
     <div style={page}>
       <div style={topBar}>
-        <h1 style={pageTitle}>Performance</h1>
+        <h1 style={pageTitle}>Stock Price Performance</h1>
         <div style={topRight}>
           {isAdmin && (
             <button
@@ -369,6 +372,11 @@ export function MarketMapPageInner() {
               ↻ Refresh
             </button>
           )}
+          <TickerSearchCombobox
+            variant="bbg"
+            width={200}
+            onSelect={(ticker) => openFactorDetailPanel(ticker)}
+          />
         </div>
       </div>
 

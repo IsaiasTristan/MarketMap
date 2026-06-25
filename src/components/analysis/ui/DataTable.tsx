@@ -1,9 +1,9 @@
 "use client";
-import { useState, useMemo } from "react";
+import { useState, useMemo, type ReactNode } from "react";
 
 export interface Column<T> {
   key: string;
-  label: string;
+  label: ReactNode;
   align?: "left" | "right" | "center";
   render?: (row: T) => React.ReactNode;
   sortValue?: (row: T) => number | string;
@@ -18,10 +18,17 @@ interface DataTableProps<T> {
   searchFields?: (row: T) => string;
   pageSize?: number;
   exportFilename?: string;
+  /** Pinned summary row — excluded from search, sort, and pagination. */
+  footerRow?: T;
+}
+
+function labelToCsvHeader(label: ReactNode): string {
+  if (typeof label === "string" || typeof label === "number") return String(label);
+  return "";
 }
 
 function exportCsv<T>(columns: Column<T>[], rows: T[], filename: string) {
-  const header = columns.map((c) => c.label).join(",");
+  const header = columns.map((c) => labelToCsvHeader(c.label)).join(",");
   const body = rows
     .map((row) =>
       columns
@@ -64,6 +71,7 @@ export function DataTable<T>({
   searchFields,
   pageSize = 25,
   exportFilename = "export.csv",
+  footerRow,
 }: DataTableProps<T>) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<string | null>(null);
@@ -104,6 +112,42 @@ export function DataTable<T>({
     setPage(0);
   };
 
+  const renderDataRow = (row: T, isFooter: boolean) => (
+    <tr
+      key={isFooter ? `footer-${getRowKey(row)}` : getRowKey(row)}
+      style={
+        isFooter
+          ? { borderTop: "2px solid var(--color-accent)" }
+          : { borderBottom: "1px solid var(--bg-border)" }
+      }
+    >
+      {columns.map((col, colIdx) => {
+        const colorKey = col.colorize?.(row);
+        const cellColor = colorKey ? SEMANTIC[colorKey] : undefined;
+        const isNum = col.align === "right";
+        return (
+          <td
+            key={col.key}
+            className={isNum ? "bb-num" : undefined}
+            style={{
+              textAlign: col.align ?? "left",
+              color: cellColor ?? (isFooter && colIdx === 0 ? "var(--color-accent)" : "#fff"),
+              fontFamily: isNum ? "var(--font-mono, monospace)" : undefined,
+              fontVariantNumeric: isNum ? "tabular-nums" : undefined,
+              fontWeight: isFooter ? 700 : undefined,
+              background: isFooter ? "rgba(240,182,93,0.10)" : undefined,
+              letterSpacing: isFooter && colIdx === 0 ? "0.06em" : undefined,
+            }}
+          >
+            {col.render
+              ? col.render(row)
+              : String((row as Record<string, unknown>)[col.key] ?? "")}
+          </td>
+        );
+      })}
+    </tr>
+  );
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       {(searchable || exportFilename) && (
@@ -131,7 +175,13 @@ export function DataTable<T>({
           )}
           <button
             type="button"
-            onClick={() => exportCsv(columns, sorted, exportFilename)}
+            onClick={() =>
+              exportCsv(
+                columns,
+                footerRow ? [...sorted, footerRow] : sorted,
+                exportFilename,
+              )
+            }
             style={{
               ...btnFlat,
               color: "var(--text-secondary)",
@@ -179,7 +229,8 @@ export function DataTable<T>({
                     textTransform: "uppercase",
                     letterSpacing: "0.06em",
                     cursor: col.sortValue ? "pointer" : "default",
-                    whiteSpace: "nowrap",
+                    whiteSpace: "normal",
+                    lineHeight: 1.2,
                     borderBottom: "1px solid var(--bg-border)",
                     userSelect: "none",
                   }}
@@ -193,32 +244,9 @@ export function DataTable<T>({
             </tr>
           </thead>
           <tbody>
-            {paged.map((row) => (
-              <tr key={getRowKey(row)} style={{ borderBottom: "1px solid var(--bg-border)" }}>
-                {columns.map((col) => {
-                  const colorKey = col.colorize?.(row);
-                  const cellColor = colorKey ? SEMANTIC[colorKey] : undefined;
-                  const isNum = col.align === "right";
-                  return (
-                    <td
-                      key={col.key}
-                      className={isNum ? "bb-num" : undefined}
-                      style={{
-                        textAlign: col.align ?? "left",
-                        color: cellColor ?? "#fff",
-                        fontFamily: isNum ? "var(--font-mono, monospace)" : undefined,
-                        fontVariantNumeric: isNum ? "tabular-nums" : undefined,
-                      }}
-                    >
-                      {col.render
-                        ? col.render(row)
-                        : String((row as Record<string, unknown>)[col.key] ?? "")}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-            {paged.length === 0 && (
+            {paged.map((row) => renderDataRow(row, false))}
+            {footerRow && renderDataRow(footerRow, true)}
+            {paged.length === 0 && !footerRow && (
               <tr>
                 <td
                   colSpan={columns.length}

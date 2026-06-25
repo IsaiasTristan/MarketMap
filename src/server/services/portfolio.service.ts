@@ -98,11 +98,13 @@ export async function deletePortfolio(db: PrismaClient, id: string) {
 
 export interface PortfolioWeight {
   positionId: string;
-  securityId: string;
+  securityId: string | null;
   ticker: string;
   name: string;
   shares: number;
   isShort: boolean;
+  isCash: boolean;
+  cashAmount: number | null;
   lastPrice: number;
   marketValue: number;
   grossWeight: number;
@@ -120,30 +122,52 @@ export async function loadPortfolioWeights(
   });
   if (!positions.length) return [];
 
+  const equityPositions = positions.filter((p) => !p.isCash && p.securityId);
   const lastPrices = await Promise.all(
-    positions.map((p) =>
+    equityPositions.map((p) =>
       db.priceHistory.findFirst({
-        where: { securityId: p.securityId },
+        where: { securityId: p.securityId! },
         orderBy: { tradeDate: "desc" },
         select: { adjClose: true },
-      })
-    )
+      }),
+    ),
   );
 
-  const rows = positions.map((p, i) => {
-    const lastPrice = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0;
+  let equityIdx = 0;
+  const rows = positions.map((p) => {
+    if (p.isCash) {
+      const cashAmount = p.cashAmount != null ? Number(p.cashAmount) : 0;
+      return {
+        positionId: p.id,
+        securityId: null as string | null,
+        ticker: "CASH",
+        name: "Cash",
+        shares: 0,
+        isShort: false,
+        isCash: true,
+        cashAmount,
+        lastPrice: 1,
+        marketValue: cashAmount,
+        sector: "Cash",
+      };
+    }
+    const lastPrice = lastPrices[equityIdx]
+      ? Number(lastPrices[equityIdx]!.adjClose)
+      : 0;
+    equityIdx++;
     const shares = Number(p.shares);
     return {
       positionId: p.id,
       securityId: p.securityId,
-      ticker: p.security.ticker,
-      name: p.security.name,
+      ticker: p.security!.ticker,
+      name: p.security!.name,
       shares,
       isShort: p.isShort,
+      isCash: false,
+      cashAmount: null as number | null,
       lastPrice,
-      // Always positive — gross capital allocated to this name.
       marketValue: Math.abs(shares * lastPrice),
-      sector: p.sector ?? p.security.sector ?? null,
+      sector: p.sector ?? p.security!.sector ?? null,
     };
   });
 
@@ -153,7 +177,7 @@ export async function loadPortfolioWeights(
     return {
       ...r,
       grossWeight: gross,
-      signedWeight: (r.isShort ? -1 : 1) * gross,
+      signedWeight: r.isCash ? gross : (r.isShort ? -1 : 1) * gross,
     };
   });
 }
@@ -190,8 +214,19 @@ export async function computePortfolioAnalytics(
   // portfolio's daily series.
   const signedWeights = weighted.map((w) => w.signedWeight);
   const holdingsSeries: DateClose[][] = [];
+  let referenceSeries: DateClose[] | null = null;
+
   for (const w of weighted) {
-    holdingsSeries.push(await loadPrices(db, w.securityId));
+    if (w.isCash) {
+      const ref =
+        referenceSeries ??
+        (await loadBenchmarkSeriesDb(db, benchmarkCode));
+      holdingsSeries.push(ref.map((p) => ({ date: p.date, adjClose: 1 })));
+      continue;
+    }
+    const series = await loadPrices(db, w.securityId!);
+    if (!referenceSeries && series.length > 0) referenceSeries = series;
+    holdingsSeries.push(series);
   }
 
   const benchSeries = await loadBenchmarkSeriesDb(db, benchmarkCode);

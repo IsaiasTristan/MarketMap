@@ -45,44 +45,47 @@ export async function computeConcentration(
     };
   }
 
-  // Get last prices
+  const equityPositions = positions.filter((p) => !p.isCash && p.securityId);
   const lastPrices = await Promise.all(
-    positions.map((p) =>
+    equityPositions.map((p) =>
       db.priceHistory.findFirst({
-        where: { securityId: p.securityId },
+        where: { securityId: p.securityId! },
         orderBy: { tradeDate: "desc" },
         select: { adjClose: true },
       }),
     ),
   );
 
-  // Gross market value per position. HHI / sector concentration use gross
-  // (industry standard — a 50L/50S book is "concentrated in 2 names" by
-  // capital, regardless of direction). Weights are unsigned here.
-  const marketValues = positions.map((p, i) => {
-    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0;
+  let equityIdx = 0;
+  const marketValues = positions.map((p) => {
+    if (p.isCash) {
+      return p.cashAmount != null ? Number(p.cashAmount) : 0;
+    }
+    const price = lastPrices[equityIdx] ? Number(lastPrices[equityIdx]!.adjClose) : 0;
+    equityIdx++;
     return Math.abs(Number(p.shares) * price);
   });
   const totalValue = marketValues.reduce((s, v) => s + v, 0);
   const weights = marketValues.map((v) => (totalValue > 0 ? v / totalValue : 0));
-  const tickers = positions.map((p) => p.security.ticker);
+  const equityTickers = equityPositions.map((p) => p.security!.ticker);
 
-  // Sector allocation
   const sectorMap = new Map<string, number>();
   for (let i = 0; i < positions.length; i++) {
-    const sector = positions[i].sector ?? positions[i].security.sector ?? "Other";
-    sectorMap.set(sector, (sectorMap.get(sector) ?? 0) + marketValues[i]);
+    const p = positions[i]!;
+    const sector = p.isCash
+      ? "Cash"
+      : (p.sector ?? p.security!.sector ?? "Other");
+    sectorMap.set(sector, (sectorMap.get(sector) ?? 0) + marketValues[i]!);
   }
   const sectorAllocation = Array.from(sectorMap.entries())
     .map(([sector, value]) => ({ sector, value, pct: totalValue > 0 ? value / totalValue : 0 }))
     .sort((a, b) => b.value - a.value);
 
-  // Correlation matrix
   const returnSeries = await Promise.all(
-    positions.map((p) =>
+    equityPositions.map((p) =>
       db.priceHistory
         .findMany({
-          where: { securityId: p.securityId },
+          where: { securityId: p.securityId! },
           orderBy: { tradeDate: "desc" },
           take: 253,
           select: { adjClose: true },
@@ -95,10 +98,9 @@ export async function computeConcentration(
   const aligned = returnSeries.map((r) => r.slice(-minLen));
   const corrMat = aligned.length > 0 ? correlationMatrix(aligned) : [];
 
-  // Dendrogram
   const dendrogram =
-    tickers.length > 1 && corrMat.length > 0
-      ? clusterCorrelation(tickers, corrMat)
+    equityTickers.length > 1 && corrMat.length > 0
+      ? clusterCorrelation(equityTickers, corrMat)
       : null;
 
   return {
@@ -109,7 +111,7 @@ export async function computeConcentration(
     top10Pct: topKConcentration(weights, 10),
     sectorAllocation,
     dendrogram,
-    tickers,
+    tickers: equityTickers,
     corrMatrix: corrMat,
     weights,
   };

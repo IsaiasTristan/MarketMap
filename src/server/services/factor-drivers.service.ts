@@ -22,12 +22,12 @@ export async function getFactorDrivers(
 
   // Load positions + prices
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId },
+    where: { portfolioId, isCash: false, securityId: { not: null } },
     include: { security: true },
   });
   if (!positions.length) return null;
 
-  const secIds = positions.map((p) => p.securityId);
+  const secIds = positions.map((p) => p.securityId!);
 
   // Load universe sub-theme info for positions
   const universeRows = await db.universeConstituent.findMany({
@@ -118,10 +118,10 @@ export async function getFactorDrivers(
     const pm = priceMaps[i]!;
     const prices = commonDates.map((d) => pm.get(d)!);
     const returns = dailyReturnsFromAdjustedCloses(prices);
-    const uRow = universeMap.get(pos.securityId);
+    const uRow = universeMap.get(pos.securityId!);
     return {
-      ticker: pos.security.ticker,
-      sector: pos.sector ?? uRow?.sector ?? pos.security.sector ?? "Other",
+      ticker: pos.security!.ticker,
+      sector: pos.sector ?? uRow?.sector ?? pos.security!.sector ?? "Other",
       subTheme: uRow?.subTheme ?? "Other",
       weight: weights[i]!,
       dates: commonDates.slice(1),

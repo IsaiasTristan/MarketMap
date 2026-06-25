@@ -128,14 +128,19 @@ export async function buildLivePortfolio1D(
     return { ok: false, reason: "NO_POSITIONS" };
   }
 
+  const equityWeights = weights.filter((w) => !w.isCash);
   const quoteMap = await fetchYahooQuotesWithSparkline(
-    weights.map((w) => w.ticker),
+    equityWeights.map((w) => w.ticker),
   );
 
   const missingHoldings: string[] = [];
   let totalPresentGross = 0;
   let weightedReturn = 0;
   for (const w of weights) {
+    if (w.isCash) {
+      totalPresentGross += w.grossWeight;
+      continue;
+    }
     const q = quoteMap.get(toYahooSymbol(w.ticker));
     if (
       !q ||

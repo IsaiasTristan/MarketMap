@@ -23,6 +23,7 @@ type ReturnRiskAlloc = {
     signed: number;
     negative: boolean;
     marketValue: number;
+    dollar: number;
   }[];
   byRisk: {
     name: string;
@@ -133,7 +134,9 @@ export function CapitalAllocationCard({
     if (!rrAlloc) {
       dimensionLoading = true;
     } else {
-      const items = rrAlloc.byReturn.slice().sort((a, b) => b.value - a.value);
+      const items = rrAlloc.byReturn
+        .slice()
+        .sort((a, b) => Math.abs(b.dollar) - Math.abs(a.dollar));
       donutSlices = items.map((s) => ({
         name: s.name,
         value: s.value,

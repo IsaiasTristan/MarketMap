@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAnalysisStore } from "@/store/analysis";
+import { FloatingPerStockDetail } from "@/components/analysis/factors/panels/FloatingPerStockDetail";
 import { MetricCard } from "@/components/analysis/ui/MetricCard";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
 import { ContributorsChart } from "@/components/analysis/overview/ContributorsChart";
@@ -17,6 +18,7 @@ import { HoldingsLiveChartGrid } from "@/components/analysis/overview/HoldingsLi
 import { PortfolioFactorSummary } from "@/components/analysis/overview/PortfolioFactorSummary";
 import { fmt$, fmtPct } from "@/components/analysis/overview/formatters";
 import type { HoldingRow } from "@/server/services/portfolio-holdings.service";
+import type { PerStockResult } from "@/server/services/factor-per-stock.service";
 import type { PositionRisk } from "@/server/services/risk.service";
 import type { FactorExposureSnapshot, AttributionResult } from "@/types/factors";
 
@@ -52,6 +54,7 @@ type ReturnRiskAlloc = {
     signed: number;
     negative: boolean;
     marketValue: number;
+    dollar: number;
   }[];
   byRisk: {
     name: string;
@@ -71,7 +74,14 @@ type ReturnRiskAlloc = {
 };
 
 export function OverviewClient() {
-  const { activePortfolioId, factorWindow } = useAnalysisStore();
+  const {
+    activePortfolioId,
+    factorModel,
+    factorWindow,
+    factorPeriod,
+    openFactorDetailPanels,
+    openFactorDetailPanel,
+  } = useAnalysisStore();
   const [allocView, setAllocView] = useState<AllocView>("byPosition");
   const [horizon, setHorizon] = useState<AllocHorizon>("1D");
 
@@ -125,6 +135,7 @@ export function OverviewClient() {
   const { data: posRiskData, isLoading: posRiskLoading } = useQuery<{
     positions: PositionRisk[];
     portfolioValue: number;
+    portfolioTotal: PositionRisk | null;
   }>({
     queryKey: ["pos-risk", activePortfolioId],
     queryFn: () =>
@@ -159,6 +170,16 @@ export function OverviewClient() {
     },
     enabled: !!activePortfolioId,
     refetchInterval: 60_000,
+  });
+
+  const { data: perStockData, isLoading: perStockLoading } = useQuery<PerStockResult>({
+    queryKey: ["factor-per-stock", factorModel, factorWindow, factorPeriod],
+    queryFn: () =>
+      fetch(
+        `/api/analysis/factors/per-stock?model=${factorModel}&window=${factorWindow}&period=${factorPeriod}`,
+      ).then((r) => r.json()),
+    enabled: openFactorDetailPanels.length > 0,
+    staleTime: 5 * 60_000,
   });
 
   if (!activePortfolioId) {
@@ -251,10 +272,13 @@ export function OverviewClient() {
               : "Failed to load holdings"
             : undefined
         }
+        onNameClick={openFactorDetailPanel}
       />
 
       <HoldingsRiskTable
         positions={posRiskData?.positions ?? []}
+        portfolioTotal={posRiskData?.portfolioTotal}
+        dailyPnlByTicker={new Map(positions.map((p) => [p.ticker, p.dailyPnl]))}
         loading={posRiskLoading}
       />
 
@@ -271,6 +295,37 @@ export function OverviewClient() {
         attribution={attribution}
         loading={exposureLoading || attributionLoading}
       />
+
+      {perStockData &&
+        openFactorDetailPanels.map((panel) => (
+          <FloatingPerStockDetail
+            key={panel.ticker}
+            panel={panel}
+            data={perStockData}
+          />
+        ))}
+      {perStockLoading && openFactorDetailPanels.length > 0 && !perStockData && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: "fixed",
+            right: 16,
+            bottom: 16,
+            zIndex: 100,
+            padding: "6px 12px",
+            background: "var(--bg-surface)",
+            border: "1px solid var(--bg-border)",
+            color: "var(--text-secondary)",
+            fontSize: 12,
+            fontFamily:
+              'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
+            boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+          }}
+        >
+          Loading factor detail…
+        </div>
+      )}
     </div>
   );
 }

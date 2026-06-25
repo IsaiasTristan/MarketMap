@@ -10,6 +10,7 @@ import { heatmapRgb } from "@/domain/calculations/heatmap";
 import { HORIZON_LABEL, formatMetricValue } from "@/lib/format";
 import { FactorPerformanceTable } from "@/components/FactorPerformanceTable";
 import { TopMoversTable } from "@/components/TopMoversTable";
+import { FactorTopMoversTable } from "@/components/FactorTopMoversTable";
 import { useAnalysisStore } from "@/store/analysis";
 import { FloatingPerStockDetail } from "@/components/analysis/factors/panels/FloatingPerStockDetail";
 import type { PerStockResult } from "@/server/services/factor-per-stock.service";
@@ -163,7 +164,7 @@ export function MarketMapClient({
   const [data, setData] = useState<ApiPayload | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [sort, setSort] = useState<SortState>({ horizon: "Y1", dir: "desc" });
+  const [sort, setSort] = useState<SortState>({ horizon: "D1", dir: "desc" });
   const [expandedSectors, setExpandedSectors] = useState<Set<string>>(
     () => new Set()
   );
@@ -517,8 +518,6 @@ export function MarketMapClient({
         </ul>
       ) : null}
 
-      <Legend metric={metric} />
-
       <div style={tableWrap}>
         <table style={tableStyle}>
           <thead>
@@ -585,7 +584,7 @@ export function MarketMapClient({
                     expanded={row.expanded}
                     hasExpansion={row.hasExpansion}
                     metric={metric}
-                    range={ranges.SECTOR}
+                    range={ranges.COMPANY}
                     onToggle={() => toggleSector(row.node.sector)}
                   />
                 );
@@ -599,7 +598,7 @@ export function MarketMapClient({
                     position={row.position}
                     hasExpandedTickers={row.hasExpandedTickers}
                     metric={metric}
-                    range={ranges.SUB_THEME}
+                    range={ranges.COMPANY}
                     onToggle={() =>
                       toggleSubTheme(row.node.sector, row.node.subTheme)
                     }
@@ -637,6 +636,7 @@ export function MarketMapClient({
         metric={metric}
         benchmark={benchmark}
         reloadToken={reloadToken}
+        marketScale={ranges.SECTOR}
       />
 
       <TopMoversTable
@@ -657,6 +657,14 @@ export function MarketMapClient({
         }
         onSelectTicker={handleSelectTicker}
         selectedTickers={openTickerSet}
+        marketScale={ranges.COMPANY}
+      />
+
+      <FactorTopMoversTable
+        reloadToken={reloadToken}
+        onSelectTicker={handleSelectTicker}
+        selectedTickers={openTickerSet}
+        marketScale={ranges.COMPANY}
       />
 
       {perStockData &&
@@ -1152,30 +1160,6 @@ function pickTextColor(bg: string): string {
   return yiq >= 150 ? "#000000" : "#ffffff";
 }
 
-function Legend({ metric }: { metric: MetricKind }) {
-  if (metric === "VOLATILITY") {
-    return (
-      <p style={legendText}>
-        Volatility heatmap: lighter = lower annualized realized volatility, darker
-        = higher.
-      </p>
-    );
-  }
-  if (metric === "SHARPE") {
-    return (
-      <p style={legendText}>
-        Sharpe heatmap: red = weaker risk-adjusted, green = stronger (methodology
-        in docs).
-      </p>
-    );
-  }
-  return (
-    <p style={legendText}>
-      Return / excess heatmap: red = negative, green = positive vs column min/max.
-    </p>
-  );
-}
-
 function isoToday(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -1234,13 +1218,6 @@ const selectStyle: CSSProperties = {
   lineHeight: 1.25,
   fontFamily:
     'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
-};
-
-const legendText: CSSProperties = {
-  fontSize: "11px",
-  color: "var(--text-secondary)",
-  marginBottom: "0.5rem",
-  lineHeight: 1.25,
 };
 
 const tableWrap: CSSProperties = {
@@ -1400,7 +1377,7 @@ const tickerLine: CSSProperties = {
 };
 
 const companyNameText: CSSProperties = {
-  color: "var(--text-secondary)",
+  color: "var(--color-accent)",
   fontWeight: 400,
   fontSize: "11px",
   maxWidth: "22ch",

@@ -7,6 +7,7 @@ import { Card, CardLabel, SectionHeading } from "@/components/analysis/ui/Card";
 import { DataTable, type Column } from "@/components/analysis/ui/DataTable";
 import { StatusBadge } from "@/components/analysis/ui/StatusBadge";
 import { Skeleton } from "@/components/analysis/ui/Skeleton";
+import { TickerSearchCombobox } from "@/components/analysis/shared/TickerSearchCombobox";
 
 // -- Portfolio manager ------------------------------------------------------
 
@@ -23,6 +24,8 @@ interface PositionDetail {
   shares: number;
   isShort: boolean;
   sector: string | null;
+  isCash: boolean;
+  cashAmount: number | null;
 }
 
 function PortfolioManager() {
@@ -52,14 +55,16 @@ function PortfolioManager() {
   const [editingPositionId, setEditingPositionId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<{
     shares: string;
+    cashAmount: string;
     isShort: boolean;
     sector: string;
-  }>({ shares: "", isShort: false, sector: "" });
+  }>({ shares: "", cashAmount: "", isShort: false, sector: "" });
 
   const startEdit = (pos: PositionDetail) => {
     setEditingPositionId(pos.id);
     setEditDraft({
       shares: String(pos.shares),
+      cashAmount: pos.cashAmount != null ? String(pos.cashAmount) : "",
       isShort: pos.isShort,
       sector: pos.sector ?? "",
     });
@@ -84,7 +89,14 @@ function PortfolioManager() {
     onError: () => addToast({ severity: "error", message: "Update failed" }),
   });
 
-  const saveEdit = (id: string) => {
+  const saveEdit = (id: string, pos: PositionDetail) => {
+    if (pos.isCash) {
+      updatePositionMut.mutate({
+        id,
+        patch: { cashAmount: parseFloat(editDraft.cashAmount) },
+      });
+      return;
+    }
     updatePositionMut.mutate({
       id,
       patch: {
@@ -445,21 +457,37 @@ function PortfolioManager() {
                         <td style={{ padding: "8px 12px", color: "var(--text-secondary)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {pos.name}
                         </td>
-                        {/* Shares */}
+                        {/* Shares / Amount */}
                         <td style={{ padding: "4px 8px", textAlign: "right" }}>
                           {isEditing ? (
-                            <input type="number" min={0} step="any" value={editDraft.shares}
-                              onChange={(e) => setEditDraft((d) => ({ ...d, shares: e.target.value }))}
-                              style={editInput(true)} />
+                            pos.isCash ? (
+                              <input
+                                type="number"
+                                min={0}
+                                step="any"
+                                value={editDraft.cashAmount}
+                                onChange={(e) => setEditDraft((d) => ({ ...d, cashAmount: e.target.value }))}
+                                style={editInput(true)}
+                                placeholder="Amount ($)"
+                              />
+                            ) : (
+                              <input type="number" min={0} step="any" value={editDraft.shares}
+                                onChange={(e) => setEditDraft((d) => ({ ...d, shares: e.target.value }))}
+                                style={editInput(true)} />
+                            )
                           ) : (
                             <span style={{ fontFamily: "var(--font-mono, monospace)", color: "var(--text-primary)" }}>
-                              {pos.shares.toLocaleString("en-US", { maximumFractionDigits: 4 })}
+                              {pos.isCash
+                                ? `$${(pos.cashAmount ?? 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}`
+                                : pos.shares.toLocaleString("en-US", { maximumFractionDigits: 4 })}
                             </span>
                           )}
                         </td>
                         {/* L / S direction */}
                         <td style={{ padding: "4px 8px", textAlign: "center" }}>
-                          {isEditing ? (
+                          {pos.isCash ? (
+                            <span style={{ color: "var(--text-muted)", fontSize: 12 }}>—</span>
+                          ) : isEditing ? (
                             <select
                               value={editDraft.isShort ? "S" : "L"}
                               onChange={(e) => setEditDraft((d) => ({ ...d, isShort: e.target.value === "S" }))}
@@ -499,7 +527,7 @@ function PortfolioManager() {
                         <td style={{ padding: "4px 8px", textAlign: "center", whiteSpace: "nowrap" }}>
                           {isEditing ? (
                             <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
-                              <button onClick={() => saveEdit(pos.id)} disabled={updatePositionMut.isPending}
+                              <button onClick={() => saveEdit(pos.id, pos)} disabled={updatePositionMut.isPending}
                                 style={{ padding: "3px 10px", borderRadius: 4, border: "none", background: "var(--color-accent)", color: "var(--bg-base)", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>
                                 Save
                               </button>
@@ -649,164 +677,16 @@ function CsvUpload() {
   );
 }
 
-// -- Ticker autocomplete ----------------------------------------------------
-
-interface SecuritySuggestion {
-  ticker: string;
-  name: string;
-  sector: string | null;
-  isBenchmark: boolean;
-}
-
-interface TickerComboboxProps {
-  value: string;
-  onChange: (ticker: string) => void;
-  onSelect: (s: SecuritySuggestion) => void;
-}
-
-function TickerCombobox({ value, onChange, onSelect }: TickerComboboxProps) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState(value);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [debouncedQ, setDebouncedQ] = useState("");
-
-  // Sync external value reset (e.g. after form submit)
-  useEffect(() => {
-    if (!value) setQuery("");
-  }, [value]);
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = e.target.value;
-    setQuery(v);
-    onChange(v.toUpperCase());
-    setOpen(true);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => setDebouncedQ(v), 200);
-  };
-
-  const { data: rawSuggestions } = useQuery<SecuritySuggestion[]>({
-    queryKey: ["sec-search", debouncedQ],
-    queryFn: () =>
-      fetch(`/api/analysis/securities/search?q=${encodeURIComponent(debouncedQ)}`)
-        .then((r) => r.json())
-        .then((d) => (Array.isArray(d) ? d : [])),
-    enabled: debouncedQ.length > 0,
-    staleTime: 30_000,
-  });
-  const suggestions: SecuritySuggestion[] = Array.isArray(rawSuggestions) ? rawSuggestions : [];
-
-  const pick = (s: SecuritySuggestion) => {
-    setQuery(s.ticker);
-    setOpen(false);
-    onSelect(s);
-  };
-
-  // Close on outside click
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  return (
-    <div ref={containerRef} style={{ position: "relative" }}>
-      <input
-        type="text"
-        value={query}
-        onChange={handleChange}
-        onFocus={() => query.length > 0 && setOpen(true)}
-        placeholder="AAPL"
-        autoComplete="off"
-        style={{
-          width: "100%",
-          padding: "6px 10px",
-          borderRadius: 6,
-          border: "1px solid var(--bg-border)",
-          background: "var(--bg-elevated)",
-          color: "var(--text-primary)",
-          fontSize: 13,
-          boxSizing: "border-box",
-          fontFamily: "var(--font-mono, monospace)",
-        }}
-      />
-      {open && suggestions.length > 0 && (
-        <ul
-          style={{
-            position: "absolute",
-            top: "calc(100% + 4px)",
-            left: 0,
-            right: 0,
-            zIndex: 50,
-            margin: 0,
-            padding: 0,
-            listStyle: "none",
-            background: "var(--bg-panel, #1a2332)",
-            border: "1px solid var(--bg-border)",
-            borderRadius: 2,
-            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-            maxHeight: 260,
-            overflowY: "auto",
-          }}
-        >
-          {suggestions.map((s) => (
-            <li
-              key={s.ticker}
-              onMouseDown={() => pick(s)}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                padding: "8px 12px",
-                cursor: "pointer",
-                borderBottom: "1px solid rgba(255,255,255,0.04)",
-              }}
-              onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = "rgba(99,102,241,0.12)")}
-              onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = "transparent")}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                <span style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 13, fontWeight: 700, color: "var(--text-primary)", flexShrink: 0 }}>
-                  {s.ticker}
-                </span>
-                {s.isBenchmark && (
-                  <span style={{
-                    fontSize: 9,
-                    fontWeight: 700,
-                    letterSpacing: "0.08em",
-                    padding: "2px 5px",
-                    borderRadius: 3,
-                    background: "rgba(240,182,93,0.15)",
-                    color: "#f0b65d",
-                    border: "1px solid rgba(240,182,93,0.3)",
-                    flexShrink: 0,
-                  }}>
-                    INDEX
-                  </span>
-                )}
-              </div>
-              <span style={{ fontSize: 12, color: "var(--text-secondary)", textAlign: "right", marginLeft: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 }}>
-                {s.name}{s.sector ? `   ·   ${s.sector}` : ""}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
 // -- Manual position entry --------------------------------------------------
 
 function ManualEntry() {
   const { activePortfolioId, addToast } = useAnalysisStore();
   const qc = useQueryClient();
+  const [isCashMode, setIsCashMode] = useState(false);
   const [form, setForm] = useState({
     ticker: "",
     shares: "",
+    cashAmount: "",
     isShort: false,
     sector: "",
   });
@@ -817,23 +697,41 @@ function ManualEntry() {
       addToast({ severity: "warning", message: "Select a portfolio first" });
       return;
     }
+
+    const body = isCashMode
+      ? {
+          portfolioId: activePortfolioId,
+          isCash: true,
+          cashAmount: parseFloat(form.cashAmount),
+        }
+      : {
+          portfolioId: activePortfolioId,
+          ticker: form.ticker.toUpperCase(),
+          shares: parseFloat(form.shares),
+          isShort: form.isShort,
+          sector: form.sector || undefined,
+        };
+
     const r = await fetch("/api/analysis/portfolio/positions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        portfolioId: activePortfolioId,
-        ticker: form.ticker.toUpperCase(),
-        shares: parseFloat(form.shares),
-        isShort: form.isShort,
-        sector: form.sector || undefined,
-      }),
+      body: JSON.stringify(body),
     });
     if (r.ok) {
-      addToast({ severity: "success", message: `${form.ticker.toUpperCase()} added` });
+      addToast({
+        severity: "success",
+        message: isCashMode ? "Cash added" : `${form.ticker.toUpperCase()} added`,
+      });
       qc.invalidateQueries({ queryKey: ["positions", activePortfolioId] });
       qc.invalidateQueries({ queryKey: ["pnl", activePortfolioId] });
       qc.invalidateQueries({ queryKey: ["pnl-summary", activePortfolioId] });
-      setForm({ ticker: "", shares: "", isShort: false, sector: form.sector });
+      setForm({
+        ticker: "",
+        shares: "",
+        cashAmount: "",
+        isShort: false,
+        sector: form.sector,
+      });
     } else {
       const text = await r.text();
       let message = `Failed to add position (${r.status})`;
@@ -871,13 +769,69 @@ function ManualEntry() {
   return (
     <Card>
       <SectionHeading>Add Position Manually</SectionHeading>
-      <form onSubmit={handleSubmit} style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 0.6fr 1fr", gap: 12 }}>
-
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <button
+          type="button"
+          onClick={() => setIsCashMode(false)}
+          style={{
+            padding: "5px 12px",
+            borderRadius: 6,
+            border: "1px solid var(--bg-border)",
+            background: !isCashMode ? "var(--color-accent)" : "transparent",
+            color: !isCashMode ? "var(--bg-base)" : "var(--text-secondary)",
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          Equity
+        </button>
+        <button
+          type="button"
+          onClick={() => setIsCashMode(true)}
+          style={{
+            padding: "5px 12px",
+            borderRadius: 6,
+            border: "1px solid var(--bg-border)",
+            background: isCashMode ? "var(--color-accent)" : "transparent",
+            color: isCashMode ? "var(--bg-base)" : "var(--text-secondary)",
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          Cash
+        </button>
+      </div>
+      <form
+        onSubmit={handleSubmit}
+        style={{
+          display: "grid",
+          gridTemplateColumns: isCashMode ? "1fr auto" : "1.4fr 1fr 0.6fr 1fr",
+          gap: 12,
+        }}
+      >
+        {isCashMode ? (
+          field(
+            "Amount ($)",
+            <input
+              type="number"
+              value={form.cashAmount}
+              onChange={(e) => setForm((f) => ({ ...f, cashAmount: e.target.value }))}
+              placeholder="50000"
+              min={0}
+              step="any"
+              style={inputStyle(true)}
+              required
+            />,
+          )
+        ) : (
+          <>
         {field("Ticker",
-          <TickerCombobox
+          <TickerSearchCombobox
             value={form.ticker}
             onChange={(t) => setForm((f) => ({ ...f, ticker: t }))}
-            onSelect={(s) => {
+            onSelect={(_ticker, s) => {
               setForm((f) => ({ ...f, ticker: s.ticker, sector: s.sector ?? f.sector }));
             }}
           />
@@ -920,6 +874,8 @@ function ManualEntry() {
             style={inputStyle()}
           />
         )}
+          </>
+        )}
 
         <div style={{ gridColumn: "1/-1", display: "flex", justifyContent: "flex-end" }}>
           <button
@@ -930,12 +886,12 @@ function ManualEntry() {
               border: "none",
               background: "var(--color-accent)",
               color: "var(--bg-base)",
+              fontWeight: 600,
               cursor: "pointer",
               fontSize: 13,
-              fontWeight: 600,
             }}
           >
-            Add Position
+            {isCashMode ? "Add Cash" : "Add Position"}
           </button>
         </div>
       </form>

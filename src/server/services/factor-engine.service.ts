@@ -51,7 +51,10 @@ async function loadPortfolioReturns(portfolioId: string, from?: string, to?: str
   });
   if (!positions.length) return null;
 
-  const secIds = positions.map((p) => p.securityId);
+  const equityPositions = positions.filter((p) => !p.isCash && p.securityId);
+  const cashPositions = positions.filter((p) => p.isCash);
+
+  const secIds = equityPositions.map((p) => p.securityId!);
   const [priceData, lastPrices] = await Promise.all([
     Promise.all(
       secIds.map((id) =>
@@ -77,67 +80,81 @@ async function loadPortfolioReturns(portfolioId: string, from?: string, to?: str
     ),
   ]);
 
-  // Build date→price maps per security
   const priceMaps = priceData.map((rows) =>
     new Map(rows.map((r) => [r.tradeDate.toISOString().slice(0, 10), Number(r.adjClose)])),
   );
 
-  // Union of all position price dates. We no longer inner-join across every
-  // holding — a single recently-listed holding would otherwise collapse the
-  // aligned window to its own short history. Instead each holding contributes
-  // only on dates it actually traded (see the per-date loop below).
   const allDates = [
     ...new Set(
       priceData.flatMap((rows) => rows.map((r) => r.tradeDate.toISOString().slice(0, 10))),
     ),
   ].sort();
 
-  // Market-value weights at the latest available price, with long/short
-  // sign applied. This represents "given my portfolio as it stands today,
-  // what is its factor exposure?" — the natural anchor when there is no
-  // entry-price model.
-  const grossValues = positions.map((p, i) => {
-    const price = lastPrices[i] ? Number(lastPrices[i]!.adjClose) : 0;
-    return Math.abs(Number(p.shares) * price);
-  });
+  const flatCashMap = new Map(allDates.map((d) => [d, 1]));
+
+  const coverageInputs: Parameters<typeof buildCoverageWeightedReturns>[1] = [];
+  const positionWindowMeta: {
+    ticker: string;
+    priceByDate: Map<string, number>;
+    firstDate: string | null;
+    lastDate: string | null;
+  }[] = [];
+  const grossValues: number[] = [];
+  let equityIdx = 0;
+
+  for (const p of positions) {
+    if (p.isCash) {
+      const cashAmount = p.cashAmount != null ? Number(p.cashAmount) : 0;
+      grossValues.push(cashAmount);
+      coverageInputs.push({
+        ticker: "CASH",
+        priceByDate: flatCashMap,
+        firstDate: allDates[0] ?? null,
+        weight: 0,
+        gross: cashAmount,
+      });
+      positionWindowMeta.push({
+        ticker: "CASH",
+        priceByDate: flatCashMap,
+        firstDate: allDates[0] ?? null,
+        lastDate: allDates[allDates.length - 1] ?? null,
+      });
+      continue;
+    }
+
+    const price = lastPrices[equityIdx] ? Number(lastPrices[equityIdx]!.adjClose) : 0;
+    grossValues.push(Math.abs(Number(p.shares) * price));
+    coverageInputs.push({
+      ticker: p.security!.ticker,
+      priceByDate: priceMaps[equityIdx]!,
+      firstDate: priceData[equityIdx]![0]?.tradeDate.toISOString().slice(0, 10) ?? null,
+      weight: 0,
+      gross: grossValues[grossValues.length - 1]!,
+    });
+    const rows = priceData[equityIdx]!;
+    positionWindowMeta.push({
+      ticker: p.security!.ticker,
+      priceByDate: priceMaps[equityIdx]!,
+      firstDate: rows[0]?.tradeDate.toISOString().slice(0, 10) ?? null,
+      lastDate: rows[rows.length - 1]?.tradeDate.toISOString().slice(0, 10) ?? null,
+    });
+    equityIdx++;
+  }
+
   const totalGross = grossValues.reduce((s, c) => s + c, 0);
   const weights = positions.map((p, i) => {
     const gross = totalGross > 0 ? grossValues[i]! / totalGross : 0;
-    return (p.isShort ? -1 : 1) * gross;
+    coverageInputs[i]!.weight = p.isCash ? gross : (p.isShort ? -1 : 1) * gross;
+    return coverageInputs[i]!.weight;
   });
 
-  // Per-date coverage-weighted portfolio returns + coverage diagnostics. Each
-  // holding contributes only on dates it actually traded; the present signed
-  // weights are renormalized to full investment and low-coverage dates are
-  // dropped. A recent IPO simply enters once it has prices instead of
-  // truncating the whole portfolio's aligned window.
   const { dates, returns: portReturns, coverage } = buildCoverageWeightedReturns(
     allDates,
-    positions.map((p, j) => ({
-      ticker: p.security.ticker,
-      priceByDate: priceMaps[j]!,
-      firstDate: priceData[j]![0]?.tradeDate.toISOString().slice(0, 10) ?? null,
-      weight: weights[j]!,
-      gross: grossValues[j]!,
-    })),
+    coverageInputs,
     MIN_COVERAGE,
   );
 
   if (dates.length < MIN_PRICE_HISTORY) return null;
-
-  // Per-position metadata needed for window-scoped coverage diagnostics on
-  // the Risk tab (which holdings have no / partial data inside the trailing
-  // risk window). Built once here so the Risk window slice is a pure
-  // O(W × P) walk over the same maps.
-  const positionWindowMeta = positions.map((p, j) => {
-    const rows = priceData[j]!;
-    return {
-      ticker: p.security.ticker,
-      priceByDate: priceMaps[j]!,
-      firstDate: rows[0]?.tradeDate.toISOString().slice(0, 10) ?? null,
-      lastDate: rows[rows.length - 1]?.tradeDate.toISOString().slice(0, 10) ?? null,
-    };
-  });
 
   return {
     dates,
@@ -145,12 +162,12 @@ async function loadPortfolioReturns(portfolioId: string, from?: string, to?: str
     coverage,
     positionWindowMeta,
     positions: positions.map((p, i) => ({
-      ticker: p.security.ticker,
+      ticker: p.isCash ? "CASH" : p.security!.ticker,
       securityId: p.securityId,
       weight: weights[i]!,
       isShort: p.isShort,
-      sector: p.sector ?? p.security.sector ?? "Other",
-      subTheme: "Other", // will be enriched from universe if needed
+      sector: p.isCash ? "Cash" : (p.sector ?? p.security!.sector ?? "Other"),
+      subTheme: "Other",
     })),
   };
 }
@@ -168,18 +185,20 @@ export async function getPortfolioCoverageDiagnostics(
     include: { security: true },
   });
 
+  const equityPositions = positions.filter((p) => !p.isCash && p.securityId);
+
   const counts = await Promise.all(
-    positions.map(async (p) => {
+    equityPositions.map(async (p) => {
       const [agg, first] = await Promise.all([
-        db.priceHistory.count({ where: { securityId: p.securityId } }),
+        db.priceHistory.count({ where: { securityId: p.securityId! } }),
         db.priceHistory.findFirst({
-          where: { securityId: p.securityId },
+          where: { securityId: p.securityId! },
           orderBy: { tradeDate: "asc" },
           select: { tradeDate: true },
         }),
       ]);
       return {
-        ticker: p.security.ticker,
+        ticker: p.security!.ticker,
         observations: agg,
         firstDate: first ? first.tradeDate.toISOString().slice(0, 10) : null,
       };

@@ -114,32 +114,42 @@ async function getPortfolioReturnSeries(
 
   if (!positions.length) return { dates: [], navSeries: [] };
 
+  const equityPositions = positions.filter((p) => !p.isCash && p.securityId);
+
   // Market-value weights at the latest available stored price, with
   // long/short sign applied. The constant-mix backtest below replays the
   // current portfolio composition over history.
   const lastPriceRows = await Promise.all(
-    positions.map((p) =>
+    equityPositions.map((p) =>
       db.priceHistory.findFirst({
-        where: { securityId: p.securityId },
+        where: { securityId: p.securityId! },
         orderBy: { tradeDate: "desc" },
         select: { adjClose: true },
       }),
     ),
   );
-  const grossValues = positions.map((p, i) => {
-    const price = lastPriceRows[i] ? Number(lastPriceRows[i]!.adjClose) : 0;
+
+  let equityIdx = 0;
+  const grossValues = positions.map((p) => {
+    if (p.isCash) return p.cashAmount != null ? Number(p.cashAmount) : 0;
+    const price = lastPriceRows[equityIdx]
+      ? Number(lastPriceRows[equityIdx]!.adjClose)
+      : 0;
+    equityIdx++;
     return Math.abs(Number(p.shares) * price);
   });
   const totalGross = grossValues.reduce((s, v) => s + v, 0);
   const weights = positions.map((p, i) => ({
-    ticker: p.security.ticker,
+    ticker: p.isCash ? "CASH" : p.security!.ticker,
     secId: p.securityId,
+    isCash: p.isCash,
     weight:
-      (p.isShort ? -1 : 1) *
+      (p.isCash ? 1 : p.isShort ? -1 : 1) *
       (totalGross > 0 ? grossValues[i]! / totalGross : 0),
   }));
 
-  const secIds = weights.map((w) => w.secId);
+  const equityWeights = weights.filter((w) => !w.isCash && w.secId);
+  const secIds = equityWeights.map((w) => w.secId!);
 
   // ── 1. Try stored price history first ────────────────────────────────────
   const priceRows = await db.priceHistory.findMany({
@@ -177,11 +187,11 @@ async function getPortfolioReturnSeries(
     // Fetch in parallel — typical portfolios are 5-30 tickers; Yahoo handles
     // this fine with the retry logic already built into fetchYahooChartDaily.
     const fetched = await Promise.all(
-      weights.map((w) => fetchYahooPriceMap(w.ticker, startIso, endIso)),
+      equityWeights.map((w) => fetchYahooPriceMap(w.ticker, startIso, endIso)),
     );
 
-    for (let i = 0; i < weights.length; i++) {
-      priceMap.set(weights[i].secId, fetched[i]);
+    for (let i = 0; i < equityWeights.length; i++) {
+      priceMap.set(equityWeights[i]!.secId!, fetched[i]!);
     }
 
     const yahooDateSets = secIds.map((id) => {
@@ -202,6 +212,7 @@ async function getPortfolioReturnSeries(
     const curDate = commonDates[i];
     let portReturn = 0;
     for (const w of weights) {
+      if (w.isCash || !w.secId) continue;
       const pm = priceMap.get(w.secId);
       if (!pm) continue;
       const prev = pm.get(prevDate);

@@ -24,6 +24,8 @@ export interface PositionInput {
   shares: number;
   isShort?: boolean;
   sector?: string;
+  isCash?: boolean;
+  cashAmount?: number;
 }
 
 export interface PositionRow {
@@ -33,6 +35,8 @@ export interface PositionRow {
   shares: number;
   isShort: boolean;
   sector: string | null;
+  isCash: boolean;
+  cashAmount: number | null;
 }
 
 // ── CSV Parsing ──────────────────────────────────────────────────────────
@@ -236,14 +240,66 @@ export async function getPositions(portfolioId: string): Promise<PositionRow[]> 
     orderBy: { createdAt: "asc" },
   });
 
-  return rows.map((r) => ({
-    id: r.id,
-    ticker: r.security.ticker,
-    name: r.security.name,
-    shares: Number(r.shares),
-    isShort: r.isShort,
-    sector: r.sector ?? r.security.sector ?? null,
-  }));
+  return rows.map((r) => {
+    if (r.isCash) {
+      return {
+        id: r.id,
+        ticker: "CASH",
+        name: "Cash",
+        shares: 0,
+        isShort: false,
+        sector: "Cash",
+        isCash: true,
+        cashAmount: r.cashAmount != null ? Number(r.cashAmount) : 0,
+      };
+    }
+    return {
+      id: r.id,
+      ticker: r.security!.ticker,
+      name: r.security!.name,
+      shares: Number(r.shares),
+      isShort: r.isShort,
+      sector: r.sector ?? r.security!.sector ?? null,
+      isCash: false,
+      cashAmount: null,
+    };
+  });
+}
+
+export async function addCashPosition(
+  portfolioId: string,
+  amount: number,
+): Promise<string> {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error("cashAmount must be a positive number");
+  }
+
+  const existing = await db.portfolioPosition.findFirst({
+    where: { portfolioId, isCash: true },
+  });
+
+  if (existing) {
+    const pos = await db.portfolioPosition.update({
+      where: { id: existing.id },
+      data: { cashAmount: amount },
+    });
+    await writeAuditLog("position.add", { portfolioId, cashAmount: amount });
+    return pos.id;
+  }
+
+  const pos = await db.portfolioPosition.create({
+    data: {
+      portfolioId,
+      securityId: null,
+      shares: 0,
+      isShort: false,
+      isCash: true,
+      cashAmount: amount,
+      sector: "Cash",
+    },
+  });
+  await writeAuditLog("position.add", { portfolioId, cashAmount: amount });
+  return pos.id;
 }
 
 export async function addPosition(
@@ -274,12 +330,30 @@ export interface PositionUpdateInput {
   shares?: number;
   isShort?: boolean;
   sector?: string | null;
+  cashAmount?: number;
 }
 
 export async function updatePosition(
   id: string,
   input: PositionUpdateInput,
 ): Promise<void> {
+  const existing = await db.portfolioPosition.findUnique({ where: { id } });
+  if (!existing) throw new Error("Position not found");
+
+  if (existing.isCash) {
+    if (input.cashAmount !== undefined) {
+      if (!Number.isFinite(input.cashAmount) || input.cashAmount <= 0) {
+        throw new Error("cashAmount must be a positive number");
+      }
+      await db.portfolioPosition.update({
+        where: { id },
+        data: { cashAmount: input.cashAmount },
+      });
+    }
+    await writeAuditLog("position.update", { id, ...input });
+    return;
+  }
+
   await db.portfolioPosition.update({
     where: { id },
     data: {

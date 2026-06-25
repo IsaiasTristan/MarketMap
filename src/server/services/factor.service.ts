@@ -49,13 +49,13 @@ export async function computeFactorExposures(
   portfolioId: string,
 ): Promise<FactorExposures | null> {
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId },
+    where: { portfolioId, isCash: false, securityId: { not: null } },
     include: { security: true },
   });
   if (!positions.length) return null;
 
   // Get prices + fundamentals
-  const secIds = positions.map((p) => p.securityId);
+  const secIds = positions.map((p) => p.securityId!);
 
   const [lastPrices, fundamentals, benchPrices] = await Promise.all([
     Promise.all(
@@ -102,7 +102,7 @@ export async function computeFactorExposures(
     const gross = totalValue > 0 ? grossValues[i]! / totalValue : 0;
     return (p.isShort ? -1 : 1) * gross;
   });
-  const tickers = positions.map((p) => p.security.ticker);
+  const tickers = positions.map((p) => p.security!.ticker);
 
   // Beta per position
   const betas: number[] = [];
@@ -160,7 +160,7 @@ export async function computeFactorExposures(
   // Sector exposures
   const sectorExposure: Record<string, number> = {};
   for (let i = 0; i < positions.length; i++) {
-    const sector = positions[i].sector ?? positions[i].security.sector ?? "Other";
+    const sector = positions[i]!.sector ?? positions[i]!.security!.sector ?? "Other";
     sectorExposure[sector] = (sectorExposure[sector] ?? 0) + weights[i];
   }
 
@@ -202,24 +202,26 @@ export async function computeFactorExposures(
  */
 export async function refreshPortfolioFundamentals(portfolioId: string): Promise<number> {
   const positions = await db.portfolioPosition.findMany({
-    where: { portfolioId },
+    where: { portfolioId, isCash: false, securityId: { not: null } },
     include: { security: true },
     distinct: ["securityId"],
   });
   if (!positions.length) return 0;
+
+  const secIds = positions.map((p) => p.securityId!);
 
   const today = new Date(new Date().toISOString().slice(0, 10));
 
   // Skip securities that already have a row for today
   const existing = await db.securityFundamentals.findMany({
     where: {
-      securityId: { in: positions.map((p) => p.securityId) },
+      securityId: { in: secIds },
       asOfDate: today,
     },
     select: { securityId: true },
   });
   const alreadyFresh = new Set(existing.map((r) => r.securityId));
-  const toRefresh = positions.filter((p) => !alreadyFresh.has(p.securityId));
+  const toRefresh = positions.filter((p) => !alreadyFresh.has(p.securityId!));
   if (!toRefresh.length) return 0;
 
   const CONCURRENCY = 3;
@@ -230,7 +232,7 @@ export async function refreshPortfolioFundamentals(portfolioId: string): Promise
     const batch = toRefresh.slice(i, i + CONCURRENCY);
     await Promise.all(
       batch.map(async (pos) => {
-        const data = await fetchYahooFundamentals(pos.security.ticker).catch(() => null);
+        const data = await fetchYahooFundamentals(pos.security!.ticker).catch(() => null);
         if (!data) return;
         const payload = {
           marketCap: data.marketCap ?? null,
@@ -243,8 +245,8 @@ export async function refreshPortfolioFundamentals(portfolioId: string): Promise
           shortRatio: data.shortRatio ?? null,
         };
         await db.securityFundamentals.upsert({
-          where: { securityId_asOfDate: { securityId: pos.securityId, asOfDate: today } },
-          create: { securityId: pos.securityId, asOfDate: today, ...payload },
+          where: { securityId_asOfDate: { securityId: pos.securityId!, asOfDate: today } },
+          create: { securityId: pos.securityId!, asOfDate: today, ...payload },
           update: payload,
         });
         refreshed++;

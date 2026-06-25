@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Horizon } from "@/domain/entities/horizons";
 import { HORIZON_ORDER } from "@/domain/entities/horizons";
 import type { MetricKind, BenchmarkCode } from "@/domain/entities/analytics";
-import { heatmapRgb } from "@/domain/calculations/heatmap";
+import { heatmapRgb, resolveHeatRange } from "@/domain/calculations/heatmap";
 import { HORIZON_LABEL, formatMetricValue } from "@/lib/format";
 
 type ApiRow = {
@@ -42,15 +42,19 @@ export function FactorPerformanceTable({
   metric,
   benchmark,
   reloadToken = 0,
+  marketScale,
 }: {
   metric: MetricKind;
   benchmark: BenchmarkCode;
   reloadToken?: number;
+  /** Market map company-level per-horizon range, so factor cells share the
+   * grid's scale instead of self-scaling against the 14-factor spread. */
+  marketScale?: Record<Horizon, { min: number; max: number }>;
 }) {
   const [data, setData] = useState<ApiPayload | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [sort, setSort] = useState<SortState>({ horizon: "Y1", dir: "desc" });
+  const [sort, setSort] = useState<SortState>({ horizon: "D1", dir: "desc" });
 
   const qs = useMemo(() => {
     const u = new URLSearchParams();
@@ -172,8 +176,6 @@ export function FactorPerformanceTable({
         </ul>
       ) : null}
 
-      <Legend metric={metric} />
-
       <div style={tableWrap}>
         <table style={tableStyle}>
           <thead>
@@ -233,7 +235,8 @@ export function FactorPerformanceTable({
 
                 {HORIZON_ORDER.map((h) => {
                   const v = r.cells[h];
-                  const bg = heatmapRgb(v, metric, ranges[h].min, ranges[h].max);
+                  const scale = resolveHeatRange(marketScale?.[h], ranges[h]);
+                  const bg = heatmapRgb(v, metric, scale.min, scale.max);
                   return (
                     <td
                       key={h}
@@ -266,38 +269,6 @@ export function FactorPerformanceTable({
         </table>
       </div>
     </div>
-  );
-}
-
-function Legend({ metric }: { metric: MetricKind }) {
-  if (metric === "VOLATILITY") {
-    return (
-      <p style={legendText}>
-        Factor volatility: lighter = lower annualized realized volatility, darker
-        = higher.
-      </p>
-    );
-  }
-  if (metric === "SHARPE") {
-    return (
-      <p style={legendText}>
-        Factor Sharpe: red = weaker risk-adjusted, green = stronger.
-      </p>
-    );
-  }
-  if (metric === "EXCESS_RETURN") {
-    return (
-      <p style={legendText}>
-        Factor return minus the selected benchmark&apos;s compounded return over
-        the same horizon. Red = below benchmark, green = above.
-      </p>
-    );
-  }
-  return (
-    <p style={legendText}>
-      Compounded factor return over the trailing horizon. Red = negative, green
-      = positive vs column min/max.
-    </p>
   );
 }
 
@@ -354,13 +325,6 @@ const sectionTitle: CSSProperties = {
 const subtitle: CSSProperties = {
   fontSize: "11px",
   color: "var(--text-secondary)",
-  lineHeight: 1.25,
-};
-
-const legendText: CSSProperties = {
-  fontSize: "11px",
-  color: "var(--text-secondary)",
-  marginBottom: "0.5rem",
   lineHeight: 1.25,
 };
 

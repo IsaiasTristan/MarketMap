@@ -31,10 +31,17 @@ export async function PUT(req: Request, ctx: Ctx) {
   try {
     // The payload schema allows `sector: null` (to clear it), but PositionInput
     // uses `string | undefined`; normalize null -> undefined at the boundary.
-    const positions = parsed.data.positions.map((p) => ({
-      ...p,
-      sector: p.sector ?? undefined,
-    }));
+    const positions = parsed.data.positions
+      .filter(
+        (p): p is typeof p & { ticker: string; shares: number } =>
+          !p.isCash && !!p.ticker && p.shares != null,
+      )
+      .map((p) => ({
+        ticker: p.ticker,
+        shares: p.shares,
+        isShort: p.isShort,
+        sector: p.sector ?? undefined,
+      }));
     await replacePositions(id, positions);
     return NextResponse.json({ ok: true });
   } catch (e) {

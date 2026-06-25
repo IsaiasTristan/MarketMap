@@ -4,7 +4,7 @@ import type { CSSProperties } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Horizon } from "@/domain/entities/horizons";
 import { HORIZON_ORDER } from "@/domain/entities/horizons";
-import { heatmapRgb } from "@/domain/calculations/heatmap";
+import { heatmapRgb, resolveHeatRange } from "@/domain/calculations/heatmap";
 import { HORIZON_LABEL, formatMetricValue } from "@/lib/format";
 import { isExcludedSector } from "@/lib/market-map/excluded-sectors";
 import { sectorColor, subThemeColor } from "@/lib/market-map/sector-colors";
@@ -68,6 +68,9 @@ interface TopMoversTableProps {
   companyLeaves: CompanyLeaf[] | null;
   onSelectTicker: (ticker: string) => void;
   selectedTickers: Set<string>;
+  /** Market map company-level per-horizon range, so movers share the grid's
+   * scale instead of self-scaling against the displayed leaves. */
+  marketScale?: Record<Horizon, { min: number; max: number }>;
 }
 
 export function TopMoversTable({
@@ -76,6 +79,7 @@ export function TopMoversTable({
   companyLeaves,
   onSelectTicker,
   selectedTickers,
+  marketScale,
 }: TopMoversTableProps) {
   const [horizon, setHorizon] = useState<Horizon>("D1");
   const [ownData, setOwnData] = useState<CompanyLeaf[] | null>(null);
@@ -142,6 +146,10 @@ export function TopMoversTable({
     return { gainers: top, losers: bottom, range: { min, max } };
   }, [leaves, horizon]);
 
+  // Prefer the shared market-map company scale for the selected horizon; fall
+  // back to the locally computed leaf range when it is unavailable.
+  const heatRange = resolveHeatRange(marketScale?.[horizon], range);
+
   return (
     <div style={section}>
       <div style={headerStrip}>
@@ -181,7 +189,7 @@ export function TopMoversTable({
           title={`Top ${RANK_LIMIT} Gainers`}
           rows={gainers}
           horizon={horizon}
-          range={range}
+          range={heatRange}
           onSelectTicker={onSelectTicker}
           selectedTickers={selectedTickers}
           emptyHint="No return data available for the selected horizon."
@@ -190,7 +198,7 @@ export function TopMoversTable({
           title={`Top ${RANK_LIMIT} Losers`}
           rows={losers}
           horizon={horizon}
-          range={range}
+          range={heatRange}
           onSelectTicker={onSelectTicker}
           selectedTickers={selectedTickers}
           emptyHint="No return data available for the selected horizon."
@@ -459,7 +467,7 @@ const returnCell: CSSProperties = {
 };
 
 const companyNameText: CSSProperties = {
-  color: "var(--text-primary)",
+  color: "var(--color-accent)",
   fontWeight: 500,
   fontSize: "12px",
   display: "inline-block",

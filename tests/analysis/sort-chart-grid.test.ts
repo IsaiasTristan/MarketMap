@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { sortHoldingsByAbsDailyMove } from "@/lib/holdings/sort-chart-grid";
+import {
+  sortByAbsDollarDesc,
+  sortHoldingsByAbsDailyMove,
+} from "@/lib/holdings/sort-chart-grid";
 import type { HoldingRow } from "@/server/services/portfolio-holdings.service";
 
 function row(
@@ -65,5 +68,24 @@ describe("sortHoldingsByAbsDailyMove", () => {
     const rows = [row("S", 10, 110, 100, true)]; // short loses when price rises
     const sorted = sortHoldingsByAbsDailyMove(rows, new Map());
     expect(sorted[0]!.absDailyMove).toBe(100);
+  });
+});
+
+describe("sortByAbsDollarDesc", () => {
+  it("orders by absolute dollar descending regardless of sign", () => {
+    const items = [
+      { ticker: "SMALL", dailyPnl: 10 },
+      { ticker: "BIG", dailyPnl: 200 },
+      { ticker: "LOSS", dailyPnl: -500 },
+    ];
+    const sorted = sortByAbsDollarDesc(items, (i) => i.dailyPnl);
+    expect(sorted.map((i) => i.ticker)).toEqual(["LOSS", "BIG", "SMALL"]);
+  });
+
+  it("does not mutate the input array", () => {
+    const items = [{ v: -1 }, { v: 2 }];
+    const copy = [...items];
+    sortByAbsDollarDesc(items, (i) => i.v);
+    expect(items).toEqual(copy);
   });
 });

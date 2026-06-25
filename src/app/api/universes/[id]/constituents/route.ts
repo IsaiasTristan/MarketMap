@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/infrastructure/db/client";
-import { saveConstituentsBody } from "@/lib/api/schemas";
+import { saveConstituentsBody, updateConstituentBody } from "@/lib/api/schemas";
 import {
   addUniverseConstituents,
   removeUniverseConstituent,
   replaceUniverseConstituents,
+  updateUniverseConstituent,
 } from "@/server/services/universe.service";
 import { requireAdminGuard } from "@/lib/api/guards";
 
@@ -56,6 +57,46 @@ export async function POST(req: Request, ctx: Ctx) {
       { status: 500 }
     );
   }
+}
+
+export async function PATCH(req: Request, ctx: Ctx) {
+  const adminGuard = await requireAdminGuard(req);
+  if (adminGuard) return adminGuard;
+  const { id } = await ctx.params;
+  const ticker = new URL(req.url).searchParams.get("ticker")?.trim();
+  if (!ticker) {
+    return NextResponse.json(
+      { ok: false, error: "Missing ticker query parameter" },
+      { status: 400 }
+    );
+  }
+  const json = await req.json().catch(() => null);
+  const parsed = updateConstituentBody.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { ok: false, errors: parsed.error.flatten() },
+      { status: 400 }
+    );
+  }
+  const exists = await prisma.universe.findUnique({ where: { id } });
+  if (!exists) {
+    return NextResponse.json(
+      { ok: false, error: "Universe not found" },
+      { status: 404 }
+    );
+  }
+
+  const result = await updateUniverseConstituent(prisma, id, ticker, parsed.data);
+  if (!result) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `Ticker ${ticker.toUpperCase()} not in universe`,
+      },
+      { status: 404 }
+    );
+  }
+  return NextResponse.json({ ok: true, ...result });
 }
 
 export async function DELETE(req: Request, ctx: Ctx) {

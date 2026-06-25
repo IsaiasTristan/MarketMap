@@ -3,7 +3,8 @@
 import type { CSSProperties } from "react";
 import { useMemo, useState } from "react";
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
-import { fmtPrice } from "@/components/analysis/overview/formatters";
+import { fmtBbWholeDollar, fmtPrice } from "@/components/analysis/overview/formatters";
+import { WeightDataBarCell } from "@/components/analysis/overview/WeightDataBarCell";
 import { SessionSeamSparkline } from "@/components/analysis/ui/SessionSeamSparkline";
 import { DayRangeBar } from "@/components/analysis/overview/DayRangeBar";
 import { PeriodCell } from "@/components/analysis/overview/PeriodBlock";
@@ -117,13 +118,39 @@ function SectorCell({ label }: { label: string }) {
   );
 }
 
+const nameTextStyle: CSSProperties = {
+  display: "block",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  color: "var(--text-secondary)",
+};
+
+const nameButtonStyle: CSSProperties = {
+  ...nameTextStyle,
+  width: "100%",
+  padding: 0,
+  margin: 0,
+  border: "none",
+  background: "transparent",
+  font: "inherit",
+  textAlign: "left",
+  cursor: "pointer",
+};
+
 function HoldingRowView({
   row,
   periodRanges,
+  totalGross,
+  onNameClick,
 }: {
   row: HoldingRow;
   periodRanges: PeriodRanges;
+  totalGross: number;
+  onNameClick?: (ticker: string) => void;
 }) {
+  const nameClickable = onNameClick && row.ticker !== "CASH";
+
   return (
     <tr style={{ background: BB_ROW_BG.company }}>
       <td
@@ -136,20 +163,38 @@ function HoldingRowView({
         {row.ticker}
       </td>
       <td style={{ ...tdBase, maxWidth: 120 }}>
-        <span
-          style={{
-            display: "block",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            color: "var(--text-secondary)",
-          }}
-        >
-          {row.name}
-        </span>
+        {nameClickable ? (
+          <button
+            type="button"
+            title={`View ${row.ticker} detail`}
+            onClick={() => onNameClick(row.ticker)}
+            style={nameButtonStyle}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = "var(--color-accent)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = "var(--text-secondary)";
+            }}
+          >
+            {row.name}
+          </button>
+        ) : (
+          <span style={nameTextStyle}>{row.name}</span>
+        )}
       </td>
       <td style={{ ...tdBase, textAlign: "right" }} className="bb-num">
         {fmtPrice(row.currentPrice)}
+      </td>
+      <td
+        className="bb-weight-bar-cell"
+        style={{ ...tdBase, padding: 0, overflow: "hidden" }}
+      >
+        <WeightDataBarCell
+          weight={totalGross > 0 ? row.marketValue / totalGross : 0}
+        />
+      </td>
+      <td style={{ ...tdBase, textAlign: "right" }} className="bb-num">
+        {fmtBbWholeDollar(row.marketValue)}
       </td>
       <td
         className="spark-col-session"
@@ -243,7 +288,7 @@ function SectionHeader({
       }}
     >
       <td
-        colSpan={14}
+        colSpan={16}
         style={{
           padding: "0 6px",
           fontSize: BB_GRID_FONT_SIZE,
@@ -267,9 +312,15 @@ interface HoldingsDashboardProps {
   rows: HoldingRow[];
   loading?: boolean;
   error?: string;
+  onNameClick?: (ticker: string) => void;
 }
 
-export function HoldingsDashboard({ rows, loading, error }: HoldingsDashboardProps) {
+export function HoldingsDashboard({
+  rows,
+  loading,
+  error,
+  onNameClick,
+}: HoldingsDashboardProps) {
   const [topOpen, setTopOpen] = useState(true);
   const [bottomOpen, setBottomOpen] = useState(true);
   const [restOpen, setRestOpen] = useState(true);
@@ -292,6 +343,10 @@ export function HoldingsDashboard({ rows, loading, error }: HoldingsDashboardPro
   }, [rows]);
 
   const periodRanges = useMemo(() => computePeriodRanges(rows), [rows]);
+  const totalGross = useMemo(
+    () => rows.reduce((s, r) => s + r.marketValue, 0),
+    [rows],
+  );
 
   const tableHeader = (
     <thead>
@@ -299,6 +354,8 @@ export function HoldingsDashboard({ rows, loading, error }: HoldingsDashboardPro
         <th style={{ ...thStyle, textAlign: "left" }}>Ticker</th>
         <th style={{ ...thStyle, textAlign: "left" }}>Name</th>
         <th style={{ ...thStyle, textAlign: "right" }}>Price</th>
+        <th style={{ ...thStyle, textAlign: "right" }}>% Wgt</th>
+        <th style={{ ...thStyle, textAlign: "right" }}>Tot $</th>
         <th
           style={{ ...thStyle, textAlign: "center", lineHeight: 1.05, padding: "2px 4px" }}
           title="Prior session (white) · today (colored vs prev close)"
@@ -381,6 +438,8 @@ export function HoldingsDashboard({ rows, loading, error }: HoldingsDashboardPro
                     key={r.ticker}
                     row={r}
                     periodRanges={periodRanges}
+                    totalGross={totalGross}
+                    onNameClick={onNameClick}
                   />
                 ))}
 
@@ -396,6 +455,8 @@ export function HoldingsDashboard({ rows, loading, error }: HoldingsDashboardPro
                     key={`b-${r.ticker}`}
                     row={r}
                     periodRanges={periodRanges}
+                    totalGross={totalGross}
+                    onNameClick={onNameClick}
                   />
                 ))}
 
@@ -411,6 +472,8 @@ export function HoldingsDashboard({ rows, loading, error }: HoldingsDashboardPro
                     key={`r-${r.ticker}`}
                     row={r}
                     periodRanges={periodRanges}
+                    totalGross={totalGross}
+                    onNameClick={onNameClick}
                   />
                 ))}
             </tbody>

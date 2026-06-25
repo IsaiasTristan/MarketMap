@@ -6,30 +6,9 @@ import { getExtendedSnapshot } from "@/server/services/extended-hours.service";
 import { getUsMarketSession } from "@/lib/market-map/market-session";
 import type { BenchmarkCode, MetricKind, RowLevel } from "@/domain/entities/analytics";
 import { HORIZON_ORDER } from "@/domain/entities/horizons";
-import type { Horizon } from "@/domain/entities/horizons";
+import { percentileColumnRanges } from "@/domain/calculations/percentile-range";
 
 type Ctx = { params: Promise<{ id: string }> };
-
-function columnRanges(
-  rows: { cells: Record<Horizon, number | null> }[],
-  horizons: readonly Horizon[]
-) {
-  const min: Record<string, number> = {};
-  const max: Record<string, number> = {};
-  for (const h of horizons) {
-    const vals = rows
-      .map((r) => r.cells[h])
-      .filter((v): v is number => v != null && Number.isFinite(v));
-    if (vals.length === 0) {
-      min[h] = 0;
-      max[h] = 0;
-    } else {
-      min[h] = Math.min(...vals);
-      max[h] = Math.max(...vals);
-    }
-  }
-  return { min, max };
-}
 
 export async function GET(req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
@@ -83,7 +62,10 @@ export async function GET(req: Request, ctx: Ctx) {
     { sector: parsed.data.sector, subTheme: parsed.data.subTheme },
     { extendedQuotes }
   );
-  const ranges = columnRanges(result.rows, HORIZON_ORDER);
+  // Winsorized (p5/p95) span so a few extreme stocks don't compress the heat
+  // scale and wash out the rest of the grid. Shared by the grid, Top Movers,
+  // and Factor Top Movers (all keyed off this company-level range).
+  const ranges = percentileColumnRanges(result.rows, HORIZON_ORDER);
   return NextResponse.json({
     ok: true,
     metric: parsed.data.metric,

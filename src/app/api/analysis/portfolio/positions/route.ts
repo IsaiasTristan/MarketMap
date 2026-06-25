@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   getPositions,
   addPosition,
+  addCashPosition,
   deletePosition,
   updatePosition,
   replacePositions,
@@ -23,13 +24,22 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { portfolioId, ticker, shares, isShort, sector, replace, positions } = body;
+    const { portfolioId, ticker, shares, isShort, sector, replace, positions, isCash, cashAmount } = body;
 
     if (!portfolioId) {
       return NextResponse.json({ error: "portfolioId required" }, { status: 400 });
     }
     const guard = await requirePortfolioAccess(req, portfolioId);
     if (guard) return guard;
+
+    if (isCash) {
+      const amount = Number(cashAmount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return NextResponse.json({ error: "cashAmount must be a positive number" }, { status: 400 });
+      }
+      const id = await addCashPosition(portfolioId, amount);
+      return NextResponse.json({ id });
+    }
 
     // Bulk replace mode (used by the editor's "Save" button).
     if (replace && Array.isArray(positions)) {
@@ -82,11 +92,12 @@ export async function PATCH(req: Request) {
   const guard = await requirePositionAccess(req, id);
   if (guard) return guard;
   const body = await req.json().catch(() => ({}));
-  const { shares, isShort, sector } = body;
+  const { shares, isShort, sector, cashAmount } = body;
   const input: Parameters<typeof updatePosition>[1] = {};
   if (shares !== undefined) input.shares = Number(shares);
   if (isShort !== undefined) input.isShort = Boolean(isShort);
   if (sector !== undefined) input.sector = sector ?? null;
+  if (cashAmount !== undefined) input.cashAmount = Number(cashAmount);
   await updatePosition(id, input);
   return NextResponse.json({ ok: true });
 }

@@ -59,6 +59,59 @@ export async function removeUniverseConstituent(
   return result.count > 0;
 }
 
+export type UpdateUniverseConstituentResult = {
+  ticker: string;
+  renamed: boolean;
+};
+
+/**
+ * Update display name and hierarchy fields for an existing universe member.
+ * Returns null when the ticker or constituent row is not found.
+ */
+export async function updateUniverseConstituent(
+  db: PrismaClient,
+  universeId: string,
+  ticker: string,
+  fields: { companyName: string; sector: string; subTheme: string }
+): Promise<UpdateUniverseConstituentResult | null> {
+  const normalized = ticker.trim().toUpperCase();
+  if (!normalized) return null;
+
+  const security = await db.security.findUnique({
+    where: { ticker: normalized },
+    select: { id: true, name: true },
+  });
+  if (!security) return null;
+
+  const constituent = await db.universeConstituent.findUnique({
+    where: {
+      universeId_securityId: { universeId, securityId: security.id },
+    },
+    select: { id: true },
+  });
+  if (!constituent) return null;
+
+  const trimmedName = fields.companyName.trim();
+  const trimmedSector = fields.sector.trim();
+  const trimmedSubTheme = fields.subTheme.trim();
+  const renamed = trimmedName !== security.name;
+
+  await db.$transaction(async (tx) => {
+    if (renamed) {
+      await tx.security.update({
+        where: { id: security.id },
+        data: { name: trimmedName },
+      });
+    }
+    await tx.universeConstituent.update({
+      where: { id: constituent.id },
+      data: { sector: trimmedSector, subTheme: trimmedSubTheme },
+    });
+  });
+
+  return { ticker: normalized, renamed };
+}
+
 export type ReplaceUniverseResult = {
   applied: number;
   created: number;
