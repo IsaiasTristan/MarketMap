@@ -168,4 +168,28 @@ describe("parseYahooExtendedQuote", () => {
     expect(r!.price).toBeCloseTo(209.6, 6);
     expect(r!.asOfUnix).toBe(MONDAY_POST_UNIX);
   });
+
+  it("POST picks the print closest to regular close, not the last stale tick", () => {
+    const r = parseYahooExtendedQuote({
+      timestamp: [
+        REG_END + 30 * SEC,
+        REG_END + 60 * SEC,
+        REG_END + 90 * SEC,
+        REG_END + 120 * SEC,
+      ],
+      indicators: {
+        quote: [{ close: [12.66, 12.84, 13, 13] }],
+      },
+      meta: {
+        chartPreviousClose: 13.35,
+        regularMarketPrice: 12.82,
+        currentTradingPeriod: PERIOD,
+      },
+    });
+    expect(r).not.toBeNull();
+    expect(r!.session).toBe("POST");
+    expect(r!.price).toBeCloseTo(12.84, 6);
+    expect(r!.regularClose).toBeCloseTo(12.82, 6);
+    expect(r!.asOfUnix).toBe(REG_END + 60 * SEC);
+  });
 });

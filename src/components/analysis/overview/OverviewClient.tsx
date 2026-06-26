@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { getUsMarketSession } from "@/lib/market-map/market-session";
 import { useAnalysisStore } from "@/store/analysis";
 import { FloatingPerStockDetail } from "@/components/analysis/factors/panels/FloatingPerStockDetail";
 import { MetricCard } from "@/components/analysis/ui/MetricCard";
@@ -74,14 +75,12 @@ type ReturnRiskAlloc = {
 };
 
 export function OverviewClient() {
-  const {
-    activePortfolioId,
-    factorModel,
-    factorWindow,
-    factorPeriod,
-    openFactorDetailPanels,
-    openFactorDetailPanel,
-  } = useAnalysisStore();
+  const activePortfolioId = useAnalysisStore((s) => s.activePortfolioId);
+  const factorModel = useAnalysisStore((s) => s.factorModel);
+  const factorWindow = useAnalysisStore((s) => s.factorWindow);
+  const factorPeriod = useAnalysisStore((s) => s.factorPeriod);
+  const openFactorDetailPanels = useAnalysisStore((s) => s.openFactorDetailPanels);
+  const openFactorDetailPanel = useAnalysisStore((s) => s.openFactorDetailPanel);
   const [allocView, setAllocView] = useState<AllocView>("byPosition");
   const [horizon, setHorizon] = useState<AllocHorizon>("1D");
 
@@ -89,10 +88,17 @@ export function OverviewClient() {
 
   const { data, isLoading, error } = useQuery<PnlData>({
     queryKey: ["pnl", activePortfolioId],
-    queryFn: () =>
-      fetch(`/api/analysis/portfolio/pnl?portfolioId=${activePortfolioId}`).then(
-        (r) => r.json(),
-      ),
+    queryFn: async () => {
+      const r = await fetch(
+        `/api/analysis/portfolio/pnl?portfolioId=${activePortfolioId}`,
+      );
+      if (!r.ok) throw new Error("Failed to load portfolio data");
+      const body = await r.json();
+      if (!body?.summary || typeof body.summary.totalValue !== "number") {
+        throw new Error("Failed to load portfolio data");
+      }
+      return body as PnlData;
+    },
     enabled: !!activePortfolioId,
     refetchInterval: 60_000,
   });
@@ -129,7 +135,10 @@ export function OverviewClient() {
       return body;
     },
     enabled: !!activePortfolioId,
-    refetchInterval: 20_000,
+    // Tight 20s cadence only while the US session is open; off-hours holdings
+    // don't move intraday, so relax to 60s to cut needless refetches.
+    refetchInterval: () =>
+      getUsMarketSession(new Date()) === "REGULAR" ? 20_000 : 60_000,
   });
 
   const { data: posRiskData, isLoading: posRiskLoading } = useQuery<{

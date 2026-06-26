@@ -661,7 +661,6 @@ export function MarketMapClient({
       />
 
       <FactorTopMoversTable
-        reloadToken={reloadToken}
         onSelectTicker={handleSelectTicker}
         selectedTickers={openTickerSet}
         marketScale={ranges.COMPANY}

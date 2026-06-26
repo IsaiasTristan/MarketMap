@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
+import { DeferUntilVisible } from "@/components/analysis/shared/DeferUntilVisible";
 import { sortHoldingsByAbsDailyMove } from "@/lib/holdings/sort-chart-grid";
 import type { HoldingRow } from "@/server/services/portfolio-holdings.service";
 import { LivePriceChartTile } from "./LivePriceChartTile";
@@ -99,16 +100,20 @@ export function HoldingsLiveChartGrid({
         ) : (
           <div className={GRID_STYLE_ID}>
             {sorted.map((row) => (
-              <LivePriceChartTile
-                key={row.ticker}
-                ticker={row.ticker}
-                sparkline={row.sparkline}
-                sparklineExtended={row.sparklineExtended}
-                prevClose={row.prevClose}
-                currentPrice={row.currentPrice}
-                chg1dPct={row.chg1dPct}
-                onClick={() => setExpandedTicker(row.ticker)}
-              />
+              // Each tile mounts a Recharts ResponsiveContainer; defer the
+              // off-screen ones so a large portfolio doesn't instantiate dozens
+              // of charts on first paint.
+              <DeferUntilVisible key={row.ticker} minHeight={168}>
+                <LivePriceChartTile
+                  ticker={row.ticker}
+                  sparkline={row.sparkline}
+                  sparklineExtended={row.sparklineExtended}
+                  prevClose={row.prevClose}
+                  currentPrice={row.currentPrice}
+                  chg1dPct={row.chg1dPct}
+                  onClick={() => setExpandedTicker(row.ticker)}
+                />
+              </DeferUntilVisible>
             ))}
           </div>
         )}

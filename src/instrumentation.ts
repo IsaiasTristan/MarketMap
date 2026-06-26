@@ -54,5 +54,16 @@ export async function register() {
         e,
       );
     }
+    try {
+      const { startSnapshotRefreshRunner } = await import(
+        "@/server/services/snapshot-refresh-runner"
+      );
+      startSnapshotRefreshRunner();
+    } catch (e) {
+      console.error(
+        "[instrumentation] failed to start snapshot-refresh runner:",
+        e,
+      );
+    }
   }
 }

@@ -163,10 +163,19 @@ export async function maybeRunStartupCatchUp(): Promise<void> {
       );
       return;
     }
+    // Defer the heavy catch-up so it doesn't contend with interactive
+    // navigation right after boot (the child process saturates CPU/DB/Yahoo).
+    // Configurable via PRECOMPUTE_STARTUP_DELAY_MS; set to 0 to start
+    // immediately.
+    const delayMs = Number(process.env.PRECOMPUTE_STARTUP_DELAY_MS ?? 180_000);
     console.log(
-      `[precompute-runner] startup: cache stale (freshest=${freshness.freshestComputedAt ?? "none"}, lastClose=${freshness.lastTradingClose}); starting catch-up.`,
+      `[precompute-runner] startup: cache stale (freshest=${freshness.freshestComputedAt ?? "none"}, lastClose=${freshness.lastTradingClose}); starting catch-up${delayMs > 0 ? ` in ${Math.round(delayMs / 1000)}s` : ""}.`,
     );
-    startPrecompute("startup-catchup");
+    if (delayMs > 0) {
+      setTimeout(() => startPrecompute("startup-catchup"), delayMs);
+    } else {
+      startPrecompute("startup-catchup");
+    }
   } catch (e) {
     console.error("[precompute-runner] startup catch-up check failed:", e);
   }

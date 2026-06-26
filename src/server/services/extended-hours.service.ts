@@ -107,6 +107,11 @@ export async function sweepExtendedHours(
 
   for (const [ticker, q] of yahooQuotes) {
     if (q.session !== "PRE" && q.session !== "POST") continue;
+    // POST / BACKFILL sweeps must not store stale same-day PRE prints (BAYRY
+    // case: morning PRE bar survives into the evening snapshot and ranks as a
+    // bogus −14% "after-hours" loser). PRE sweeps accept PRE only.
+    if (snapshotSession === "POST" && q.session !== "POST") continue;
+    if (snapshotSession === "PRE" && q.session !== "PRE") continue;
     const tradeDateEt = tradeDateEtFromUnix(q.asOfUnix);
     quotes.set(ticker, {
       price: q.price,

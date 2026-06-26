@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties } from "react";
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Horizon } from "@/domain/entities/horizons";
 import { HORIZON_ORDER } from "@/domain/entities/horizons";
@@ -32,7 +32,6 @@ import type {
 const RANK_LIMIT = 20;
 
 interface FactorTopMoversTableProps {
-  reloadToken?: number;
   onSelectTicker: (ticker: string) => void;
   selectedTickers: Set<string>;
   /** Market map company-level per-horizon range, so contribution cells share
@@ -41,12 +40,15 @@ interface FactorTopMoversTableProps {
 }
 
 export function FactorTopMoversTable({
-  reloadToken = 0,
   onSelectTicker,
   selectedTickers,
   marketScale,
 }: FactorTopMoversTableProps) {
   const [horizon, setHorizon] = useState<Horizon>("D1");
+  // Panels are collapsed by default: 14 factors x 2 lists x 20 rows = ~560 rows
+  // (~3,360 cells). Mounting them all up-front is the dominant cost of this
+  // section, so each panel renders only its header until the user expands it.
+  const [expandedCodes, setExpandedCodes] = useState<Set<string>>(new Set());
   // Follow the app-wide attribution mode + beta window so the per-factor
   // contributions tie to the per-stock popup waterfall by construction.
   const mode = useAnalysisStore((s) => s.factorAttributionMode);
@@ -62,7 +64,7 @@ export function FactorTopMoversTable({
     : false;
 
   const { data, isFetching, error } = useQuery<FactorTopMoversResult>({
-    queryKey: ["factor-top-movers", horizon, mode, factorWindow, reloadToken],
+    queryKey: ["factor-top-movers", horizon, mode, factorWindow],
     queryFn: async () => {
       const res = await fetch(
         `/api/analysis/factors/top-movers?horizon=${horizon}&mode=${mode}&window=${factorWindow}`,
@@ -81,12 +83,31 @@ export function FactorTopMoversTable({
     },
     refetchInterval,
     staleTime: isOneDay ? 0 : 5 * 60_000,
+    // Keep the previously-rendered factors visible while a refetch is in
+    // flight. Without this the panel would blank to [] over the near-black
+    // canvas on every refresh (TanStack v5 returns data=undefined transiently
+    // whenever the query re-runs).
+    placeholderData: (prev) => prev,
   });
 
   const factors = data?.factors ?? [];
   // Company scale for the toggled horizon (1D -> 1D market range, etc.); falls
   // back per factor to the service-provided panel range when unavailable.
   const marketRange = marketScale?.[horizon];
+
+  const allExpanded =
+    factors.length > 0 && factors.every((f) => expandedCodes.has(f.code));
+  const toggleAll = () =>
+    setExpandedCodes(
+      allExpanded ? new Set() : new Set(factors.map((f) => f.code)),
+    );
+  const toggleCode = (code: string) =>
+    setExpandedCodes((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
 
   return (
     <div style={section}>
@@ -109,6 +130,16 @@ export function FactorTopMoversTable({
           >
             {data.session === "REGULAR" ? "LIVE" : "TODAY CLOSE"}
           </span>
+        )}
+        {factors.length > 0 && (
+          <button
+            type="button"
+            onClick={toggleAll}
+            style={expandAllBtn}
+            title={allExpanded ? "Collapse all factor panels" : "Expand all factor panels"}
+          >
+            {allExpanded ? "Collapse all" : "Expand all"}
+          </button>
         )}
         <div style={horizonToggleRow} role="tablist" aria-label="Horizon">
           {HORIZON_ORDER.map((h) => {
@@ -150,6 +181,8 @@ export function FactorTopMoversTable({
             factor={f}
             horizon={horizon}
             marketRange={marketRange}
+            expanded={expandedCodes.has(f.code)}
+            onToggle={() => toggleCode(f.code)}
             onSelectTicker={onSelectTicker}
             selectedTickers={selectedTickers}
           />
@@ -163,12 +196,16 @@ function FactorPanel({
   factor,
   horizon,
   marketRange,
+  expanded,
+  onToggle,
   onSelectTicker,
   selectedTickers,
 }: {
   factor: FactorTopMoversFactor;
   horizon: Horizon;
   marketRange?: { min: number; max: number };
+  expanded: boolean;
+  onToggle: () => void;
   onSelectTicker: (ticker: string) => void;
   selectedTickers: Set<string>;
 }) {
@@ -178,13 +215,18 @@ function FactorPanel({
   const accent = factorAccentColor(factor.code);
   return (
     <div style={panelWrap}>
-      <div
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
         style={{
           ...panelHeader,
           borderLeft: `3px solid ${accent}`,
           background: hexAlpha(accent, 0.12),
         }}
+        title={expanded ? "Collapse this factor" : "Expand this factor"}
       >
+        <span style={chevronText}>{expanded ? "\u25be" : "\u25b8"}</span>
         <span style={{ ...factorLabelText, color: accent }}>{factor.label}</span>
         <span style={factorCodeText}>{factor.code}</span>
         {factor.factorReturn != null && (
@@ -192,30 +234,98 @@ function FactorPanel({
             {formatMetricValue(factor.factorReturn, "RETURN")}
           </span>
         )}
-      </div>
-      <MoversList
-        title={`Top ${RANK_LIMIT} Positive`}
-        tone="positive"
-        rows={factor.positive}
-        horizon={horizon}
-        range={range}
-        onSelectTicker={onSelectTicker}
-        selectedTickers={selectedTickers}
-        emptyHint="No positive contributions for this factor."
-      />
-      <MoversList
-        title={`Top ${RANK_LIMIT} Negative`}
-        tone="negative"
-        rows={factor.negative}
-        horizon={horizon}
-        range={range}
-        onSelectTicker={onSelectTicker}
-        selectedTickers={selectedTickers}
-        emptyHint="No negative contributions for this factor."
-      />
+      </button>
+      {expanded && (
+        <>
+          <MoversList
+            title={`Top ${RANK_LIMIT} Positive`}
+            tone="positive"
+            rows={factor.positive}
+            horizon={horizon}
+            range={range}
+            onSelectTicker={onSelectTicker}
+            selectedTickers={selectedTickers}
+            emptyHint="No positive contributions for this factor."
+          />
+          <MoversList
+            title={`Top ${RANK_LIMIT} Negative`}
+            tone="negative"
+            rows={factor.negative}
+            horizon={horizon}
+            range={range}
+            onSelectTicker={onSelectTicker}
+            selectedTickers={selectedTickers}
+            emptyHint="No negative contributions for this factor."
+          />
+        </>
+      )}
     </div>
   );
 }
+
+/**
+ * One mover row. Memoized + per-row color math behind useMemo so a selection
+ * change (which re-renders the list) only re-renders the rows whose selected
+ * state actually flipped, and never re-runs heatmapRgb / sectorColor /
+ * subThemeColor unless its inputs change.
+ */
+const MoverRow = memo(function MoverRow({
+  entry,
+  rank,
+  rangeMin,
+  rangeMax,
+  isSelected,
+  onSelectTicker,
+}: {
+  entry: FactorTopMoverEntry;
+  rank: number;
+  rangeMin: number;
+  rangeMax: number;
+  isSelected: boolean;
+  onSelectTicker: (ticker: string) => void;
+}) {
+  const { bg, rowBg, sectorClr, subThemeClr } = useMemo(() => {
+    const heat = heatmapRgb(entry.value, "RETURN", rangeMin, rangeMax);
+    return {
+      bg: heat,
+      rowBg: isSelected ? SELECTED_ROW_BG : COMPANY_BG,
+      sectorClr: sectorColor(entry.sector),
+      subThemeClr: subThemeColor(entry.sector, entry.subTheme),
+    };
+  }, [entry.value, entry.sector, entry.subTheme, rangeMin, rangeMax, isSelected]);
+
+  return (
+    <tr
+      onClick={() => onSelectTicker(entry.ticker)}
+      aria-selected={isSelected}
+      style={{ ...moverRowStyle, background: rowBg, cursor: "pointer" }}
+      title={`${entry.name} (click to open factor detail)`}
+    >
+      <td style={{ ...rankCell, background: rowBg }}>{rank}</td>
+      <td style={{ ...nameCell, background: rowBg }}>
+        <span style={companyNameText}>{entry.name}</span>
+      </td>
+      <td style={{ ...tickerCell, background: rowBg }}>
+        <span style={tickerSymbolText}>{entry.ticker}</span>
+      </td>
+      <td
+        style={{ ...sectorCell, background: rowBg, color: sectorClr }}
+        title={entry.sector}
+      >
+        {entry.sector}
+      </td>
+      <td
+        style={{ ...subThemeCell, background: rowBg, color: subThemeClr }}
+        title={entry.subTheme}
+      >
+        {entry.subTheme}
+      </td>
+      <td style={{ ...returnCell, background: bg, color: pickTextColor(bg) }}>
+        {formatMetricValue(entry.value, "RETURN")}
+      </td>
+    </tr>
+  );
+});
 
 function MoversList({
   title,
@@ -271,55 +381,17 @@ function MoversList({
           </tr>
         </thead>
         <tbody>
-          {rows.map((c, idx) => {
-            const bg = heatmapRgb(c.value, "RETURN", range.min, range.max);
-            const isSelected = selectedTickers.has(c.ticker);
-            const rowBg = isSelected ? SELECTED_ROW_BG : COMPANY_BG;
-            const sectorClr = sectorColor(c.sector);
-            const subThemeClr = subThemeColor(c.sector, c.subTheme);
-            return (
-              <tr
-                key={c.ticker}
-                onClick={() => onSelectTicker(c.ticker)}
-                aria-selected={isSelected}
-                style={{ ...moverRowStyle, background: rowBg, cursor: "pointer" }}
-                title={`${c.name} (click to open factor detail)`}
-              >
-                <td style={{ ...rankCell, background: rowBg }}>{idx + 1}</td>
-                <td style={{ ...nameCell, background: rowBg }}>
-                  <span style={companyNameText}>{c.name}</span>
-                </td>
-                <td style={{ ...tickerCell, background: rowBg }}>
-                  <span style={tickerSymbolText}>{c.ticker}</span>
-                </td>
-                <td
-                  style={{ ...sectorCell, background: rowBg, color: sectorClr }}
-                  title={c.sector}
-                >
-                  {c.sector}
-                </td>
-                <td
-                  style={{
-                    ...subThemeCell,
-                    background: rowBg,
-                    color: subThemeClr,
-                  }}
-                  title={c.subTheme}
-                >
-                  {c.subTheme}
-                </td>
-                <td
-                  style={{
-                    ...returnCell,
-                    background: bg,
-                    color: pickTextColor(bg),
-                  }}
-                >
-                  {formatMetricValue(c.value, "RETURN")}
-                </td>
-              </tr>
-            );
-          })}
+          {rows.map((c, idx) => (
+            <MoverRow
+              key={c.ticker}
+              entry={c}
+              rank={idx + 1}
+              rangeMin={range.min}
+              rangeMax={range.max}
+              isSelected={selectedTickers.has(c.ticker)}
+              onSelectTicker={onSelectTicker}
+            />
+          ))}
           {rows.length === 0 && (
             <tr>
               <td
@@ -453,6 +525,30 @@ const panelHeader: CSSProperties = {
   gap: "8px",
   padding: "3px 8px",
   overflow: "hidden",
+  width: "100%",
+  textAlign: "left",
+  border: "none",
+  cursor: "pointer",
+  font: "inherit",
+};
+
+const chevronText: CSSProperties = {
+  color: "var(--text-secondary)",
+  fontSize: "10px",
+  lineHeight: 1,
+};
+
+const expandAllBtn: CSSProperties = {
+  padding: "1px 8px",
+  borderRadius: 0,
+  border: "1px solid var(--bg-border)",
+  background: "var(--bg-base)",
+  color: "var(--text-secondary)",
+  fontSize: "11px",
+  fontWeight: 600,
+  cursor: "pointer",
+  fontFamily:
+    'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
 };
 
 const factorLabelText: CSSProperties = {

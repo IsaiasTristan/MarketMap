@@ -18,6 +18,9 @@ import {
 } from "@/lib/market-map/market-session";
 
 const AUTO_REFRESH_MS = 30_000;
+/** Off-hours the daily grid is static, so the visible-tab DB poll relaxes from
+ *  AUTO_REFRESH_MS to this slower cadence to cut needless re-fetches. */
+const AUTO_REFRESH_OFFHOURS_MS = 60_000;
 /** While the US equity session is open we tail-refresh Yahoo prices on this
  *  cadence so the grid reflects today's intraday move. Outside market hours we
  *  fall back to the regular AUTO_REFRESH_MS DB poll only — no Yahoo traffic. */
@@ -186,17 +189,33 @@ export function MarketMapPageInner() {
     void triggerIngest(resolvedUniverseId, ["missing", "tail"]);
   }, [resolvedUniverseId, isAdmin, triggerIngest]);
 
-  // Auto-refresh the chart on a fixed cadence while the tab is visible so
-  // backgrounded windows do not hammer Postgres / Next RSC.
+  // Auto-refresh the chart while the tab is visible so backgrounded windows do
+  // not hammer Postgres / Next RSC. Tight 30s cadence during the REGULAR US
+  // session; relax to 60s outside market hours (daily data is static then).
+  // Self-scheduling setTimeout so the cadence re-evaluates the session on each
+  // tick rather than being frozen at mount.
   useEffect(() => {
     if (!resolvedUniverseId) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
     const bump = () => {
       if (typeof document !== "undefined" && document.visibilityState !== "visible") {
         return;
       }
       setReloadToken((n) => n + 1);
     };
-    const t = setInterval(bump, AUTO_REFRESH_MS);
+    const schedule = () => {
+      if (cancelled) return;
+      const delay =
+        getUsMarketSession(new Date()) === "REGULAR"
+          ? AUTO_REFRESH_MS
+          : AUTO_REFRESH_OFFHOURS_MS;
+      timer = setTimeout(() => {
+        bump();
+        schedule();
+      }, delay);
+    };
+    schedule();
     const onVis = () => {
       if (document.visibilityState === "visible") {
         bump();
@@ -204,7 +223,8 @@ export function MarketMapPageInner() {
     };
     document.addEventListener("visibilitychange", onVis);
     return () => {
-      clearInterval(t);
+      cancelled = true;
+      if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVis);
     };
   }, [resolvedUniverseId]);

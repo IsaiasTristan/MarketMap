@@ -49,7 +49,7 @@ export function computeVIF(corrMatrix: number[][]): number[] {
 function powerIterMaxEig(A: number[][], iters = 80): number {
   const n = A.length;
   if (n === 0) return 0;
-  let v = new Array<number>(n).fill(1 / Math.sqrt(n));
+  const v = new Array<number>(n).fill(1 / Math.sqrt(n));
   let lambda = 0;
   for (let iter = 0; iter < iters; iter++) {
     const Av = new Array<number>(n).fill(0);

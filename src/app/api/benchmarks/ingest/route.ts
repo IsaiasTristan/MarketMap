@@ -4,6 +4,7 @@ import {
   ingestAllBenchmarks,
   refreshBenchmarksTail,
 } from "@/server/services/ingest-universe.service";
+import { withIngestLock } from "@/server/services/ingest-inflight";
 import { requireAdminGuard } from "@/lib/api/guards";
 
 type Mode = "missing" | "tail" | "all";
@@ -24,15 +25,27 @@ export async function POST(req: Request) {
     1,
     Number(url.searchParams.get("days") ?? "") || 10
   );
+  const lockKey = `benchmark:${mode}`;
   try {
-    if (mode === "tail") {
-      const r = await refreshBenchmarksTail(prisma, tailDays);
-      return NextResponse.json({ ok: true, mode, tailDays, ...r });
-    }
-    const r = await ingestAllBenchmarks(prisma, 10, {
-      onlyMissing: mode === "missing",
+    const outcome = await withIngestLock(lockKey, async () => {
+      if (mode === "tail") {
+        const r = await refreshBenchmarksTail(prisma, tailDays);
+        return { mode, tailDays, ...r };
+      }
+      const r = await ingestAllBenchmarks(prisma, 10, {
+        onlyMissing: mode === "missing",
+      });
+      return { mode, ...r };
     });
-    return NextResponse.json({ ok: true, mode, ...r });
+    if (!outcome.ran) {
+      return NextResponse.json({
+        ok: true,
+        mode,
+        deduped: true,
+        reason: "already-running",
+      });
+    }
+    return NextResponse.json({ ok: true, ...outcome.result });
   } catch (e) {
     return NextResponse.json(
       { ok: false, error: e instanceof Error ? e.message : String(e) },

@@ -42,25 +42,23 @@ function factorParams(model: string, win: number) {
 }
 
 export function FactorsClient() {
-  const {
-    activePortfolioId,
-    factorModel,
-    factorWindow,
-    factorPeriod,
-    factorRiskWindow,
-    factorView,
-    factorGridMetric,
-    factorGridSectorFilter,
-    factorGridSubThemeFilter,
-    openFactorDetailPanels,
-    setFactorView,
-    setFactorModel,
-    setFactorGridMetric,
-    setFactorGridSectorFilter,
-    setFactorGridSubThemeFilter,
-    openFactorDetailPanel,
-    closeFactorDetailPanel,
-  } = useAnalysisStore();
+  const activePortfolioId = useAnalysisStore((s) => s.activePortfolioId);
+  const factorModel = useAnalysisStore((s) => s.factorModel);
+  const factorWindow = useAnalysisStore((s) => s.factorWindow);
+  const factorPeriod = useAnalysisStore((s) => s.factorPeriod);
+  const factorRiskWindow = useAnalysisStore((s) => s.factorRiskWindow);
+  const factorView = useAnalysisStore((s) => s.factorView);
+  const factorGridMetric = useAnalysisStore((s) => s.factorGridMetric);
+  const factorGridSectorFilter = useAnalysisStore((s) => s.factorGridSectorFilter);
+  const factorGridSubThemeFilter = useAnalysisStore((s) => s.factorGridSubThemeFilter);
+  const openFactorDetailPanels = useAnalysisStore((s) => s.openFactorDetailPanels);
+  const setFactorView = useAnalysisStore((s) => s.setFactorView);
+  const setFactorModel = useAnalysisStore((s) => s.setFactorModel);
+  const setFactorGridMetric = useAnalysisStore((s) => s.setFactorGridMetric);
+  const setFactorGridSectorFilter = useAnalysisStore((s) => s.setFactorGridSectorFilter);
+  const setFactorGridSubThemeFilter = useAnalysisStore((s) => s.setFactorGridSubThemeFilter);
+  const openFactorDetailPanel = useAnalysisStore((s) => s.openFactorDetailPanel);
+  const closeFactorDetailPanel = useAnalysisStore((s) => s.closeFactorDetailPanel);
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<PortfolioTab>("exposure");
   const [driverGroupBy, setDriverGroupBy] = useState<"position" | "sector" | "subTheme">("sector");
@@ -402,7 +400,7 @@ function PortfolioExposureGridSection({
   onCloseTicker,
   onOpenPortfolioDetail,
 }: PortfolioExposureGridSectionProps) {
-  const { factorGridStat } = useAnalysisStore();
+  const factorGridStat = useAnalysisStore((s) => s.factorGridStat);
   // Empty / loading states.
   if (!perStock) {
     return <SkeletonCard height={420} />;

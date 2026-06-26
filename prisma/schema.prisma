@@ -439,6 +439,77 @@ model FactorRollingBetaSnapshot {
   @@index([portfolioId, model, regressionWindow])
 }
 
+/// Precomputed market-map grid (rowLevel=COMPANY), keyed by
+/// (universeId, metric, benchmark). The client fetches the COMPANY grid and
+/// aggregates sector/sub-theme cells in-browser, so COMPANY is the only level
+/// cached. The GET route reads this blob for non-overlay, unfiltered requests;
+/// the extended-hours overlay and sector/sub-theme filters still compute live.
+/// Built by the daily job + a market-hours background runner; cold misses
+/// self-heal via live compute + write-through. One row per
+/// (universeId, metric, benchmark), overwritten each refresh.
+model MarketMapSnapshot {
+  id          String   @id @default(cuid())
+  universeId  String
+  metric      String
+  benchmark   String
+  asOfDate    DateTime @db.Date
+  payloadJson Json
+  computedAt  DateTime @default(now())
+
+  @@unique([universeId, metric, benchmark])
+  @@index([universeId, metric, benchmark])
+}
+
+/// Precomputed Factors-tab exposure response (end-of-period betas, risk
+/// decomposition, diagnostics), keyed by (portfolioId, model, regressionWindow).
+/// Built from the same runFactorEngine pass as the rolling-beta snapshot. The
+/// GET route reads this blob; cold misses self-heal via live compute +
+/// write-through. One row per combo, overwritten each refresh.
+model FactorExposureGridSnapshot {
+  id               String   @id @default(cuid())
+  portfolioId      String
+  model            String
+  regressionWindow Int
+  asOfDate         DateTime @db.Date
+  payloadJson      Json
+  computedAt       DateTime @default(now())
+
+  @@unique([portfolioId, model, regressionWindow])
+  @@index([portfolioId, model, regressionWindow])
+}
+
+/// Precomputed Factors-tab attribution response (daily/cumulative/period
+/// summaries), keyed by (portfolioId, model, regressionWindow). Built by the
+/// daily job + market-hours runner; cold misses self-heal via write-through.
+model FactorAttributionSnapshot {
+  id               String   @id @default(cuid())
+  portfolioId      String
+  model            String
+  regressionWindow Int
+  asOfDate         DateTime @db.Date
+  payloadJson      Json
+  computedAt       DateTime @default(now())
+
+  @@unique([portfolioId, model, regressionWindow])
+  @@index([portfolioId, model, regressionWindow])
+}
+
+/// Precomputed universe-level MACRO14 factor-performance grid, keyed by
+/// (metric, benchmark). Mirrors the market-map response shape so the Market
+/// Map tab can reuse the heatmap renderer. Built by the daily job +
+/// market-hours runner; cold misses self-heal via write-through.
+model FactorPerformanceSnapshot {
+  id          String   @id @default(cuid())
+  metric      String
+  benchmark   String
+  asOfDate    DateTime @db.Date
+  payloadJson Json
+  computedAt  DateTime @default(now())
+
+  @@unique([metric, benchmark])
+  @@index([metric, benchmark])
+}
+
 // --- Operations ---
 
 model RefreshJob {

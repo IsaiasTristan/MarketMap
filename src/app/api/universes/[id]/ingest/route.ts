@@ -4,6 +4,7 @@ import {
   ingestUniverseSecurities,
   refreshUniverseTail,
 } from "@/server/services/ingest-universe.service";
+import { withIngestLock } from "@/server/services/ingest-inflight";
 import { requireAdminGuard } from "@/lib/api/guards";
 
 // Yahoo throttling forces us to ingest sequentially with backoff; a fresh
@@ -39,15 +40,30 @@ export async function POST(req: Request, ctx: Ctx) {
   if (!exists)
     return NextResponse.json({ error: "Universe not found" }, { status: 404 });
 
+  // Dedup guard: multiple admin tabs fire this (first visit + 60s live poll).
+  // A second concurrent ingest for the same (universe, mode) short-circuits
+  // instead of launching a parallel ~1,229-ticker Yahoo sweep.
+  const lockKey = `universe:${id}:${mode}`;
   try {
-    if (mode === "tail") {
-      const r = await refreshUniverseTail(prisma, id, tailDays);
-      return NextResponse.json({ ok: true, mode, tailDays, ...r });
-    }
-    const r = await ingestUniverseSecurities(prisma, id, 10, {
-      onlyMissing: mode === "missing",
+    const outcome = await withIngestLock(lockKey, async () => {
+      if (mode === "tail") {
+        const r = await refreshUniverseTail(prisma, id, tailDays);
+        return { mode, tailDays, ...r };
+      }
+      const r = await ingestUniverseSecurities(prisma, id, 10, {
+        onlyMissing: mode === "missing",
+      });
+      return { mode, ...r };
     });
-    return NextResponse.json({ ok: true, mode, ...r });
+    if (!outcome.ran) {
+      return NextResponse.json({
+        ok: true,
+        mode,
+        deduped: true,
+        reason: "already-running",
+      });
+    }
+    return NextResponse.json({ ok: true, ...outcome.result });
   } catch (e) {
     return NextResponse.json(
       { ok: false, error: e instanceof Error ? e.message : String(e) },

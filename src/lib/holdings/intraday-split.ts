@@ -168,3 +168,104 @@ export function splitIntradayByEtDate(
     ),
   };
 }
+
+/** All finite intraday closes grouped by US Eastern calendar date (any session). */
+function byDateAllCloses(
+  timestamps: number[],
+  closes: (number | null)[],
+): Map<string, number[]> {
+  const map = new Map<string, number[]>();
+  for (let i = 0; i < timestamps.length; i++) {
+    const c = closes[i];
+    if (c == null || !Number.isFinite(c)) continue;
+    pushBucket(map, tradeDateEtFromUnix(timestamps[i]!), c);
+  }
+  return map;
+}
+
+function latestPriorDateWithBars(
+  byDate: Map<string, number[]>,
+  todayEt: string,
+): string | null {
+  const priorDates = [...byDate.keys()].filter((d) => d < todayEt).sort();
+  for (let i = priorDates.length - 1; i >= 0; i--) {
+    const d = priorDates[i]!;
+    if ((byDate.get(d)?.length ?? 0) >= MIN_SESSION_BARS) return d;
+  }
+  return null;
+}
+
+/**
+ * Prior trading day's last print including POST settlement (~16:10 ET).
+ * Used for CBOE indices like ^VIX where Yahoo `meta.previousClose` is stale
+ * and the official close is not the 15:55 regular-session bar.
+ */
+export function priorDaySettlementClose(
+  timestamps: number[],
+  closes: (number | null)[],
+  now: Date = new Date(),
+): number | null {
+  const byDate = byDateAllCloses(timestamps, closes);
+  const prevDate = latestPriorDateWithBars(byDate, todayEtIsoDate(now));
+  if (!prevDate) return null;
+  const bars = byDate.get(prevDate)!;
+  return bars[bars.length - 1] ?? null;
+}
+
+/**
+ * Today's sparkline segments + live price for settlement-mode instruments.
+ * REGULAR bars feed the solid sparkline; POST bars feed the dashed tail.
+ * `livePrice` is the latest today print across REGULAR + POST.
+ */
+export function todaySettlementSeries(
+  timestamps: number[],
+  closes: (number | null)[],
+  now: Date = new Date(),
+): {
+  regular: number[];
+  extended: number[];
+  livePrice: number | null;
+} {
+  const sessions = splitIntradaySessions(timestamps, closes);
+  const todayEt = todayEtIsoDate(now);
+  const todayRegular = sessions.byDateRegular.get(todayEt) ?? [];
+  const todayPost = sessions.byDatePost.get(todayEt) ?? [];
+  const todayPre = sessions.byDatePre.get(todayEt) ?? [];
+
+  if (todayRegular.length >= MIN_SESSION_BARS) {
+    const allToday = [...todayRegular, ...todayPost];
+    return {
+      regular: decimateSparkline(todayRegular, REGULAR_SPARKLINE_MAX),
+      extended: decimateSparkline(todayPost, EXTENDED_SPARKLINE_MAX),
+      livePrice: allToday.length > 0 ? allToday[allToday.length - 1]! : null,
+    };
+  }
+
+  const clockSession = getUsMarketSession(now);
+  const carryDate = latestPriorRegularDate(sessions.byDateRegular, todayEt);
+  if (carryDate) {
+    const byDate = byDateAllCloses(timestamps, closes);
+    const priorSettlement = byDate.get(carryDate)?.at(-1) ?? null;
+    let extended = [...(sessions.byDatePost.get(carryDate) ?? [])];
+    if (clockSession === "PRE") {
+      extended = [...extended, ...todayPre];
+    }
+    const livePrice =
+      todayPre.length > 0 ? todayPre[todayPre.length - 1]! : priorSettlement;
+    return {
+      regular: decimateSparkline(
+        sessions.byDateRegular.get(carryDate) ?? [],
+        REGULAR_SPARKLINE_MAX,
+      ),
+      extended: decimateSparkline(extended, EXTENDED_SPARKLINE_MAX),
+      livePrice,
+    };
+  }
+
+  const todayOnly = [...todayPre, ...todayPost];
+  return {
+    regular: [],
+    extended: decimateSparkline(todayOnly, EXTENDED_SPARKLINE_MAX),
+    livePrice: todayOnly.length > 0 ? todayOnly[todayOnly.length - 1]! : null,
+  };
+}

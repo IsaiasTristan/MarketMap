@@ -4,7 +4,10 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { factorQueryParams } from "@/lib/api/schemas";
-import { computeFactorAttribution } from "@/server/services/attribution.service";
+import {
+  readFactorAttributionCache,
+  computeAndCacheFactorAttribution,
+} from "@/server/services/factor-attribution-cache.service";
 import { requirePortfolioAccess } from "@/lib/api/guards";
 import type { ModelPresetName } from "@/types/factors";
 
@@ -20,7 +23,11 @@ export async function GET(req: NextRequest) {
   const { portfolioId, model, window: win } = parsed.data;
   const guard = await requirePortfolioAccess(req, portfolioId);
   if (guard) return guard;
-  const result = await computeFactorAttribution(portfolioId, model as ModelPresetName, win);
+
+  // Read-first from the precomputed snapshot; cold miss computes + writes through.
+  const result =
+    (await readFactorAttributionCache(portfolioId, model as ModelPresetName, win)) ??
+    (await computeAndCacheFactorAttribution(portfolioId, model as ModelPresetName, win));
 
   if (!result) {
     return NextResponse.json(

@@ -235,7 +235,7 @@ const CHART_VIEWS: { id: ChartView; label: string }[] = [
 ];
 
 export function PerformanceClient() {
-  const { activePortfolioId } = useAnalysisStore();
+  const activePortfolioId = useAnalysisStore((s) => s.activePortfolioId);
   const [benchmark, setBenchmark] = useState<Benchmark>("SP500");
   const [chartView, setChartView] = useState<ChartView>("cumulative");
   const [distPeriod, setDistPeriod] = useState<DistPeriod>("1Y");

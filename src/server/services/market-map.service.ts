@@ -293,6 +293,7 @@ export async function computeMarketMap(
   for (const c of constituents) {
     let series = pricesBySecurity.get(c.securityId) ?? [];
     let ahOnly1D: number | null = null;
+    let overlayApplied = false;
 
     if (overlay) {
       const quote = overlay.get(c.security.ticker);
@@ -301,6 +302,7 @@ export async function computeMarketMap(
         series = result.series;
         if (result.applied) {
           ahOnly1D = result.ahOnly1D;
+          overlayApplied = true;
         } else if (result.skipReason === "stale_db") {
           warnings.push(
             `Extended overlay skipped for ${c.security.ticker} (DB stale vs print date ${quote.tradeDateEt})`,
@@ -315,7 +317,16 @@ export async function computeMarketMap(
       continue;
     }
     const metrics = securityHorizonMetrics(series, benchForStock, rf);
-    if (ahOnly1D != null && Number.isFinite(ahOnly1D)) {
+    if (overlay) {
+      // Extended session: rank 1D on AH-only prints. Never fall back to the
+      // close-to-close chain — that mixes regular-session movers (SIVEF) and
+      // stale PRE quotes (BAYRY) into the after-hours leaderboard.
+      if (overlayApplied && ahOnly1D != null && Number.isFinite(ahOnly1D)) {
+        metrics.D1.return = ahOnly1D;
+      } else {
+        metrics.D1.return = null;
+      }
+    } else if (ahOnly1D != null && Number.isFinite(ahOnly1D)) {
       metrics.D1.return = ahOnly1D;
     }
     companies.push({

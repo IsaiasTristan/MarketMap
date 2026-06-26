@@ -8,6 +8,7 @@ import { DataTable, type Column } from "@/components/analysis/ui/DataTable";
 import { StatusBadge } from "@/components/analysis/ui/StatusBadge";
 import { Skeleton } from "@/components/analysis/ui/Skeleton";
 import { TickerSearchCombobox } from "@/components/analysis/shared/TickerSearchCombobox";
+import { DeferUntilVisible } from "@/components/analysis/shared/DeferUntilVisible";
 
 // -- Portfolio manager ------------------------------------------------------
 
@@ -574,6 +575,8 @@ function PortfolioManager() {
               </table>
             </div>
           )}
+
+          <ManualEntry nested />
         </div>
       )}
     </Card>
@@ -679,7 +682,7 @@ function CsvUpload() {
 
 // -- Manual position entry --------------------------------------------------
 
-function ManualEntry() {
+function ManualEntry({ nested = false }: { nested?: boolean }) {
   const { activePortfolioId, addToast } = useAnalysisStore();
   const qc = useQueryClient();
   const [isCashMode, setIsCashMode] = useState(false);
@@ -766,9 +769,13 @@ function ManualEntry() {
     fontFamily: mono ? "var(--font-mono, monospace)" : "inherit",
   });
 
-  return (
-    <Card>
-      <SectionHeading>Add Position Manually</SectionHeading>
+  const inner = (
+    <>
+      {nested ? (
+        <CardLabel>Add Position</CardLabel>
+      ) : (
+        <SectionHeading>Add Position Manually</SectionHeading>
+      )}
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <button
           type="button"
@@ -895,8 +902,17 @@ function ManualEntry() {
           </button>
         </div>
       </form>
-    </Card>
+    </>
   );
+
+  if (nested) {
+    return (
+      <div style={{ borderTop: "1px solid var(--bg-border)", marginTop: 16, paddingTop: 16 }}>
+        {inner}
+      </div>
+    );
+  }
+  return <Card>{inner}</Card>;
 }
 
 // -- Demo portfolio ---------------------------------------------------------
@@ -1199,7 +1215,7 @@ function SecuritiesHealth() {
           Delisted (auto-hidden) ({delisted.length})
         </CardLabel>
         <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "4px 0 12px" }}>
-          Already deactivated. They won't ingest or render until you reactivate.
+          Already deactivated. They won&apos;t ingest or render until you reactivate.
         </p>
         {delisted.length === 0 ? (
           <div style={{ fontSize: 12, color: "var(--text-muted)" }}>None.</div>
@@ -1417,11 +1433,21 @@ export function DataClient() {
         <CsvUpload />
         <DemoLoader />
       </div>
-      <ManualEntry />
-      <DataSourceStatus />
-      <SecuritiesHealth />
-      <UsersPanel />
-      <AuditLogTable />
+      {/* The sections below the position editor each fire their own polling
+          query on mount. Defer them until scrolled into view so editing a
+          position at the top of the page doesn't kick off the 30s/60s polls. */}
+      <DeferUntilVisible minHeight={120}>
+        <DataSourceStatus />
+      </DeferUntilVisible>
+      <DeferUntilVisible minHeight={200}>
+        <SecuritiesHealth />
+      </DeferUntilVisible>
+      <DeferUntilVisible minHeight={120}>
+        <UsersPanel />
+      </DeferUntilVisible>
+      <DeferUntilVisible minHeight={200}>
+        <AuditLogTable />
+      </DeferUntilVisible>
     </div>
   );
 }

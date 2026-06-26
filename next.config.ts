@@ -2,10 +2,12 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  /** Drop idle compiled routes sooner in dev to limit RAM when many tabs are visited. */
+  /** Keep recently-visited routes compiled in dev so switching among the ~7
+   *  module tabs doesn't trigger a recompile every time (the prior 2-page /
+   *  60s buffer evicted tabs faster than they were revisited). */
   onDemandEntries: {
-    maxInactiveAge: 60_000,
-    pagesBufferLength: 2,
+    maxInactiveAge: 300_000,
+    pagesBufferLength: 8,
   },
   /** Hosts allowed to load dev assets (HMR, _next/*) over a non-localhost origin. */
   allowedDevOrigins: ["dev.itmarketmap.com"],

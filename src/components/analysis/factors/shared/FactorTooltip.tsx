@@ -134,7 +134,7 @@ export function FactorTooltip({
           {formula && (
             <>
               <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 8, marginBottom: 2, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                How it's calculated
+                How it&apos;s calculated
               </div>
               <div style={{ fontSize: 11, color: "var(--color-info)", lineHeight: 1.4 }}>
                 {formula}

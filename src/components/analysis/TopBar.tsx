@@ -7,7 +7,7 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 
 export function TopBar() {
-  const { activePortfolioId } = useAnalysisStore();
+  const activePortfolioId = useAnalysisStore((s) => s.activePortfolioId);
   const [refreshing, setRefreshing] = useState(false);
   const pathname = usePathname() ?? "";
   // Market Map has its own page-level refresh button that re-ingests the

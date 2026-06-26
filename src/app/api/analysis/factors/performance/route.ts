@@ -7,34 +7,14 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { factorPerformanceQuery } from "@/lib/api/schemas";
-import { prisma } from "@/infrastructure/db/client";
-import { computeFactorPerformanceMap } from "@/server/services/factor-performance.service";
+import {
+  readFactorPerformanceCache,
+  computeAndCacheFactorPerformance,
+} from "@/server/services/factor-performance-cache.service";
 import type { BenchmarkCode, MetricKind } from "@/domain/entities/analytics";
 import { HORIZON_ORDER } from "@/domain/entities/horizons";
-import type { Horizon } from "@/domain/entities/horizons";
 
 export const maxDuration = 30;
-
-function columnRanges(
-  rows: { cells: Record<Horizon, number | null> }[],
-  horizons: readonly Horizon[],
-) {
-  const min: Record<string, number> = {};
-  const max: Record<string, number> = {};
-  for (const h of horizons) {
-    const vals = rows
-      .map((r) => r.cells[h])
-      .filter((v): v is number => v != null && Number.isFinite(v));
-    if (vals.length === 0) {
-      min[h] = 0;
-      max[h] = 0;
-    } else {
-      min[h] = Math.min(...vals);
-      max[h] = Math.max(...vals);
-    }
-  }
-  return { min, max };
-}
 
 export async function GET(req: NextRequest) {
   const q = Object.fromEntries(req.nextUrl.searchParams);
@@ -49,17 +29,19 @@ export async function GET(req: NextRequest) {
   const metric = parsed.data.metric as MetricKind;
   const benchmark = parsed.data.benchmark as BenchmarkCode;
 
-  const result = await computeFactorPerformanceMap(prisma, metric, benchmark);
-  const ranges = columnRanges(result.rows, HORIZON_ORDER);
+  // Read-first from the precomputed snapshot; cold miss computes + writes through.
+  const payload =
+    (await readFactorPerformanceCache(metric, benchmark)) ??
+    (await computeAndCacheFactorPerformance(metric, benchmark));
 
   return NextResponse.json({
     ok: true,
     metric,
     benchmark,
-    asOf: result.asOf,
-    warnings: result.warnings,
+    asOf: payload.asOf,
+    warnings: payload.warnings,
     horizons: HORIZON_ORDER,
-    columnRanges: ranges,
-    rows: result.rows,
+    columnRanges: payload.columnRanges,
+    rows: payload.rows,
   });
 }

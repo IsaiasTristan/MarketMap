@@ -26,6 +26,7 @@ import type {
   AttributionDayPointLog,
   AttributionResult,
   CumulativeAttributionPointLog,
+  FactorEngineResult,
   ModelPresetName,
   PeriodAttributionSummaryLog,
 } from "@/types/factors";
@@ -42,8 +43,12 @@ export async function computeFactorAttribution(
   portfolioId: string,
   model: ModelPresetName = "FF5",
   window = 252,
+  precomputedEngine?: FactorEngineResult | null,
 ): Promise<AttributionResult | null> {
-  const engineResult = await runFactorEngine({ portfolioId, model, window });
+  const engineResult =
+    precomputedEngine !== undefined
+      ? precomputedEngine
+      : await runFactorEngine({ portfolioId, model, window });
   if (!engineResult || !engineResult.rollingFits.length) return null;
 
   const { rollingFits, factorReturns, portTotalReturns, rfReturns, dates, factors } = engineResult;

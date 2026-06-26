@@ -109,8 +109,8 @@ export function LivePriceChartTile({
     );
     if (prevClose > 0) vals.push(prevClose);
     if (vals.length === 0) return undefined;
-    let lo = Math.min(...vals);
-    let hi = Math.max(...vals);
+    const lo = Math.min(...vals);
+    const hi = Math.max(...vals);
     const pad = (hi - lo) * 0.08 || hi * 0.02 || 1;
     return [lo - pad, hi + pad];
   }, [points, prevClose]);

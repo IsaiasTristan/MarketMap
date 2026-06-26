@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/infrastructure/db/client";
 import { marketMapQuery } from "@/lib/api/schemas";
 import { computeMarketMap } from "@/server/services/market-map.service";
+import {
+  readMarketMapCache,
+  computeAndCacheMarketMap,
+} from "@/server/services/market-map-cache.service";
 import { getExtendedSnapshot } from "@/server/services/extended-hours.service";
 import { getUsMarketSession } from "@/lib/market-map/market-session";
 import type { BenchmarkCode, MetricKind, RowLevel } from "@/domain/entities/analytics";
@@ -53,29 +57,61 @@ export async function GET(req: Request, ctx: Ctx) {
   const overlayActive = !!parsed.data.extended && snapHasData;
   const extendedQuotes = overlayActive ? snap!.quotes : undefined;
 
-  const result = await computeMarketMap(
-    prisma,
-    id,
-    parsed.data.metric as MetricKind,
-    parsed.data.rowLevel as RowLevel,
-    benchmark,
-    { sector: parsed.data.sector, subTheme: parsed.data.subTheme },
-    { extendedQuotes }
-  );
-  // Winsorized (p5/p95) span so a few extreme stocks don't compress the heat
-  // scale and wash out the rest of the grid. Shared by the grid, Top Movers,
-  // and Factor Top Movers (all keyed off this company-level range).
-  const ranges = percentileColumnRanges(result.rows, HORIZON_ORDER);
+  const metric = parsed.data.metric as MetricKind;
+  const rowLevel = parsed.data.rowLevel as RowLevel;
+
+  // Fast path: COMPANY grid with no extended overlay and no sector/sub-theme
+  // filter is served from the precomputed snapshot (sub-second). A cold miss
+  // computes live + writes through so the next read is warm. The overlay and
+  // filtered/non-COMPANY paths are inherently dynamic and always compute live.
+  const cacheable =
+    !overlayActive &&
+    !parsed.data.sector &&
+    !parsed.data.subTheme &&
+    rowLevel === "COMPANY";
+
+  let rows;
+  let asOf: string | null;
+  let warnings: string[];
+  let ranges: { min: Record<string, number>; max: Record<string, number> };
+
+  if (cacheable) {
+    const cached =
+      (await readMarketMapCache(id, metric, benchmark)) ??
+      (await computeAndCacheMarketMap(id, metric, benchmark));
+    rows = cached.rows;
+    asOf = cached.asOf;
+    warnings = cached.warnings;
+    ranges = cached.columnRanges;
+  } else {
+    const result = await computeMarketMap(
+      prisma,
+      id,
+      metric,
+      rowLevel,
+      benchmark,
+      { sector: parsed.data.sector, subTheme: parsed.data.subTheme },
+      { extendedQuotes }
+    );
+    rows = result.rows;
+    asOf = result.asOf;
+    warnings = result.warnings;
+    // Winsorized (p5/p95) span so a few extreme stocks don't compress the heat
+    // scale and wash out the rest of the grid. Shared by the grid, Top Movers,
+    // and Factor Top Movers (all keyed off this company-level range).
+    ranges = percentileColumnRanges(result.rows, HORIZON_ORDER);
+  }
+
   return NextResponse.json({
     ok: true,
     metric: parsed.data.metric,
     rowLevel: parsed.data.rowLevel,
     benchmark,
-    asOf: result.asOf,
-    warnings: result.warnings,
+    asOf,
+    warnings,
     horizons: HORIZON_ORDER,
     columnRanges: ranges,
-    rows: result.rows,
+    rows,
     extended: {
       requested: !!parsed.data.extended,
       applied: overlayActive,

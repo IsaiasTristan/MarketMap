@@ -1,8 +1,10 @@
 import type { Bar } from "@/infrastructure/providers/market-data";
 import {
   composeCurrentSparkline,
+  priorDaySettlementClose,
   splitIntradayByEtDate,
   splitIntradaySessions,
+  todaySettlementSeries,
 } from "@/lib/holdings/intraday-split";
 import { classifyEtTimeOfDay, tradeDateEtFromUnix } from "@/lib/market-map/market-session";
 
@@ -402,21 +404,36 @@ export interface YahooStripQuote {
   dayHigh: number;
 }
 
+export type StripPrevCloseMode = "regular" | "settlement";
+
 function buildStripQuoteFromChart(
   r0: QuoteChartResult,
   intradayCloses: number[],
   prevDayCloses: number[],
-  options?: { allowSessionPrevClose?: boolean; extendedCloses?: number[] },
+  options?: {
+    allowSessionPrevClose?: boolean;
+    extendedCloses?: number[];
+    prevCloseMode?: StripPrevCloseMode;
+    settlementPrevClose?: number | null;
+    settlementLivePrice?: number | null;
+  },
 ): YahooStripQuote | null {
   const meta = r0.meta ?? {};
+  const settlementMode = options?.prevCloseMode === "settlement";
 
-  // `previousClose` is the genuine prior regular-session close regardless of the
-  // requested chart range. `chartPreviousClose` is anchored to the bar before the
-  // window start, so on a multi-day range (e.g. the holdings 1mo pull) it is the
-  // close from ~1 range ago, not yesterday — using it would turn a 1D return into
-  // a multi-day return. Prefer `previousClose`; they are equal on a 1d range.
   let prevClose: number | null = null;
-  if (Number.isFinite(meta.previousClose)) {
+  if (
+    settlementMode &&
+    options?.settlementPrevClose != null &&
+    Number.isFinite(options.settlementPrevClose)
+  ) {
+    prevClose = options.settlementPrevClose;
+  } else if (Number.isFinite(meta.previousClose)) {
+    // `previousClose` is the genuine prior regular-session close regardless of the
+    // requested chart range. `chartPreviousClose` is anchored to the bar before the
+    // window start, so on a multi-day range (e.g. the holdings 1mo pull) it is the
+    // close from ~1 range ago, not yesterday — using it would turn a 1D return into
+    // a multi-day return. Prefer `previousClose`; they are equal on a 1d range.
     prevClose = meta.previousClose as number;
   } else if (Number.isFinite(meta.chartPreviousClose)) {
     prevClose = meta.chartPreviousClose as number;
@@ -430,13 +447,29 @@ function buildStripQuoteFromChart(
   }
   if (prevClose == null || !Number.isFinite(prevClose)) return null;
 
-  const price = Number.isFinite(meta.regularMarketPrice)
-    ? (meta.regularMarketPrice as number)
-    : intradayCloses.length > 0
-      ? intradayCloses[intradayCloses.length - 1]!
-      : prevClose;
-
   const allSessionCloses = [...intradayCloses, ...(options?.extendedCloses ?? [])];
+  let price: number;
+  if (settlementMode) {
+    if (
+      options?.settlementLivePrice != null &&
+      Number.isFinite(options.settlementLivePrice)
+    ) {
+      price = options.settlementLivePrice;
+    } else if (allSessionCloses.length > 0) {
+      price = allSessionCloses[allSessionCloses.length - 1]!;
+    } else if (Number.isFinite(meta.regularMarketPrice)) {
+      price = meta.regularMarketPrice as number;
+    } else {
+      price = prevClose;
+    }
+  } else {
+    price = Number.isFinite(meta.regularMarketPrice)
+      ? (meta.regularMarketPrice as number)
+      : intradayCloses.length > 0
+        ? intradayCloses[intradayCloses.length - 1]!
+        : prevClose;
+  }
+
   const dayOpen =
     intradayCloses.length > 0
       ? intradayCloses[0]!
@@ -553,18 +586,34 @@ export async function fetchYahooDisplayName(ticker: string): Promise<string | nu
 
 async function fetchYahooQuoteWithSparkline(
   ticker: string,
+  prevCloseMode: StripPrevCloseMode = "regular",
 ): Promise<YahooStripQuote | null> {
   const r0 = await fetchQuoteChartResult(ticker, "5d", { includePrePost: true });
   if (!r0) return null;
-  return buildHoldingsSparklineQuote(r0);
+  return buildHoldingsSparklineQuote(r0, { prevCloseMode });
 }
 
-function buildHoldingsSparklineQuote(r0: QuoteChartResult): YahooStripQuote | null {
+function buildHoldingsSparklineQuote(
+  r0: QuoteChartResult,
+  options: { prevCloseMode?: StripPrevCloseMode } = {},
+): YahooStripQuote | null {
   const ts = r0.timestamp ?? [];
   const rawCloses = r0.indicators?.quote?.[0]?.close ?? [];
+  const { prevDayCloses } = splitIntradayByEtDate(ts, rawCloses);
+
+  if (options.prevCloseMode === "settlement") {
+    const settlement = todaySettlementSeries(ts, rawCloses);
+    return buildStripQuoteFromChart(r0, settlement.regular, prevDayCloses, {
+      allowSessionPrevClose: true,
+      extendedCloses: settlement.extended,
+      prevCloseMode: "settlement",
+      settlementPrevClose: priorDaySettlementClose(ts, rawCloses),
+      settlementLivePrice: settlement.livePrice,
+    });
+  }
+
   const sessions = splitIntradaySessions(ts, rawCloses);
   const { regular, extended } = composeCurrentSparkline(sessions);
-  const { prevDayCloses } = splitIntradayByEtDate(ts, rawCloses);
 
   return buildStripQuoteFromChart(r0, regular, prevDayCloses, {
     allowSessionPrevClose: true,
@@ -599,12 +648,15 @@ async function fetchYahooQuoteWithSparklineHoldingsToday(
  */
 export async function fetchYahooQuotesWithSparkline(
   tickers: string[],
+  options?: { settlementSymbols?: ReadonlySet<string> },
 ): Promise<Map<string, YahooStripQuote>> {
   const out = new Map<string, YahooStripQuote>();
   const results = await Promise.all(
     tickers.map(async (t) => {
-      const q = await fetchYahooQuoteWithSparkline(t);
-      return q ? { sym: toYahooSymbol(t), q } : null;
+      const sym = toYahooSymbol(t);
+      const mode = options?.settlementSymbols?.has(sym) ? "settlement" : "regular";
+      const q = await fetchYahooQuoteWithSparkline(t, mode);
+      return q ? { sym, q } : null;
     }),
   );
   for (const r of results) {
@@ -741,8 +793,8 @@ export function parseYahooExtendedQuote(
   }
   if (idx < 0) return null;
 
-  const price = closes[idx] as number;
-  const asOfUnix = ts[idx] as number;
+  let price = closes[idx] as number;
+  let asOfUnix = ts[idx] as number;
   const session = classifyBarSession(asOfUnix, period);
 
   const meta = r0.meta ?? {};
@@ -775,6 +827,66 @@ export function parseYahooExtendedQuote(
           break;
         }
       }
+    }
+  }
+
+  // POST: when the chronologically last tick is a stale outlier but an earlier
+  // same-day POST print sits near regular close, prefer the nearer print
+  // (JACK: $13 last tick vs $12.84 cluster near the $12.82 close).
+  if (
+    session === "POST" &&
+    regularClose != null &&
+    regularClose > 0 &&
+    Number.isFinite(regularClose)
+  ) {
+    const tradeDate = tradeDateEtFromUnix(asOfUnix);
+    const latestPrice = price;
+    const isPostBar = (u: number) => classifyEtTimeOfDay(u) === "POST";
+    let maxPostMove = 0;
+    for (let i = 0; i < ts.length; i++) {
+      const c = closes[i];
+      if (c == null || !Number.isFinite(c)) continue;
+      const u = ts[i] as number;
+      if (tradeDateEtFromUnix(u) !== tradeDate) continue;
+      if (!isPostBar(u)) continue;
+      maxPostMove = Math.max(
+        maxPostMove,
+        Math.abs((c as number) / regularClose - 1),
+      );
+    }
+    let bestIdx = idx;
+    let bestDist = Math.abs(latestPrice - regularClose);
+    for (let i = 0; i < ts.length; i++) {
+      const c = closes[i];
+      if (c == null || !Number.isFinite(c)) continue;
+      const u = ts[i] as number;
+      if (tradeDateEtFromUnix(u) !== tradeDate) continue;
+      if (!isPostBar(u)) continue;
+      const cp = c as number;
+      if (
+        maxPostMove > 0.02 &&
+        Math.abs(cp / regularClose - 1) < 0.001
+      ) {
+        continue;
+      }
+      const dist = Math.abs(cp - regularClose);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIdx = i;
+      }
+    }
+    const bestPrice = closes[bestIdx] as number;
+    const latestMove = Math.abs(latestPrice / regularClose - 1);
+    const bestMove = Math.abs(bestPrice / regularClose - 1);
+    // Only reject the last tick when a near-close print exists — real AH
+    // movers (ON −7%) stay on the chronologically latest bar.
+    if (
+      latestMove > 0.005 &&
+      bestMove < 0.005 &&
+      latestMove - bestMove > 0.01
+    ) {
+      price = bestPrice;
+      asOfUnix = ts[bestIdx] as number;
     }
   }
 
@@ -870,7 +982,43 @@ export async function fetchYahooExtendedQuote(
   } catch {
     return null;
   }
-  return parseYahooExtendedQuote(json.chart?.result?.[0]);
+  const parsed = parseYahooExtendedQuote(json.chart?.result?.[0]);
+  // #region agent log
+  if (
+    parsed &&
+    (ticker === "JACK" ||
+      (parsed.regularClose != null &&
+        Math.abs(parsed.price / parsed.regularClose - 1) > 0.08))
+  ) {
+    fetch("http://127.0.0.1:7864/ingest/5261ce70-61cd-4eee-b332-43aa363b10f4", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Debug-Session-Id": "8f19ae",
+      },
+      body: JSON.stringify({
+        sessionId: "8f19ae",
+        location: "yahoo-chart-http.ts:fetchYahooExtendedQuote",
+        message: "yahoo extended fetch",
+        data: {
+          ticker,
+          price: parsed.price,
+          session: parsed.session,
+          regularClose: parsed.regularClose,
+          prevClose: parsed.prevClose,
+          asOfIso: new Date(parsed.asOfUnix * 1000).toISOString(),
+          impliedAhPct:
+            parsed.regularClose != null
+              ? parsed.price / parsed.regularClose - 1
+              : null,
+        },
+        timestamp: Date.now(),
+        hypothesisId: "H2",
+      }),
+    }).catch(() => {});
+  }
+  // #endregion
+  return parsed;
 }
 
 /**

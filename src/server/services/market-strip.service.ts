@@ -23,12 +23,16 @@ import type { SparklineTimeMode } from "@/lib/market/sparkline-session-layout";
 
 export type StripInstrumentKind = "price" | "yield";
 
+export type StripPrevCloseMode = "regular" | "settlement";
+
 export interface StripInstrument {
   label: string;
   yahooSymbol: string;
   kind: StripInstrumentKind;
   decimals: number;
   timeMode: SparklineTimeMode;
+  /** CBOE indices (VIX) settle ~16:10 ET — use bar-derived close, not Yahoo meta. */
+  prevCloseMode?: StripPrevCloseMode;
 }
 
 export interface MarketStripQuote {
@@ -57,7 +61,7 @@ export const STRIP_INSTRUMENTS: readonly StripInstrument[] = [
   { label: "S&P 500", yahooSymbol: "^GSPC", kind: "price", decimals: 2, timeMode: "us_regular" },
   { label: "DOW", yahooSymbol: "^DJI", kind: "price", decimals: 2, timeMode: "us_regular" },
   { label: "NASDAQ", yahooSymbol: "^IXIC", kind: "price", decimals: 2, timeMode: "us_regular" },
-  { label: "VIX", yahooSymbol: "^VIX", kind: "price", decimals: 2, timeMode: "us_regular" },
+  { label: "VIX", yahooSymbol: "^VIX", kind: "price", decimals: 2, timeMode: "us_regular", prevCloseMode: "settlement" },
   { label: "Gold", yahooSymbol: "GC=F", kind: "price", decimals: 2, timeMode: "et_calendar_day" },
   { label: "Bitcoin", yahooSymbol: "BTC-USD", kind: "price", decimals: 0, timeMode: "et_calendar_day" },
   { label: "WTI", yahooSymbol: "CL=F", kind: "price", decimals: 2, timeMode: "et_calendar_day" },
@@ -96,7 +100,14 @@ export function computeStripQuote(
 
 export async function getMarketStrip(): Promise<MarketStripQuote[]> {
   const yahooSymbols = STRIP_INSTRUMENTS.map((i) => i.yahooSymbol);
-  const quotes = await fetchYahooQuotesWithSparkline(yahooSymbols);
+  const settlementSymbols = new Set(
+    STRIP_INSTRUMENTS.filter((i) => i.prevCloseMode === "settlement").map((i) =>
+      toYahooSymbol(i.yahooSymbol),
+    ),
+  );
+  const quotes = await fetchYahooQuotesWithSparkline(yahooSymbols, {
+    settlementSymbols,
+  });
 
   return STRIP_INSTRUMENTS.map((inst) => {
     // The fetcher keys its result by the Yahoo-normalised symbol, so we

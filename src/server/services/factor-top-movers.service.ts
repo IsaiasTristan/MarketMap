@@ -23,6 +23,7 @@ import type { Horizon } from "@/domain/entities/horizons";
 import { HORIZON_LABEL } from "@/lib/format";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
 import { isExcludedSector } from "@/lib/market-map/excluded-sectors";
+import { getUsMarketSession } from "@/lib/market-map/market-session";
 import { logOnePlus } from "@/lib/factors/attribution/log-returns";
 import {
   splitTopMovers,
@@ -53,6 +54,44 @@ export interface FactorTopMoversParams {
   mode?: "simple" | "log";
 }
 
+/**
+ * Ranked-result cache. Re-reading the ~1,200-row grid blob and re-ranking 14
+ * factors on every request is the dominant cost here (no per-stock market-data
+ * calls). The ranked output is keyed by horizon|mode|window|limit with a short
+ * TTL so bursts of requests (mount, horizon toggle, the 1D poll) reuse one
+ * computation:
+ *   • 1D  : TTL follows the live cadence (30s REGULAR / 5min otherwise) — the
+ *           underlying live factor row is itself cached on the same cadence.
+ *   • 5D+ : static EOD between daily precomputes; a 5min TTL self-corrects
+ *           within minutes of a fresh grid being written.
+ * globalThis-singleton so Next.js dev's separate route bundles share one Map
+ * (same pattern as the Prisma client).
+ */
+const TOP_MOVERS_TTL_REGULAR_MS = 30_000;
+const TOP_MOVERS_TTL_OFFHOURS_MS = 5 * 60_000;
+
+interface TopMoversCacheEntry {
+  at: number;
+  ttl: number;
+  result: FactorTopMoversResult;
+}
+
+const globalForTopMovers = globalThis as unknown as {
+  __factorTopMoversCache?: Map<string, TopMoversCacheEntry>;
+};
+
+const topMoversCache: Map<string, TopMoversCacheEntry> =
+  globalForTopMovers.__factorTopMoversCache ?? new Map();
+
+if (process.env.NODE_ENV !== "production") {
+  globalForTopMovers.__factorTopMoversCache = topMoversCache;
+}
+
+/** Reset the ranked-result cache. Test-only / invalidation hook. */
+export function _resetFactorTopMoversCache(): void {
+  topMoversCache.clear();
+}
+
 export async function getFactorTopMovers(
   params: FactorTopMoversParams,
 ): Promise<FactorTopMoversResult> {
@@ -60,6 +99,13 @@ export async function getFactorTopMovers(
   const window = params.window ?? 252;
   const limit = params.limit ?? 20;
   const mode = params.mode ?? "log";
+
+  const cacheKey = `${horizon}|${mode}|${window}|${limit}`;
+  const now = Date.now();
+  const hit = topMoversCache.get(cacheKey);
+  if (hit && now - hit.at < hit.ttl) {
+    return hit.result;
+  }
 
   const grid = await readPerStockGridCache("MACRO14", window);
   if (!grid) {
@@ -165,7 +211,7 @@ export async function getFactorTopMovers(
     };
   });
 
-  return {
+  const result: FactorTopMoversResult = {
     horizon,
     window,
     mode,
@@ -175,4 +221,14 @@ export async function getFactorTopMovers(
     factors,
     missingLegs: liveRow?.missingLegs,
   };
+
+  // 1D reflects the live tape (short TTL); 5D+ are static EOD between daily
+  // precomputes (longer TTL self-corrects after a fresh grid).
+  const ttl =
+    horizon === "D1" && getUsMarketSession(new Date(now)) === "REGULAR"
+      ? TOP_MOVERS_TTL_REGULAR_MS
+      : TOP_MOVERS_TTL_OFFHOURS_MS;
+  topMoversCache.set(cacheKey, { at: now, ttl, result });
+
+  return result;
 }
