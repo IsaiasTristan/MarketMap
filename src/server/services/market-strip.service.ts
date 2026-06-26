@@ -51,6 +51,8 @@ export interface MarketStripQuote {
   sparkline: number[];
   /** Prior trading session closes for the seam sparkline left segment. */
   prevDaySparkline: number[];
+  /** Today's PRE/POST extended-hours closes for the dashed gray tail. */
+  extendedSparkline: number[];
   timeMode: SparklineTimeMode;
 }
 
@@ -129,6 +131,7 @@ export async function getMarketStrip(): Promise<MarketStripQuote[]> {
       ...derived,
       sparkline: q?.intradayCloses ?? [],
       prevDaySparkline: q?.prevDayCloses ?? [],
+      extendedSparkline: q?.extendedCloses ?? [],
       timeMode: inst.timeMode,
     };
   });

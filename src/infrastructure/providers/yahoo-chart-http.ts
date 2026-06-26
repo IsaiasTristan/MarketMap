@@ -245,10 +245,12 @@ type IntradayChartResult = {
 export async function fetchYahooIntraday(
   ticker: string,
   range: "1d" | "5d",
+  options: { includePrePost?: boolean } = {},
 ): Promise<YahooIntradayResult> {
   const interval = range === "1d" ? "1m" : "5m";
   const sym = encodeURIComponent(toYahooSymbol(ticker));
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=${range}&interval=${interval}&includePrePost=false`;
+  const includePrePost = options.includePrePost ? "true" : "false";
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=${range}&interval=${interval}&includePrePost=${includePrePost}`;
 
   const MAX_ATTEMPTS = 4;
   let lastReason = "";

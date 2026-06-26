@@ -28,9 +28,11 @@ import {
   mergeIntradayPoints,
 } from "@/lib/holdings/merge-intraday-points";
 import {
+  EXTENDED_SESSION_AXIS_TICKS,
+  extendedSessionFractionToEtLabel,
   REGULAR_SESSION_AXIS_TICKS,
   sessionFractionToEtLabel,
-  timestampToSessionFraction,
+  timestampToExtendedSessionFraction,
 } from "@/lib/market/sparkline-session-layout";
 import { useSessionClock } from "@/lib/market/use-session-clock";
 import type {
@@ -43,12 +45,20 @@ const RANGES: PriceRange[] = ["1D", "5D", "1M", "6M", "YTD", "1Y", "5Y", "MAX"];
 const POS = "#26a269";
 const NEG = "#e0533d";
 
+type PointSession = "regular" | "extended";
+
 interface ChartPoint {
   idx: number;
   t: string;
   price: number;
   label: string;
   sessionX?: number;
+  session?: PointSession;
+  /** Regular-session price (null on extended bars) — the colored area/line. */
+  regPrice: number | null;
+  /** Extended-hours price (null on regular bars, plus a one-point bridge to
+   *  the regular line) — the dashed gray tail. */
+  extPrice: number | null;
 }
 
 export interface StockPriceChartProps {
@@ -85,17 +95,29 @@ function toIdx(raw: number | string | null | undefined): number | null {
 }
 
 function toChartPoints(
-  raw: { t: string; price: number }[],
+  raw: { t: string; price: number; session?: PointSession }[],
   intraday: boolean,
   session1D: boolean,
 ): ChartPoint[] {
-  return raw.map((p, i) => ({
-    idx: i,
-    t: p.t,
-    price: p.price,
-    label: formatLabel(p.t, intraday),
-    ...(session1D ? { sessionX: timestampToSessionFraction(p.t) } : {}),
-  }));
+  const sessions = raw.map((p) => p.session);
+  return raw.map((p, i) => {
+    const isExt = sessions[i] === "extended";
+    // Bridge: a regular bar adjacent to an extended bar also carries extPrice
+    // so the gray tail connects to the colored regular line instead of
+    // floating away with a gap.
+    const adjacentToExt =
+      sessions[i - 1] === "extended" || sessions[i + 1] === "extended";
+    return {
+      idx: i,
+      t: p.t,
+      price: p.price,
+      label: formatLabel(p.t, intraday),
+      session: p.session,
+      regPrice: isExt ? null : p.price,
+      extPrice: isExt ? p.price : adjacentToExt ? p.price : null,
+      ...(session1D ? { sessionX: timestampToExtendedSessionFraction(p.t) } : {}),
+    };
+  });
 }
 
 export function StockPriceChart({
@@ -110,9 +132,9 @@ export function StockPriceChart({
   const [dragStart, setDragStart] = useState<number | null>(null);
   const [dragEnd, setDragEnd] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [mergedPoints, setMergedPoints] = useState<{ t: string; price: number }[]>(
-    [],
-  );
+  const [mergedPoints, setMergedPoints] = useState<
+    { t: string; price: number; session?: PointSession }[]
+  >([]);
   const mergedRangeRef = useRef<PriceRange | null>(null);
 
   useEffect(() => {
@@ -228,7 +250,47 @@ export function StockPriceChart({
 
   const useSessionAxis = session1D && !!intraday && points.length > 0;
 
+  const hasExtended = useMemo(
+    () => useSessionAxis && points.some((p) => p.session === "extended"),
+    [useSessionAxis, points],
+  );
+
+  // Vertical gradient offset (0 = top, 1 = bottom) where the prior-close
+  // baseline sits inside `yDomain`. Above the baseline is positive-green,
+  // below is negative-red. Null when there is no baseline (non-1D ranges) —
+  // those fall back to the single net-change `color`.
+  const splitOffset = useMemo<number | null>(() => {
+    if (prevClose == null || !Number.isFinite(prevClose) || !yDomain) return null;
+    const [lo, hi] = yDomain;
+    if (hi === lo) return null;
+    return Math.min(1, Math.max(0, (hi - prevClose) / (hi - lo)));
+  }, [prevClose, yDomain]);
+
+  // X domain across the full pre/regular/post day: regular is [0, 1]; pre is
+  // negative; post is > 1. Floors at the regular [0, 1] so a regular-only day
+  // keeps the familiar axis.
+  const sessionDomain = useMemo<[number, number] | undefined>(() => {
+    if (!useSessionAxis) return undefined;
+    let lo = 0;
+    let hi = 1;
+    for (const p of points) {
+      if (p.sessionX == null) continue;
+      if (p.sessionX < lo) lo = p.sessionX;
+      if (p.sessionX > hi) hi = p.sessionX;
+    }
+    return [lo, hi];
+  }, [useSessionAxis, points]);
+
+  const sessionTicks = useMemo<number[] | undefined>(() => {
+    if (!useSessionAxis) return undefined;
+    if (!hasExtended) return [...REGULAR_SESSION_AXIS_TICKS];
+    const hi = sessionDomain ? sessionDomain[1] : 1;
+    const lo = sessionDomain ? sessionDomain[0] : 0;
+    return EXTENDED_SESSION_AXIS_TICKS.filter((t) => t >= lo - 1e-9 && t <= hi + 1e-9);
+  }, [useSessionAxis, hasExtended, sessionDomain]);
+
   const gradientId = `spc-${ticker}-${embedded ? "emb" : "std"}`;
+  const strokeGradId = `${gradientId}-stroke`;
 
   return (
     <div
@@ -412,19 +474,40 @@ export function StockPriceChart({
               onMouseUp={() => setDragging(false)}
             >
               <defs>
-                <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={color} stopOpacity={0.28} />
-                  <stop offset="100%" stopColor={color} stopOpacity={0} />
-                </linearGradient>
+                {splitOffset != null ? (
+                  <>
+                    {/* Fill: green above the prior close, red below. */}
+                    <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={POS} stopOpacity={0.26} />
+                      <stop offset={`${splitOffset * 100}%`} stopColor={POS} stopOpacity={0.04} />
+                      <stop offset={`${splitOffset * 100}%`} stopColor={NEG} stopOpacity={0.04} />
+                      <stop offset="100%" stopColor={NEG} stopOpacity={0.26} />
+                    </linearGradient>
+                    {/* Stroke: hard green/red split at the prior close. */}
+                    <linearGradient id={strokeGradId} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={POS} />
+                      <stop offset={`${splitOffset * 100}%`} stopColor={POS} />
+                      <stop offset={`${splitOffset * 100}%`} stopColor={NEG} />
+                      <stop offset="100%" stopColor={NEG} />
+                    </linearGradient>
+                  </>
+                ) : (
+                  <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={color} stopOpacity={0.28} />
+                    <stop offset="100%" stopColor={color} stopOpacity={0} />
+                  </linearGradient>
+                )}
               </defs>
               <XAxis
                 type={useSessionAxis ? "number" : "category"}
                 dataKey={useSessionAxis ? "sessionX" : "label"}
-                domain={useSessionAxis ? [0, 1] : undefined}
-                ticks={useSessionAxis ? [...REGULAR_SESSION_AXIS_TICKS] : undefined}
+                domain={useSessionAxis ? (sessionDomain ?? [0, 1]) : undefined}
+                ticks={sessionTicks}
                 tickFormatter={
                   useSessionAxis
-                    ? (v: number) => sessionFractionToEtLabel(v)
+                    ? hasExtended
+                      ? (v: number) => extendedSessionFractionToEtLabel(v)
+                      : (v: number) => sessionFractionToEtLabel(v)
                     : undefined
                 }
                 tick={{ fontSize: 9, fill: "var(--text-muted)" }}
@@ -445,7 +528,11 @@ export function StockPriceChart({
               <Tooltip
                 contentStyle={bbTooltipStyle}
                 labelStyle={{ color: "var(--text-muted)", fontSize: 10 }}
-                formatter={(v) => [fmtPrice(Number(v)), "Price"]}
+                formatter={(v, name) => {
+                  const n = Number(v);
+                  if (v == null || !Number.isFinite(n)) return [];
+                  return [fmtPrice(n), name === "After hours" ? "After hours" : "Price"];
+                }}
               />
               {prevClose != null && Number.isFinite(prevClose) && (
                 <ReferenceLine
@@ -479,13 +566,29 @@ export function StockPriceChart({
               )}
               <Area
                 type="monotone"
-                dataKey="price"
-                stroke={color}
+                dataKey="regPrice"
+                name="Price"
+                stroke={splitOffset != null ? `url(#${strokeGradId})` : color}
                 strokeWidth={1.4}
                 fill={`url(#${gradientId})`}
                 isAnimationActive={false}
+                connectNulls={false}
                 dot={false}
               />
+              {hasExtended && (
+                <Area
+                  type="monotone"
+                  dataKey="extPrice"
+                  name="After hours"
+                  stroke="var(--text-muted)"
+                  strokeWidth={1.2}
+                  strokeDasharray="3 3"
+                  fill="none"
+                  isAnimationActive={false}
+                  connectNulls={false}
+                  dot={false}
+                />
+              )}
             </AreaChart>
           </ResponsiveContainer>
         )}

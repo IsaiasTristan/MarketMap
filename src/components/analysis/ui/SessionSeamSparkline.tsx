@@ -218,13 +218,13 @@ export function SessionSeamSparkline({
           <path
             d={todayAreaPath}
             fill="var(--color-positive)"
-            fillOpacity={0.45}
+            fillOpacity={0.55}
             clipPath={`url(#seam-above-${uid})`}
           />
           <path
             d={todayAreaPath}
             fill="var(--color-negative)"
-            fillOpacity={0.45}
+            fillOpacity={0.55}
             clipPath={`url(#seam-below-${uid})`}
           />
           <line
@@ -237,13 +237,26 @@ export function SessionSeamSparkline({
             strokeWidth={0.75}
             opacity={0.6}
           />
+          {/* Today line is colored segment-wise vs the prior close: the
+              portion above the baseline is positive-green, below is
+              negative-red. Two clipped copies of the same path. */}
           <path
             d={todayLinePath}
             fill="none"
-            stroke="var(--text-secondary)"
+            stroke="var(--color-positive)"
             strokeWidth={1}
             strokeLinejoin="round"
             strokeLinecap="round"
+            clipPath={`url(#seam-above-${uid})`}
+          />
+          <path
+            d={todayLinePath}
+            fill="none"
+            stroke="var(--color-negative)"
+            strokeWidth={1}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            clipPath={`url(#seam-below-${uid})`}
           />
         </>
       )}

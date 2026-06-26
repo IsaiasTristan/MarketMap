@@ -160,8 +160,65 @@ export function timestampToSessionFraction(iso: string): number {
 /** Format a 0..1 session fraction as an ET time label (e.g. `9:30 AM`). */
 export function sessionFractionToEtLabel(fraction: number): string {
   const clamped = Math.min(1, Math.max(0, fraction));
+  return formatSessionFractionLabel(clamped);
+}
+
+// --- Extended-hours axis (1D price chart) ----------------------------------
+// Regular 09:30-16:00 occupies [0, 1]; pre-market (04:00-09:30) extends to the
+// left into negative fractions and post-market (16:00-20:00) extends to the
+// right past 1. The mapping is a single linear function of ET minutes anchored
+// on the regular open, so the regular session keeps the exact [0, 1] domain the
+// existing axis already uses.
+
+/** 04:00 ET pre-market open. */
+const PRE_SESSION_START_MIN = 4 * 60;
+/** 20:00 ET post-market close. */
+const POST_SESSION_END_MIN = 20 * 60;
+
+/** Leftmost x fraction (04:00 ET pre-market open). ~= -0.846. */
+export const EXTENDED_SESSION_MIN_FRACTION =
+  (PRE_SESSION_START_MIN - REGULAR_SESSION_START_MIN) /
+  REGULAR_SESSION_DURATION_MIN;
+/** Rightmost x fraction (20:00 ET post-market close). ~= 1.615. */
+export const EXTENDED_SESSION_MAX_FRACTION =
+  (POST_SESSION_END_MIN - REGULAR_SESSION_START_MIN) /
+  REGULAR_SESSION_DURATION_MIN;
+
+/** Axis ticks for the extended-hours view: open, midday, close, post-close. */
+export const EXTENDED_SESSION_AXIS_TICKS = [
+  0,
+  0.5,
+  1,
+  EXTENDED_SESSION_MAX_FRACTION,
+] as const;
+
+/**
+ * Map an ISO bar timestamp to an x fraction across the full pre/regular/post
+ * trading day. Regular 09:30-16:00 -> [0, 1]; pre-market -> negative;
+ * post-market -> > 1. Clamped to the [04:00, 20:00] ET window.
+ */
+export function timestampToExtendedSessionFraction(iso: string): number {
+  const m = minutesSinceMidnightEt(new Date(iso));
+  const raw = (m - REGULAR_SESSION_START_MIN) / REGULAR_SESSION_DURATION_MIN;
+  return Math.min(
+    EXTENDED_SESSION_MAX_FRACTION,
+    Math.max(EXTENDED_SESSION_MIN_FRACTION, raw),
+  );
+}
+
+/** Format any extended-session fraction (may be < 0 or > 1) as an ET label. */
+export function extendedSessionFractionToEtLabel(fraction: number): string {
+  const clamped = Math.min(
+    EXTENDED_SESSION_MAX_FRACTION,
+    Math.max(EXTENDED_SESSION_MIN_FRACTION, fraction),
+  );
+  return formatSessionFractionLabel(clamped);
+}
+
+/** Shared formatter: fraction (anchored on the 09:30 open) -> `h:mm AM/PM` ET. */
+function formatSessionFractionLabel(fraction: number): string {
   const totalMin = Math.round(
-    REGULAR_SESSION_START_MIN + clamped * REGULAR_SESSION_DURATION_MIN,
+    REGULAR_SESSION_START_MIN + fraction * REGULAR_SESSION_DURATION_MIN,
   );
   const hour24 = Math.floor(totalMin / 60);
   const minute = totalMin % 60;

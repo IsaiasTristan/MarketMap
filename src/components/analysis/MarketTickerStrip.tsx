@@ -92,6 +92,7 @@ function Chip({ quote }: { quote: MarketStripQuote }) {
       <SessionSeamSparkline
         priorSeries={quote.prevDaySparkline}
         todaySeries={quote.sparkline}
+        extendedSeries={quote.extendedSparkline}
         prevClose={quote.prevClose}
         timeMode={quote.timeMode}
         width={SPARK_WIDTH}

@@ -14,6 +14,7 @@
  */
 import { prisma as db } from "@/infrastructure/db/client";
 import { fetchYahooIntraday } from "@/infrastructure/providers/yahoo-chart-http";
+import { classifyEtTimeOfDay } from "@/lib/market-map/market-session";
 
 export type PriceRange = "1D" | "5D" | "1M" | "6M" | "YTD" | "1Y" | "5Y" | "MAX";
 
@@ -22,6 +23,9 @@ export interface PricePoint {
   t: string;
   /** Adjusted close (daily) or intraday close (raw). */
   price: number;
+  /** Intraday-1D only: which session the bar belongs to. PRE/POST collapse to
+   *  `extended` so the chart can draw the after-hours tail in gray. */
+  session?: "regular" | "extended";
 }
 
 export interface PriceSeriesResult {
@@ -94,7 +98,13 @@ export async function getPriceSeries(
   // --- Intraday (live) -----------------------------------------------------
   if (INTRADAY_RANGES.has(range)) {
     const interval: "1m" | "5m" = range === "1D" ? "1m" : "5m";
-    const res = await fetchYahooIntraday(ticker, range === "1D" ? "1d" : "5d");
+    // 1D includes PRE/POST so the after-hours tail is visible; 5D stays
+    // regular-hours only (the 5-day curve is about multi-session shape, not
+    // today's extended move).
+    const includePrePost = range === "1D";
+    const res = await fetchYahooIntraday(ticker, range === "1D" ? "1d" : "5d", {
+      includePrePost,
+    });
     if (res.kind !== "ok") {
       return {
         ticker,
@@ -114,7 +124,19 @@ export async function getPriceSeries(
       range,
       interval,
       source: "yahoo-intraday",
-      points: res.points.map((p) => ({ t: p.t, price: p.price })),
+      points: res.points.map((p) => ({
+        t: p.t,
+        price: p.price,
+        ...(includePrePost
+          ? {
+              session:
+                classifyEtTimeOfDay(Math.floor(new Date(p.t).getTime() / 1000)) ===
+                "REGULAR"
+                  ? ("regular" as const)
+                  : ("extended" as const),
+            }
+          : {}),
+      })),
       previousClose: res.previousClose,
     };
   }

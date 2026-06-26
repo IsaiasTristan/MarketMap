@@ -4,8 +4,12 @@ import {
   computeSessionProgress,
   computeTodayOnlyLayout,
   DEFAULT_PRIOR_ZONE_FRAC,
+  EXTENDED_SESSION_MAX_FRACTION,
+  EXTENDED_SESSION_MIN_FRACTION,
+  extendedSessionFractionToEtLabel,
   mapSeriesToX,
   sessionFractionToEtLabel,
+  timestampToExtendedSessionFraction,
   timestampToSessionFraction,
 } from "../../src/lib/market/sparkline-session-layout";
 
@@ -188,6 +192,58 @@ describe("sessionFractionToEtLabel", () => {
   it("formats session open and close", () => {
     expect(sessionFractionToEtLabel(0)).toBe("9:30 AM");
     expect(sessionFractionToEtLabel(1)).toBe("4:00 PM");
+  });
+});
+
+describe("timestampToExtendedSessionFraction", () => {
+  it("keeps the regular session in [0, 1]", () => {
+    expect(timestampToExtendedSessionFraction(et(9, 30).toISOString())).toBe(0);
+    expect(timestampToExtendedSessionFraction(et(16, 0).toISOString())).toBe(1);
+  });
+
+  it("maps midday to the same fraction as the regular axis", () => {
+    expect(
+      timestampToExtendedSessionFraction(et(12, 0).toISOString()),
+    ).toBeCloseTo(150 / 390, 3);
+  });
+
+  it("places post-market past 1 (16:00 -> 20:00)", () => {
+    expect(timestampToExtendedSessionFraction(et(18, 0).toISOString())).toBeCloseTo(
+      (18 * 60 - (9 * 60 + 30)) / 390,
+      3,
+    );
+    expect(timestampToExtendedSessionFraction(et(20, 0).toISOString())).toBeCloseTo(
+      EXTENDED_SESSION_MAX_FRACTION,
+      5,
+    );
+  });
+
+  it("places pre-market left of 0 and clamps at the 04:00 open", () => {
+    expect(
+      timestampToExtendedSessionFraction(et(8, 0).toISOString()),
+    ).toBeLessThan(0);
+    expect(timestampToExtendedSessionFraction(et(4, 0).toISOString())).toBeCloseTo(
+      EXTENDED_SESSION_MIN_FRACTION,
+      5,
+    );
+    // Before the pre-market open clamps to the min fraction.
+    expect(timestampToExtendedSessionFraction(et(2, 0).toISOString())).toBe(
+      EXTENDED_SESSION_MIN_FRACTION,
+    );
+  });
+});
+
+describe("extendedSessionFractionToEtLabel", () => {
+  it("formats post-close at the max fraction as 8:00 PM", () => {
+    expect(extendedSessionFractionToEtLabel(EXTENDED_SESSION_MAX_FRACTION)).toBe(
+      "8:00 PM",
+    );
+  });
+
+  it("formats the pre-market open at the min fraction as 4:00 AM", () => {
+    expect(extendedSessionFractionToEtLabel(EXTENDED_SESSION_MIN_FRACTION)).toBe(
+      "4:00 AM",
+    );
   });
 });
 
