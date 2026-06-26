@@ -160,6 +160,19 @@ function PortfolioManager() {
     onError: () => addToast({ severity: "error", message: "Rename failed" }),
   });
 
+  const duplicateMut = useMutation({
+    mutationFn: (id: string) =>
+      fetch(`/api/analysis/portfolios/${id}/duplicate`, { method: "POST" }).then((r) =>
+        r.json(),
+      ),
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["portfolios-list"] });
+      setActivePortfolio(d.id);
+      addToast({ severity: "success", message: `Duplicated to ${d.name}` });
+    },
+    onError: () => addToast({ severity: "error", message: "Duplicate failed" }),
+  });
+
   const deletePortfolioMut = useMutation({
     mutationFn: (id: string) =>
       fetch(`/api/analysis/portfolios/${id}`, { method: "DELETE" }).then((r) => r.json()),
@@ -335,6 +348,18 @@ function PortfolioManager() {
                   }}
                 >
                   Rename
+                </button>
+                <button
+                  onClick={() => duplicateMut.mutate(activePortfolio.id)}
+                  disabled={duplicateMut.isPending}
+                  style={{
+                    ...btnBase,
+                    border: "1px solid var(--bg-border)",
+                    background: "transparent",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  {duplicateMut.isPending ? "Duplicating..." : "Duplicate"}
                 </button>
                 {confirmDeletePortfolio ? (
                   <>

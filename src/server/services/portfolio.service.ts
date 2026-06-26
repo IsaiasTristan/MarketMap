@@ -12,6 +12,12 @@ import {
   portfolioSharpe,
 } from "@/domain/calculations/portfolio";
 import { riskFreeAnnual } from "@/infrastructure/config/env";
+import {
+  addCashPosition,
+  getPositions,
+  importPositions,
+  type PositionInput,
+} from "./position.service";
 
 function dec(x: { toString(): string }): number {
   return Number(x.toString());
@@ -77,6 +83,44 @@ export async function createPortfolio(
 
 export async function renamePortfolio(db: PrismaClient, id: string, name: string) {
   return db.portfolio.update({ where: { id }, data: { name } });
+}
+
+/**
+ * Duplicate an existing portfolio into a new one owned by `userId`, copying
+ * the equity positions (ticker / shares / direction / sector) and the single
+ * cash row if present. Factor / stress / cache snapshots are intentionally NOT
+ * copied — they regenerate for the new portfolioId on cold read / daily
+ * precompute. Caller is responsible for ownership checks on `sourceId`.
+ */
+export async function duplicatePortfolio(
+  db: PrismaClient,
+  sourceId: string,
+  userId: string,
+  name: string,
+): Promise<{ id: string; name: string; positionCount: number }> {
+  const sourceRows = await getPositions(sourceId);
+  const created = await createPortfolio(db, name, userId);
+
+  const equityInputs: PositionInput[] = sourceRows
+    .filter((r) => !r.isCash)
+    .map((r) => ({
+      ticker: r.ticker,
+      shares: r.shares,
+      isShort: r.isShort,
+      sector: r.sector ?? undefined,
+    }));
+
+  if (equityInputs.length > 0) {
+    await importPositions(created.id, equityInputs);
+  }
+
+  const cash = sourceRows.find((r) => r.isCash && r.cashAmount && r.cashAmount > 0);
+  if (cash?.cashAmount) {
+    await addCashPosition(created.id, cash.cashAmount);
+  }
+
+  const positionCount = equityInputs.length + (cash?.cashAmount ? 1 : 0);
+  return { id: created.id, name: created.name, positionCount };
 }
 
 export async function deletePortfolio(db: PrismaClient, id: string) {
