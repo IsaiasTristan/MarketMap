@@ -984,43 +984,7 @@ export async function fetchYahooExtendedQuote(
   } catch {
     return null;
   }
-  const parsed = parseYahooExtendedQuote(json.chart?.result?.[0]);
-  // #region agent log
-  if (
-    parsed &&
-    (ticker === "JACK" ||
-      (parsed.regularClose != null &&
-        Math.abs(parsed.price / parsed.regularClose - 1) > 0.08))
-  ) {
-    fetch("http://127.0.0.1:7864/ingest/5261ce70-61cd-4eee-b332-43aa363b10f4", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "8f19ae",
-      },
-      body: JSON.stringify({
-        sessionId: "8f19ae",
-        location: "yahoo-chart-http.ts:fetchYahooExtendedQuote",
-        message: "yahoo extended fetch",
-        data: {
-          ticker,
-          price: parsed.price,
-          session: parsed.session,
-          regularClose: parsed.regularClose,
-          prevClose: parsed.prevClose,
-          asOfIso: new Date(parsed.asOfUnix * 1000).toISOString(),
-          impliedAhPct:
-            parsed.regularClose != null
-              ? parsed.price / parsed.regularClose - 1
-              : null,
-        },
-        timestamp: Date.now(),
-        hypothesisId: "H2",
-      }),
-    }).catch(() => {});
-  }
-  // #endregion
-  return parsed;
+  return parseYahooExtendedQuote(json.chart?.result?.[0]);
 }
 
 /**

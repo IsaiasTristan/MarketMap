@@ -6,6 +6,7 @@ import type { DateClose } from "@/domain/calculations/alignment";
 import { securityHorizonMetrics } from "@/domain/calculations/security-metrics";
 import { riskFreeAnnual } from "@/infrastructure/config/env";
 import type { ExtendedTickerQuote } from "@/server/services/extended-hours.service";
+import type { LiveRegularQuote } from "@/server/services/live-regular.service";
 
 function dec(x: { toString(): string }): number {
   return Number(x.toString());
@@ -217,6 +218,64 @@ export function applyExtendedQuoteOverlay(
   };
 }
 
+export type LiveOverlayMode = "live" | "frozen";
+
+export type LiveOverlayResult = {
+  series: DateClose[];
+  applied: boolean;
+  skipReason?: "empty" | "bad_price" | "future_bar" | "stale_db" | "frozen_noop";
+};
+
+/**
+ * Overlay today's regular-session live price onto the daily close series,
+ * anchored on the quote's ET trade date (never wall-clock "now"). Unlike the
+ * extended-hours overlay this keeps the close-to-close chain intact — the
+ * appended/replaced bar is just today's price, so `securityHorizonMetrics`
+ * recomputes every horizon naturally (D1 = price / prior close).
+ *
+ *   - `mode: "live"`   (REGULAR): a same-day bar is REPLACED so the live price
+ *     supersedes any partial bar a `mode=missing` ingest wrote for a freshly
+ *     seeded ticker, keeping the grid consistent across tickers.
+ *   - `mode: "frozen"` (after close): a same-day bar is a NO-OP so the official
+ *     EOD close, once written to PriceHistory, always wins over the frozen
+ *     regular print.
+ *
+ * Both modes APPEND when the DB series lags the trade date by <= 3 calendar
+ * days (Fri->Mon weekend gap allowed) and SKIP a larger gap (stale) or a DB
+ * bar dated after the print (future_bar).
+ */
+export function applyLiveRegularOverlay(
+  series: DateClose[],
+  quote: LiveRegularQuote,
+  mode: LiveOverlayMode,
+): LiveOverlayResult {
+  const skip = (
+    s: DateClose[],
+    reason: LiveOverlayResult["skipReason"],
+  ): LiveOverlayResult => ({ series: s, applied: false, skipReason: reason });
+
+  if (series.length === 0) return skip(series, "empty");
+  if (!Number.isFinite(quote.price)) return skip(series, "bad_price");
+
+  const { tradeDateEt, price } = quote;
+  const last = series[series.length - 1]!;
+
+  if (last.date > tradeDateEt) return skip(series, "future_bar");
+
+  if (last.date === tradeDateEt) {
+    if (mode === "frozen") return skip(series, "frozen_noop");
+    const out = series.slice(0, -1);
+    out.push({ date: tradeDateEt, adjClose: price });
+    return { series: out, applied: true };
+  }
+
+  const gapDays = calendarDaysBetween(last.date, tradeDateEt);
+  if (gapDays > 3) return skip(series, "stale_db");
+
+  const out = [...series, { date: tradeDateEt, adjClose: price }];
+  return { series: out, applied: true };
+}
+
 /**
  * @deprecated Use {@link applyExtendedQuoteOverlay} — kept for unit tests.
  */
@@ -240,6 +299,13 @@ export function applyExtendedOverlay(
 export interface ComputeMarketMapOptions {
   /** Optional ticker -> extended-hours quote overlay (PRE / POST sessions). */
   extendedQuotes?: Map<string, ExtendedTickerQuote>;
+  /** Optional ticker -> live regular-session quote overlay. Mutually exclusive
+   *  with `extendedQuotes` (the route never passes both). */
+  liveQuotes?: Map<string, LiveRegularQuote>;
+  /** Overlay mode for `liveQuotes` — `"live"` during REGULAR (replace a
+   *  same-day bar), `"frozen"` after close (no-op on a same-day bar so the
+   *  official EOD close wins). Defaults to `"live"`. */
+  liveMode?: LiveOverlayMode;
 }
 
 export async function computeMarketMap(
@@ -289,6 +355,8 @@ export async function computeMarketMap(
 
   const companies: CompanyRow[] = [];
   const overlay = options.extendedQuotes;
+  const live = options.liveQuotes;
+  const liveMode: LiveOverlayMode = options.liveMode ?? "live";
 
   for (const c of constituents) {
     let series = pricesBySecurity.get(c.securityId) ?? [];
@@ -306,6 +374,20 @@ export async function computeMarketMap(
         } else if (result.skipReason === "stale_db") {
           warnings.push(
             `Extended overlay skipped for ${c.security.ticker} (DB stale vs print date ${quote.tradeDateEt})`,
+          );
+        }
+      }
+    } else if (live) {
+      // Regular-session live overlay: append/replace today's price and let
+      // securityHorizonMetrics recompute every horizon (D1 = price / prior
+      // close). The close-to-close chain is intentionally kept intact.
+      const quote = live.get(c.security.ticker);
+      if (quote) {
+        const result = applyLiveRegularOverlay(series, quote, liveMode);
+        series = result.series;
+        if (!result.applied && result.skipReason === "stale_db") {
+          warnings.push(
+            `Live overlay skipped for ${c.security.ticker} (DB stale vs print date ${quote.tradeDateEt})`,
           );
         }
       }

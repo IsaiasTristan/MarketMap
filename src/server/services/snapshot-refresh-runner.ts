@@ -11,16 +11,20 @@
  * skips if a prior refresh is still in flight.
  *
  * Hot set (bounded to avoid re-creating a compute storm on the shared host):
- *   - market-map RETURN × SP500 for every universe,
  *   - factor-performance RETURN × SP500,
  *   - exposure + attribution for every portfolio at the default MACRO14 / 252
  *     (one engine run feeds both).
- * Every other (metric, benchmark, model, window) combo stays warmed by the
- * daily job and self-heals via the routes' cold-miss write-through.
+ * Every other (model, window) combo stays warmed by the daily job and
+ * self-heals via the routes' cold-miss write-through.
+ *
+ * NOTE: the market-map cache is intentionally NOT refreshed here during
+ * REGULAR — the regular-hours runner (`regular-runner.ts`) owns it so it can
+ * bake today's live intraday overlay into the same cache row. Refreshing it
+ * here from static PriceHistory would clobber that overlay with yesterday's
+ * close-to-close data.
  */
 import { prisma } from "@/infrastructure/db/client";
 import { getUsMarketSession } from "@/lib/market-map/market-session";
-import { computeAndCacheMarketMap } from "./market-map-cache.service";
 import { computeAndCacheFactorPerformance } from "./factor-performance-cache.service";
 import { runFactorEngine } from "./factor-engine.service";
 import { computeAndCacheFactorExposure } from "./factor-exposure-cache.service";
@@ -75,14 +79,9 @@ async function tick(): Promise<void> {
 
   running = true;
   try {
-    const [universes, portfolios] = await Promise.all([
-      prisma.universe.findMany({ select: { id: true } }),
-      prisma.portfolio.findMany({ select: { id: true } }),
-    ]);
-
-    for (const { id: universeId } of universes) {
-      await computeAndCacheMarketMap(universeId, "RETURN", "SP500");
-    }
+    const portfolios = await prisma.portfolio.findMany({
+      select: { id: true },
+    });
 
     await computeAndCacheFactorPerformance("RETURN", "SP500");
 

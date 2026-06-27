@@ -44,6 +44,17 @@ export async function register() {
       );
     }
     try {
+      const { startRegularRunner } = await import(
+        "@/server/services/regular-runner"
+      );
+      startRegularRunner();
+    } catch (e) {
+      console.error(
+        "[instrumentation] failed to start regular-hours runner:",
+        e,
+      );
+    }
+    try {
       const { startPriorSessionRunner } = await import(
         "@/server/services/prior-session-runner"
       );

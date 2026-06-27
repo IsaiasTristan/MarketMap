@@ -20,7 +20,11 @@ import type { BenchmarkCode, MetricKind } from "@/domain/entities/analytics";
 import { METRIC_KINDS, BENCHMARK_CODES } from "@/domain/entities/analytics";
 import { HORIZON_ORDER } from "@/domain/entities/horizons";
 import { percentileColumnRanges } from "@/domain/calculations/percentile-range";
-import { computeMarketMap, type MarketMapApiRow } from "./market-map.service";
+import {
+  computeMarketMap,
+  type MarketMapApiRow,
+  type ComputeMarketMapOptions,
+} from "./market-map.service";
 
 export interface MarketMapSnapshotPayload {
   asOf: string | null;
@@ -62,14 +66,20 @@ export async function writeMarketMapCache(
 }
 
 /**
- * Live-compute the COMPANY grid (no overlay, no sector/sub-theme filter), build
- * the winsorized column ranges, and persist. Returns the payload so the GET
+ * Live-compute the COMPANY grid (no sector/sub-theme filter), build the
+ * winsorized column ranges, and persist. Returns the payload so the GET
  * route's cold-miss path can both serve and cache in one call.
+ *
+ * `options` carries the optional live regular-session overlay (`liveQuotes` +
+ * `liveMode`) used by the REGULAR-hours runner to bake today's intraday move
+ * into the same cache row. The daily job calls this with no options so the
+ * official EOD close restores the clean tape.
  */
 export async function computeAndCacheMarketMap(
   universeId: string,
   metric: MetricKind,
   benchmark: BenchmarkCode,
+  options: ComputeMarketMapOptions = {},
 ): Promise<MarketMapSnapshotPayload> {
   const result = await computeMarketMap(
     db,
@@ -78,6 +88,7 @@ export async function computeAndCacheMarketMap(
     "COMPANY",
     benchmark,
     {},
+    options,
   );
   const payload: MarketMapSnapshotPayload = {
     asOf: result.asOf,

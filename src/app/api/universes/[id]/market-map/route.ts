@@ -7,7 +7,9 @@ import {
   computeAndCacheMarketMap,
 } from "@/server/services/market-map-cache.service";
 import { getExtendedSnapshot } from "@/server/services/extended-hours.service";
+import { getLiveRegularSnapshot } from "@/server/services/live-regular.service";
 import { getUsMarketSession } from "@/lib/market-map/market-session";
+import type { LiveOverlayMode } from "@/server/services/market-map.service";
 import type { BenchmarkCode, MetricKind, RowLevel } from "@/domain/entities/analytics";
 import { HORIZON_ORDER } from "@/domain/entities/horizons";
 import { percentileColumnRanges } from "@/domain/calculations/percentile-range";
@@ -57,6 +59,17 @@ export async function GET(req: Request, ctx: Ctx) {
   const overlayActive = !!parsed.data.extended && snapHasData;
   const extendedQuotes = overlayActive ? snap!.quotes : undefined;
 
+  // Live regular-session overlay. During REGULAR the cache fast path is already
+  // overlaid by the regular-hours runner, so this is only applied on the
+  // non-cacheable live-compute branches (filtered / non-COMPANY). Extended
+  // (PRE/POST) overlay takes precedence when active. After close the frozen
+  // snapshot keeps today's regular move visible until the daily job lands.
+  const liveSnap = getLiveRegularSnapshot();
+  const liveActive = !overlayActive && liveSnap.quotes.size > 0;
+  const liveMode: LiveOverlayMode =
+    currentSession === "REGULAR" ? "live" : "frozen";
+  const liveQuotes = liveActive ? liveSnap.quotes : undefined;
+
   const metric = parsed.data.metric as MetricKind;
   const rowLevel = parsed.data.rowLevel as RowLevel;
 
@@ -91,7 +104,7 @@ export async function GET(req: Request, ctx: Ctx) {
       rowLevel,
       benchmark,
       { sector: parsed.data.sector, subTheme: parsed.data.subTheme },
-      { extendedQuotes }
+      { extendedQuotes, liveQuotes, liveMode }
     );
     rows = result.rows;
     asOf = result.asOf;
@@ -127,6 +140,18 @@ export async function GET(req: Request, ctx: Ctx) {
       session: snap?.session ?? null,
       asOf: snap?.asOf ?? null,
       tickerCount: snap?.quotes.size ?? 0,
+    },
+    /** Live regular-session overlay status (ops / early-warning). `applied`
+     *  reflects whether live data is serving this grid — via the overlaid
+     *  cache on the COMPANY fast path during REGULAR, or via the live-compute
+     *  branch otherwise. `servedVia` surfaces which upstream path fed the
+     *  snapshot (spark today) so a Yahoo lockdown is visible immediately. */
+    live: {
+      applied: liveActive,
+      mode: liveActive ? liveMode : null,
+      asOf: liveSnap.asOf,
+      tickerCount: liveSnap.quotes.size,
+      servedVia: liveSnap.servedVia,
     },
   });
 }

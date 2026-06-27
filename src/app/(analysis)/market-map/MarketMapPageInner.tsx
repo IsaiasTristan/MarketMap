@@ -21,10 +21,6 @@ const AUTO_REFRESH_MS = 30_000;
 /** Off-hours the daily grid is static, so the visible-tab DB poll relaxes from
  *  AUTO_REFRESH_MS to this slower cadence to cut needless re-fetches. */
 const AUTO_REFRESH_OFFHOURS_MS = 60_000;
-/** While the US equity session is open we tail-refresh Yahoo prices on this
- *  cadence so the grid reflects today's intraday move. Outside market hours we
- *  fall back to the regular AUTO_REFRESH_MS DB poll only — no Yahoo traffic. */
-const LIVE_REFRESH_MS = 60_000;
 /** Abort hanging Prisma/DB connects so the UI does not sit on "Loading universe…" forever. */
 const UNIVERSE_DEFAULT_FETCH_MS = 20_000;
 
@@ -176,9 +172,10 @@ export function MarketMapPageInner() {
   );
 
   // First time we resolve a universe: seed any missing tickers (no-op once
-  // seeded) and then tail-refresh the last ~10 sessions for everything so the
-  // grid is current. Without the tail step, an already-seeded universe would
-  // show stale "1D" returns from whatever day it was last manually refreshed.
+  // seeded). Intraday 1D and EOD closes are no longer the browser's job —
+  // the server-side regular-hours runner bakes today's live move into the
+  // cache during REGULAR, and the daily job (+ startup catch-up) writes the
+  // official closes to PriceHistory. So we only seed missing tickers here.
   useEffect(() => {
     // Price ingestion is an admin-only, single-instance job. Non-admins read
     // the shared, already-refreshed data; they never trigger Yahoo traffic.
@@ -186,7 +183,7 @@ export function MarketMapPageInner() {
     if (!resolvedUniverseId) return;
     if (ingestStartedFor.current === resolvedUniverseId) return;
     ingestStartedFor.current = resolvedUniverseId;
-    void triggerIngest(resolvedUniverseId, ["missing", "tail"]);
+    void triggerIngest(resolvedUniverseId, ["missing"]);
   }, [resolvedUniverseId, isAdmin, triggerIngest]);
 
   // Auto-refresh the chart while the tab is visible so backgrounded windows do
@@ -228,36 +225,6 @@ export function MarketMapPageInner() {
       document.removeEventListener("visibilitychange", onVis);
     };
   }, [resolvedUniverseId]);
-
-  // Live tail-refresh during US market hours: every LIVE_REFRESH_MS pull
-  // today's partial-day bar from Yahoo so the 1D return reflects the
-  // intraday move. The chart auto-poll above will then surface the new
-  // values. Outside market hours this is a no-op — daily data doesn't move.
-  const triggerIngestRef = useRef(triggerIngest);
-  useEffect(() => {
-    triggerIngestRef.current = triggerIngest;
-  }, [triggerIngest]);
-  const ingestingRef = useRef(ingesting);
-  useEffect(() => {
-    ingestingRef.current = ingesting;
-  }, [ingesting]);
-
-  useEffect(() => {
-    // Live intraday tail-refresh is admin-only (see note above).
-    if (!isAdmin) return;
-    if (!resolvedUniverseId) return;
-    const tick = () => {
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
-        return;
-      }
-      const session = getUsMarketSession(new Date());
-      if (session !== "REGULAR") return;
-      if (ingestingRef.current) return;
-      void triggerIngestRef.current(resolvedUniverseId, ["tail"]);
-    };
-    const t = setInterval(tick, LIVE_REFRESH_MS);
-    return () => clearInterval(t);
-  }, [resolvedUniverseId, isAdmin]);
 
   const session = useMemo<MarketSession>(
     () => getUsMarketSession(new Date(now)),
@@ -311,7 +278,7 @@ export function MarketMapPageInner() {
           {session === "REGULAR" && (
             <span
               style={liveBadge}
-              title={`Live tail-refresh every ${LIVE_REFRESH_MS / 1000}s during market hours`}
+              title="Live intraday prices refreshed server-side during market hours"
             >
               LIVE
             </span>
