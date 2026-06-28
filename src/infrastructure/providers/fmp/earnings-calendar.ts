@@ -1,6 +1,6 @@
 /** Earnings calendar — next report date per name (proximity weighting input). */
 import { fmpGetJson, isoDate, num } from "./fmp-client";
-import type { FmpEarningsCalendarRaw } from "./types";
+import type { FmpEarningsCalendarRaw, FmpEarningsRaw, NormalizedEarnings } from "./types";
 
 export interface EarningsCalendarEntry {
   ticker: string;
@@ -29,4 +29,33 @@ export async function fetchEarningsCalendar(
       };
     })
     .filter((r): r is EarningsCalendarEntry => r !== null);
+}
+
+/**
+ * Per-symbol reported earnings history (actuals + the consensus immediately
+ * before each report). FMP /stable/earnings returns descending by date; we
+ * return ascending (oldest -> newest). The estimate is FMP's pre-announcement
+ * consensus — never the post-release update.
+ */
+export async function fetchEarningsHistory(
+  symbol: string,
+  limit = 20,
+): Promise<NormalizedEarnings[]> {
+  const rows = await fmpGetJson<FmpEarningsRaw[]>("/stable/earnings", { symbol, limit });
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((r): NormalizedEarnings | null => {
+      const reportDate = isoDate(r.date);
+      if (!reportDate || !r.symbol) return null;
+      return {
+        ticker: r.symbol.toUpperCase(),
+        reportDate,
+        epsActual: num(r.epsActual),
+        epsEstimated: num(r.epsEstimated),
+        revenueActual: num(r.revenueActual),
+        revenueEstimated: num(r.revenueEstimated),
+      };
+    })
+    .filter((r): r is NormalizedEarnings => r !== null)
+    .sort((a, b) => a.reportDate.localeCompare(b.reportDate));
 }

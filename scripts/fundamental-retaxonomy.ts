@@ -14,7 +14,7 @@ import {
   buildReferenceFromMarketMap,
   loadActiveUniverseTickers,
 } from "../src/server/services/revision/reference-ingest.service";
-import { scoreFundamentalWeek } from "../src/server/services/fundamental/fundamental-scoring.service";
+import { scoreFundamentalBoxesWeek } from "../src/server/services/fundamental/fundamental-box-scoring.service";
 
 function opt(name: string): string | undefined {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -54,7 +54,7 @@ async function main() {
   }
 
   log("[fundamental-retaxonomy] re-scoring discovery queue…");
-  const scored = await scoreFundamentalWeek({ snapshotDate: snapDate.toISOString().slice(0, 10), log });
+  const scored = await scoreFundamentalBoxesWeek({ snapshotDate: snapDate.toISOString().slice(0, 10), log });
   console.log("[fundamental-retaxonomy] scoring summary:", JSON.stringify(scored, null, 2));
 }
 

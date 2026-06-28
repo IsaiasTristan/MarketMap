@@ -173,6 +173,26 @@ export interface FmpEarningsCalendarRaw {
   lastUpdated?: string;
 }
 
+/** Raw row from /stable/earnings (per-symbol reported actuals vs consensus). */
+export interface FmpEarningsRaw {
+  symbol: string;
+  date: string; // announcement date
+  epsActual?: number | null;
+  epsEstimated?: number | null;
+  revenueActual?: number | null;
+  revenueEstimated?: number | null;
+}
+
+/** Normalized per-report earnings actuals + pre-report consensus. */
+export interface NormalizedEarnings {
+  ticker: string;
+  reportDate: string;
+  epsActual: number | null;
+  epsEstimated: number | null;
+  revenueActual: number | null;
+  revenueEstimated: number | null;
+}
+
 // ─── Screener + profile (universe + reference) ─────────────────────────────
 
 export interface FmpScreenerRaw {
@@ -289,10 +309,15 @@ export interface FmpCashFlowRaw {
   period?: string;
   netIncome?: number;
   depreciationAndAmortization?: number;
+  stockBasedCompensation?: number;
+  changeInWorkingCapital?: number;
   operatingCashFlow?: number;
   netCashProvidedByOperatingActivities?: number;
   capitalExpenditure?: number;
   freeCashFlow?: number;
+  commonStockIssuance?: number;
+  commonStockRepurchased?: number;
+  netCommonStockIssuance?: number;
 }
 
 /** Normalized, merged fiscal-period statement facts (one row per fiscal date). */
@@ -319,10 +344,15 @@ export interface NormalizedStatementPeriod {
   preferredEquity: number | null;
   minorityInterest: number | null;
   netDebtReported: number | null;
+  interestExpense: number | null;
   // cash flow (OCF and capex needed for FCF + the accruals trap-detector)
   operatingCashFlow: number | null;
   capitalExpenditure: number | null;
   freeCashFlowReported: number | null;
+  stockBasedCompensation: number | null;
+  changeInWorkingCapital: number | null;
+  commonStockIssued: number | null; // FMP commonStockIssuance (>= 0)
+  commonStockRepurchased: number | null; // FMP commonStockRepurchased (<= 0)
 }
 
 /** Raw row from /stable/ratios. */
@@ -343,6 +373,9 @@ export interface FmpRatiosRaw {
   evToEBITDA?: number;
   debtToEquityRatio?: number;
   netDebtToEBITDA?: number;
+  dividendYield?: number;
+  interestCoverageRatio?: number;
+  priceToFreeCashFlowRatio?: number;
 }
 
 /** Raw row from /stable/key-metrics. */
@@ -374,6 +407,8 @@ export interface NormalizedRatios {
   evToEbitda: number | null;
   debtToEquity: number | null;
   netDebtToEbitda: number | null;
+  dividendYield: number | null;
+  interestCoverage: number | null;
 }
 
 /** Normalized FMP key-metrics for one fiscal period. */

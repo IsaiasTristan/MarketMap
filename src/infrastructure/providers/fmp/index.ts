@@ -17,7 +17,7 @@ export {
   fetchPriceTargetConsensus,
   fetchPriceTargetSummary,
 } from "./price-targets";
-export { fetchEarningsCalendar } from "./earnings-calendar";
+export { fetchEarningsCalendar, fetchEarningsHistory } from "./earnings-calendar";
 export type { EarningsCalendarEntry } from "./earnings-calendar";
 export { fetchScreener, screenerToReference, fetchProfile } from "./screener";
 export type { ScreenerFilter } from "./screener";

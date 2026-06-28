@@ -20,7 +20,7 @@
  */
 import { prisma } from "../src/infrastructure/db/client";
 import { runFundamentalWeekly } from "../src/server/services/fundamental/fundamental-weekly-job.service";
-import { scoreFundamentalWeek } from "../src/server/services/fundamental/fundamental-scoring.service";
+import { scoreFundamentalBoxesWeek } from "../src/server/services/fundamental/fundamental-box-scoring.service";
 
 function flag(name: string): boolean {
   return process.argv.includes(`--${name}`);
@@ -40,7 +40,7 @@ async function main() {
   // without any FMP ingestion. Use to repopulate the discovery payload after a
   // signal/payload change. Reads existing FundamentalPeriod/FundamentalSnapshot.
   if (flag("score-only")) {
-    const scored = await scoreFundamentalWeek({ snapshotDate, log });
+    const scored = await scoreFundamentalBoxesWeek({ snapshotDate, log });
     console.log("[fundamental-weekly] score-only summary:", JSON.stringify(scored, null, 2));
     return;
   }
@@ -58,7 +58,7 @@ async function main() {
   console.log("[fundamental-weekly] ingestion summary:", JSON.stringify(ingest, null, 2));
 
   if (ingest.snapshotsWritten > 0) {
-    const scored = await scoreFundamentalWeek({ snapshotDate: ingest.snapshotDate, log });
+    const scored = await scoreFundamentalBoxesWeek({ snapshotDate: ingest.snapshotDate, log });
     console.log("[fundamental-weekly] scoring summary:", JSON.stringify(scored, null, 2));
   } else {
     console.log("[fundamental-weekly] no snapshots written; skipping scoring.");

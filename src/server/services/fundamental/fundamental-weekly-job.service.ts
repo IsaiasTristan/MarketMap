@@ -27,6 +27,7 @@ import {
   persistPeriods,
   type ComputedPeriod,
 } from "./fundamental-statements.service";
+import { persistEarningsSurprises } from "./fundamental-earnings.service";
 
 const METRICS_TRAIL = 20; // quarters retained in the snapshot sparkline cache
 
@@ -221,6 +222,13 @@ export async function runFundamentalWeekly(
       const persisted = await persistPeriods(ticker, f.periods, snapshotDate, provenance);
       periodsInserted += persisted.inserted;
       restatements += persisted.restatements;
+
+      // Per-report earnings surprises (write-once) — Surprise box + residual-since-earnings.
+      try {
+        await persistEarningsSurprises(ticker, snapshotDate);
+      } catch (e) {
+        failures.push(`${ticker} earnings: ${e instanceof Error ? e.message : String(e)}`);
+      }
 
       const data = buildSnapshotData(f.periods, f.quote);
       if (!data) return;

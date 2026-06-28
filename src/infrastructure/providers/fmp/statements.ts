@@ -118,9 +118,14 @@ export async function fetchStatementPeriods(
       preferredEquity: num(b?.preferredStock),
       minorityInterest: num(b?.minorityInterest),
       netDebtReported: num(b?.netDebt),
+      interestExpense: num(i.interestExpense),
       operatingCashFlow: ocf,
       capitalExpenditure: num(c?.capitalExpenditure),
       freeCashFlowReported: num(c?.freeCashFlow),
+      stockBasedCompensation: num(c?.stockBasedCompensation),
+      changeInWorkingCapital: num(c?.changeInWorkingCapital),
+      commonStockIssued: num(c?.commonStockIssuance),
+      commonStockRepurchased: num(c?.commonStockRepurchased),
     });
   }
   return out.sort((a, b) => a.fiscalDate.localeCompare(b.fiscalDate));

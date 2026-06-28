@@ -744,6 +744,12 @@ model FundamentalPeriod {
   capex                    Decimal?              @db.Decimal(24, 4)
   freeCashFlow             Decimal?              @db.Decimal(24, 4) // DERIVED = OCF + capex
   sharesDiluted            Decimal?              @db.Decimal(24, 4)
+  // additive line items for the multi-box discovery model (nullable, write-once)
+  interestExpense          Decimal?              @db.Decimal(24, 4)
+  stockBasedCompensation   Decimal?              @db.Decimal(24, 4)
+  changeInWorkingCapital   Decimal?              @db.Decimal(24, 4) // FMP cash-flow effect (positive = cash source)
+  commonStockIssued        Decimal?              @db.Decimal(24, 4) // FMP commonStockIssuance (>= 0)
+  commonStockRepurchased   Decimal?              @db.Decimal(24, 4) // FMP commonStockRepurchased (<= 0, cash outflow)
   // derived ratios computed at the storage boundary
   grossMargin              Float?
   ebitdaMargin             Float?
@@ -756,6 +762,9 @@ model FundamentalPeriod {
   peRatio                  Float?
   evToEbitda               Float?
   priceToSales             Float?
+  dividendYield            Float?
+  fcfYield                 Float?
+  interestCoverage         Float?
   // raw FMP (verify-before-trust) + extra line items
   statementJson            Json?
   ratiosJson               Json?
@@ -826,6 +835,9 @@ model FundamentalScore {
   trapFlag        Boolean           @default(false)
   compounderScore Float?
   valuationPercentile Float?
+  /// Calculation-version identifier (e.g. "discovery_9_box_v1.0") so methodology
+  /// changes do not silently alter prior historical scores.
+  scoreMethodologyVersion String?
   scoreJson       Json?
   createdAt       DateTime          @default(now())
 
@@ -858,4 +870,27 @@ model DiscoveryQueueSnapshot {
   snapshotDate DateTime @unique @db.Date
   payloadJson  Json
   computedAt   DateTime @default(now())
+}
+
+/// Per-report earnings actuals + the consensus immediately before the report,
+/// sourced from FMP /stable/earnings (the consensus is FMP's estimate at the
+/// announcement, never updated after the release). Keyed (ticker, reportDate);
+/// write-once (existing figures never overwritten). Feeds the Earnings &
+/// Revenue Surprise box and the residual-return-since-last-earnings momentum
+/// component. `reportDate` is the announcement date; FMP does not currently
+/// expose a BMO/AMC field on this endpoint (see AGENTS.md data risks).
+model EarningsSurprise {
+  id                    String   @id @default(cuid())
+  ticker                String
+  reportDate            DateTime @db.Date
+  epsActual             Decimal? @db.Decimal(20, 6)
+  epsEstimated          Decimal? @db.Decimal(20, 6)
+  revenueActual         Decimal? @db.Decimal(24, 4)
+  revenueEstimated      Decimal? @db.Decimal(24, 4)
+  source                String   @default("FMP")
+  firstSeenSnapshotDate DateTime @db.Date
+  createdAt             DateTime @default(now())
+
+  @@unique([ticker, reportDate])
+  @@index([ticker, reportDate])
 }

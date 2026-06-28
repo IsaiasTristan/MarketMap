@@ -24,8 +24,10 @@
     "job:fundamental": "tsx scripts/fundamental-weekly.ts",
     "job:fundamental-retaxonomy": "tsx scripts/fundamental-retaxonomy.ts",
     "job:fundamental-enrich": "tsx scripts/fundamental-enrich-balance.ts",
+    "job:fundamental-enrich-boxes": "tsx scripts/fundamental-enrich-boxes.ts",
     "job:fundamental-validate": "tsx scripts/fundamental-fmp-validate.ts",
-    "job:fundamental-backtest": "tsx scripts/fundamental-backtest.ts"
+    "job:fundamental-backtest": "tsx scripts/fundamental-backtest.ts",
+    "job:fundamental-box-correlation": "tsx scripts/fundamental-box-correlation.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",

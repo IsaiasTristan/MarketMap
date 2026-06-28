@@ -232,14 +232,6 @@ export const fundamentalsFinancialsQuery = z.object({
   basis: z.enum(["annual", "quarter"]).optional().default("annual"),
 });
 
-export const fundamentalsOverlapQuery = z.object({
-  topDecile: z
-    .string()
-    .optional()
-    .transform((v) => (v ? Math.max(1, Math.min(10, Number(v))) : 8))
-    .pipe(z.number().int().min(1).max(10)),
-});
-
 export const fundamentalsIngestBody = z.object({
   snapshotDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   refreshReference: z.boolean().optional(),

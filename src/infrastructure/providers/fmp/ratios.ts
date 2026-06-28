@@ -36,6 +36,8 @@ export async function fetchRatios(
         evToEbitda: num(r.evToEBITDA) ?? num(r.enterpriseValueMultiple),
         debtToEquity: num(r.debtToEquityRatio),
         netDebtToEbitda: num(r.netDebtToEBITDA),
+        dividendYield: num(r.dividendYield),
+        interestCoverage: num(r.interestCoverageRatio),
       };
     })
     .filter((r): r is NormalizedRatios => r !== null)

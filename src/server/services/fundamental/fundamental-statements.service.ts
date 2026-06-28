@@ -45,6 +45,11 @@ export interface ComputedPeriod {
   capex: number | null;
   freeCashFlow: number | null;
   sharesDiluted: number | null;
+  interestExpense: number | null;
+  stockBasedCompensation: number | null;
+  changeInWorkingCapital: number | null;
+  commonStockIssued: number | null;
+  commonStockRepurchased: number | null;
   grossMargin: number | null;
   ebitdaMargin: number | null;
   operatingMargin: number | null;
@@ -55,6 +60,9 @@ export interface ComputedPeriod {
   peRatio: number | null;
   evToEbitda: number | null;
   priceToSales: number | null;
+  dividendYield: number | null;
+  fcfYield: number | null;
+  interestCoverage: number | null;
   statementJson: Record<string, unknown>;
   ratiosJson: Record<string, unknown>;
 }
@@ -120,6 +128,11 @@ export async function buildTickerFundamentals(
       capex: s.capitalExpenditure,
       freeCashFlow: fcf,
       sharesDiluted: s.sharesDiluted,
+      interestExpense: s.interestExpense,
+      stockBasedCompensation: s.stockBasedCompensation,
+      changeInWorkingCapital: s.changeInWorkingCapital,
+      commonStockIssued: s.commonStockIssued,
+      commonStockRepurchased: s.commonStockRepurchased,
       grossMargin: ratio(s.grossProfit, s.revenue),
       ebitdaMargin: ratio(ebitda, s.revenue),
       operatingMargin: ratio(s.operatingIncome, s.revenue),
@@ -130,6 +143,9 @@ export async function buildTickerFundamentals(
       peRatio: r?.peRatio ?? null,
       evToEbitda: k?.evToEbitda ?? r?.evToEbitda ?? null,
       priceToSales: r?.priceToSales ?? null,
+      dividendYield: r?.dividendYield ?? null,
+      fcfYield: k?.fcfYield ?? null,
+      interestCoverage: r?.interestCoverage ?? null,
       statementJson: { ...s },
       ratiosJson: { ratios: r ?? null, keyMetrics: k ?? null },
     };
@@ -210,6 +226,11 @@ export async function persistPeriods(
       capex: p.capex,
       freeCashFlow: p.freeCashFlow,
       sharesDiluted: p.sharesDiluted,
+      interestExpense: p.interestExpense,
+      stockBasedCompensation: p.stockBasedCompensation,
+      changeInWorkingCapital: p.changeInWorkingCapital,
+      commonStockIssued: p.commonStockIssued,
+      commonStockRepurchased: p.commonStockRepurchased,
       grossMargin: p.grossMargin,
       ebitdaMargin: p.ebitdaMargin,
       operatingMargin: p.operatingMargin,
@@ -220,6 +241,9 @@ export async function persistPeriods(
       peRatio: p.peRatio,
       evToEbitda: p.evToEbitda,
       priceToSales: p.priceToSales,
+      dividendYield: p.dividendYield,
+      fcfYield: p.fcfYield,
+      interestCoverage: p.interestCoverage,
       statementJson: p.statementJson as Prisma.InputJsonValue,
       ratiosJson: p.ratiosJson as Prisma.InputJsonValue,
       provenance,

@@ -6,26 +6,15 @@ import { BloombergTabStrip, type BloombergTabItem } from "@/components/analysis/
 import { useIsAdmin } from "@/lib/api/useMe";
 import type { DiscoveryPayload } from "./types";
 import { DiscoveryRankTable } from "./DiscoveryRankTable";
-import { DiscoverySummary } from "./DiscoverySummary";
-import { MarginInflectionDumbbell } from "./MarginInflectionDumbbell";
-import { QualityValueScatter } from "./QualityValueScatter";
-import { AccrualsScreen } from "./AccrualsScreen";
-import { CompounderScatter } from "./CompounderScatter";
 import { DiligencePanel } from "./DiligencePanel";
 import { FinancialsTable } from "./FinancialsTable";
-import { OverlapTable } from "./OverlapTable";
 
-type FundTab = "rank" | "margin" | "qv" | "accruals" | "compounder" | "diligence" | "financials" | "overlap";
+type FundTab = "rank" | "diligence" | "financials";
 
 const TABS: BloombergTabItem[] = [
   { key: "rank", label: "Discovery Rank" },
-  { key: "margin", label: "Margin Inflection" },
-  { key: "qv", label: "Quality / Value" },
-  { key: "accruals", label: "Accruals Screen" },
-  { key: "compounder", label: "Compounders" },
   { key: "diligence", label: "Diligence" },
   { key: "financials", label: "Financials" },
-  { key: "overlap", label: "Overlap" },
 ];
 
 export function FundamentalsClient() {
@@ -33,6 +22,8 @@ export function FundamentalsClient() {
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
   const [sectorFilter, setSectorFilter] = useState<string | null>(null);
   const [subsectorFilter, setSubsectorFilter] = useState<string | null>(null);
+  const [excludeSectorFilter, setExcludeSectorFilter] = useState<string | null>(null);
+  const [excludeSubsectorFilter, setExcludeSubsectorFilter] = useState<string | null>(null);
   const isAdmin = useIsAdmin();
 
   const { data, isLoading, error } = useQuery<DiscoveryPayload>({
@@ -76,40 +67,28 @@ export function FundamentalsClient() {
 
       <BloombergTabStrip tabs={TABS} activeKey={tab} onChange={(k) => setTab(k as FundTab)} />
 
-      {tab !== "diligence" && tab !== "financials" && tab !== "overlap" && dataState !== "ready" ? (
+      {tab !== "diligence" && tab !== "financials" && dataState !== "ready" ? (
         <DataNotice state={dataState} snapshotDate={data?.snapshotDate} />
       ) : null}
 
       <div>
         {tab === "rank" && (
-          <>
-            <DiscoverySummary
-              rows={rows}
-              sectorFilter={sectorFilter}
-              subsectorFilter={subsectorFilter}
-              onFilterChange={(sector, sub) => {
-                setSectorFilter(sector);
-                setSubsectorFilter(sub);
-              }}
-            />
-            <DiscoveryRankTable
-              rows={rows}
-              snapshotDate={data?.snapshotDate}
-              onSelectTicker={openDiligence}
-              sectorFilter={sectorFilter}
-              subsectorFilter={subsectorFilter}
-              onSectorFilterChange={setSectorFilter}
-              onSubsectorFilterChange={setSubsectorFilter}
-            />
-          </>
+          <DiscoveryRankTable
+            rows={rows}
+            snapshotDate={data?.snapshotDate}
+            onSelectTicker={openDiligence}
+            sectorFilter={sectorFilter}
+            subsectorFilter={subsectorFilter}
+            excludeSectorFilter={excludeSectorFilter}
+            excludeSubsectorFilter={excludeSubsectorFilter}
+            onSectorFilterChange={setSectorFilter}
+            onSubsectorFilterChange={setSubsectorFilter}
+            onExcludeSectorFilterChange={setExcludeSectorFilter}
+            onExcludeSubsectorFilterChange={setExcludeSubsectorFilter}
+          />
         )}
-        {tab === "margin" && <MarginInflectionDumbbell rows={rows} onSelectTicker={openDiligence} />}
-        {tab === "qv" && <QualityValueScatter rows={rows} onSelectTicker={openDiligence} />}
-        {tab === "accruals" && <AccrualsScreen rows={rows} onSelectTicker={openDiligence} />}
-        {tab === "compounder" && <CompounderScatter rows={rows} onSelectTicker={openDiligence} />}
         {tab === "diligence" && <DiligencePanel ticker={selectedTicker} onPickTicker={setSelectedTicker} />}
         {tab === "financials" && <FinancialsTable ticker={selectedTicker} onPickTicker={setSelectedTicker} />}
-        {tab === "overlap" && <OverlapTable onSelectTicker={openDiligence} />}
       </div>
     </div>
   );

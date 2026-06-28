@@ -12,6 +12,8 @@ import {
   YAxis,
 } from "recharts";
 import { robustDomain } from "@/lib/fundamental/robust-domain";
+import { heatSignedBloomberg } from "@/components/analysis/ui/heat";
+import type { FundamentalScoreJson, BoxAudit } from "./types";
 
 interface DiligenceResult {
   ticker: string;
@@ -87,6 +89,7 @@ export function DiligencePanel({
   const valuation = (data?.score?.valuation ?? null) as
     | { cheapness: number | null; peRatio: number | null; evToEbitda: number | null; priceToSales: number | null }
     | null;
+  const scoreJson = (data?.score ?? null) as unknown as FundamentalScoreJson | null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -146,6 +149,8 @@ export function DiligencePanel({
             </div>
           </div>
 
+          {scoreJson?.boxes && scoreJson.boxes.length > 0 ? <BoxBreakdown score={scoreJson} /> : null}
+
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 11 }}>
             <div>
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>Valuation vs own 5y history (percentile; lower = cheaper)</div>
@@ -164,6 +169,82 @@ export function DiligencePanel({
             </div>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+/** Auditable per-box breakdown: box score + each component's raw value and peer z. */
+function BoxBreakdown({ score }: { score: FundamentalScoreJson }) {
+  const composite = score.composite;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11, flexWrap: "wrap" }}>
+        <span style={{ color: "var(--text-muted)" }}>Box scores (peer-relative z, mean of components)</span>
+        <span style={{ color: composite != null ? heatSignedBloomberg(composite, 1.5) : "var(--text-muted)", fontWeight: 700 }} className="bb-num">
+          Composite {composite != null ? composite.toFixed(2) : "—"}
+        </span>
+        <span style={{ color: "var(--text-muted)" }}>{score.validBoxCount}/9 valid boxes</span>
+        {score.scoreMethodologyVersion ? (
+          <span style={{ color: "var(--text-muted)", fontSize: 9 }}>{score.scoreMethodologyVersion}</span>
+        ) : null}
+      </div>
+      {score.flags && score.flags.length > 0 ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {score.flags.map((f) => (
+            <span key={f} style={{ fontSize: 9, fontWeight: 700, color: "#000", background: "var(--color-accent)", padding: "0 4px", opacity: 0.9 }}>
+              {f}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 6 }}>
+        {score.boxes.map((box) => (
+          <BoxCard key={box.key} box={box} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BoxCard({ box }: { box: BoxAudit }) {
+  const color = box.boxScore != null ? heatSignedBloomberg(box.boxScore, 1.5) : "var(--text-muted)";
+  return (
+    <div style={{ background: "var(--bg-surface)", border: "1px solid var(--chrome-border)", padding: "4px 8px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 6 }}>
+        <span style={{ fontSize: 10, fontWeight: 700, color: "var(--text-primary)" }}>{box.label}</span>
+        <span className="bb-num" style={{ fontSize: 12, fontWeight: 700, color }}>
+          {box.boxScore != null ? box.boxScore.toFixed(2) : "—"}
+        </span>
+      </div>
+      {box.boxScore == null && box.missingReason ? (
+        <div style={{ fontSize: 9, color: "var(--text-muted)", marginTop: 2 }}>{box.missingReason}</div>
+      ) : (
+        <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse", marginTop: 2 }}>
+          <thead>
+            <tr style={{ color: "var(--text-muted)" }}>
+              <th style={{ textAlign: "left", fontWeight: 400 }}>Component</th>
+              <th style={{ textAlign: "right", fontWeight: 400 }}>raw</th>
+              <th style={{ textAlign: "right", fontWeight: 400 }}>z</th>
+            </tr>
+          </thead>
+          <tbody>
+            {box.components.map((c) => (
+              <tr key={c.key}>
+                <td style={{ color: "var(--text-muted)", paddingRight: 4 }}>{c.label}</td>
+                <td className="bb-num" style={{ textAlign: "right", color: "var(--text-primary)" }}>
+                  {c.raw == null || !Number.isFinite(c.raw) ? "—" : Math.abs(c.raw) >= 1000 ? c.raw.toExponential(1) : c.raw.toFixed(3)}
+                </td>
+                <td
+                  className="bb-num"
+                  style={{ textAlign: "right", color: c.z != null && Number.isFinite(c.z) ? heatSignedBloomberg(c.z, 2) : "var(--text-muted)" }}
+                >
+                  {c.z == null || !Number.isFinite(c.z) ? "—" : c.z.toFixed(2)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </div>
   );
