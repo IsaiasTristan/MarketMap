@@ -1,1 +1,1 @@
-export { heatSignedBloomberg, heatmapRgb, divergingHeatColor } from "@/domain/calculations/heatmap";
+export { heatSignedBloomberg, heatPercentileBloomberg, heatmapRgb, divergingHeatColor } from "@/domain/calculations/heatmap";

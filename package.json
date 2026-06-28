@@ -17,7 +17,15 @@
     "job:refresh": "node -e \"console.log('Refresh job runner not wired yet.'); process.exit(0)\"",
     "job:daily": "tsx scripts/daily-precompute.ts",
     "job:precompute-grid": "tsx scripts/precompute-per-stock-grid.ts",
-    "job:backfill-names": "tsx scripts/backfill-security-names.ts"
+    "job:backfill-names": "tsx scripts/backfill-security-names.ts",
+    "job:revision": "tsx scripts/revision-weekly.ts",
+    "job:revision-validate": "tsx scripts/revision-fmp-validate.ts",
+    "job:revision-backtest": "tsx scripts/revision-legb-backtest.ts",
+    "job:fundamental": "tsx scripts/fundamental-weekly.ts",
+    "job:fundamental-retaxonomy": "tsx scripts/fundamental-retaxonomy.ts",
+    "job:fundamental-enrich": "tsx scripts/fundamental-enrich-balance.ts",
+    "job:fundamental-validate": "tsx scripts/fundamental-fmp-validate.ts",
+    "job:fundamental-backtest": "tsx scripts/fundamental-backtest.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",

@@ -17,6 +17,8 @@
  *   FMP_API_KEY=... npx tsx scripts/revision-fmp-validate.ts
  */
 
+export {}; // module scope (avoids global-scope collision with other CLI probes)
+
 const API_KEY = process.argv[2] || process.env.FMP_API_KEY || "";
 const MEGA = (process.argv[3] || "AAPL").toUpperCase();
 const SMALL = (process.argv[4] || "AXGN").toUpperCase(); // Axogen — small/under-followed

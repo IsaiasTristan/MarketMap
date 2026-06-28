@@ -54,6 +54,12 @@ enum RefreshJobStatus {
   CANCELLED
 }
 
+/// Peer-group level for Engine 1 revision aggregates / z-scoring.
+enum RevisionGroupType {
+  SECTOR
+  SUBSECTOR
+}
+
 // --- Core reference ---
 
 model Universe {
@@ -523,4 +529,333 @@ model RefreshJob {
   createdAt   DateTime           @default(now())
 
   @@index([status, createdAt])
+}
+
+// ===========================================================================
+// Engine 1 — Analyst Revision Detector (FMP-backed)
+//
+// A self-contained, append-only point-in-time store. The store is keyed by
+// (ticker, snapshotDate) and is NEVER overwritten: each row reflects only what
+// was knowable on its date, so trajectory is queryable and future backtests are
+// look-ahead-free. Ingestion writes raw rows (RevisionSnapshot + the Leg-B
+// event tables); signal computation writes RevisionScore on the SAME key, so
+// signal logic can change without touching ingestion and a second engine can
+// extend the same key / reuse RevisionReference.
+// ===========================================================================
+
+/// Reference / classification table for the Engine 1 universe (decoupled from
+/// the market-map Universe/Security). Populated from FMP screener + profile.
+/// Shared by a future Engine 2.
+model RevisionReference {
+  id              String   @id @default(cuid())
+  ticker          String   @unique // uppercase normalized in app layer
+  companyName     String
+  cik             String?
+  sector          String? // FMP sector
+  subsector       String? // FMP industry — the default peer set for z-scoring
+  exchange        String?
+  country         String?
+  currency        String?
+  marketCap       Decimal? @db.Decimal(20, 2)
+  identifiersJson Json? // { isin, cusip, ... } — extensible, often spotty
+  isActive        Boolean  @default(true)
+  addedAt         DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  lastSeenAt      DateTime?
+
+  @@index([sector])
+  @@index([subsector])
+  @@index([isActive])
+}
+
+/// Append-only weekly per-stock snapshot holding both legs' consensus as-of the
+/// snapshot date. Leg A (estimates) has no source history — this store IS its
+/// revision history. A few leading metrics are typed for fast querying; the
+/// spotty multi-period estimate matrix lives in estimatesJson.
+model RevisionSnapshot {
+  id                 String   @id @default(cuid())
+  ticker             String
+  snapshotDate       DateTime @db.Date
+  // Leg A — leading estimate consensus (forward fiscal period), absolute $.
+  revenueAvg         Decimal? @db.Decimal(24, 4)
+  epsAvg             Decimal? @db.Decimal(20, 6)
+  numAnalystsRevenue Int?
+  numAnalystsEps     Int?
+  // Leg B — current consensus snapshot.
+  ptConsensus        Decimal? @db.Decimal(20, 6)
+  ptHigh             Decimal? @db.Decimal(20, 6)
+  ptLow              Decimal? @db.Decimal(20, 6)
+  ptMedian           Decimal? @db.Decimal(20, 6)
+  numPriceTargets    Int?
+  nextEarningsDate   DateTime? @db.Date
+  // Spotty / multi-field detail.
+  estimatesJson      Json? // per fiscal period: revenue/ebitda/ebit/netIncome/sga/eps {low,avg,high} + counts
+  ratingsJson        Json? // grades-consensus distribution + price-target-summary periods
+  source             String   @default("FMP")
+  createdAt          DateTime @default(now())
+
+  @@unique([ticker, snapshotDate])
+  @@index([snapshotDate])
+  @@index([ticker])
+}
+
+/// Leg B event-level analyst grade changes (FMP /grades). Backtestable on day
+/// one: backfilled in full on first run, then tailed weekly. Append-only.
+model RatingEvent {
+  id             String   @id @default(cuid())
+  ticker         String
+  eventDate      DateTime @db.Date
+  gradingCompany String?
+  previousGrade  String?
+  newGrade       String?
+  action         String? // upgrade | downgrade | maintain | initiate | ...
+  source         String   @default("FMP")
+  createdAt      DateTime @default(now())
+
+  @@unique([ticker, eventDate, gradingCompany, newGrade])
+  @@index([ticker, eventDate])
+  @@index([eventDate])
+}
+
+/// Leg B event-level price-target changes (FMP /price-target-news).
+/// Backfilled on first run, tailed weekly. Append-only.
+model PriceTargetEvent {
+  id              String    @id @default(cuid())
+  ticker          String
+  publishedDate   DateTime
+  analystCompany  String?
+  analystName     String?
+  priceTarget     Decimal?  @db.Decimal(20, 6)
+  priceWhenPosted Decimal?  @db.Decimal(20, 6)
+  newsPublisher   String?
+  source          String    @default("FMP")
+  createdAt       DateTime  @default(now())
+
+  @@unique([ticker, publishedDate, analystCompany, priceTarget])
+  @@index([ticker, publishedDate])
+  @@index([publishedDate])
+}
+
+/// Sector / subsector aggregate weekly snapshot (rotation + breadth heatmap
+/// inputs). Append-only, keyed by (groupType, groupKey, snapshotDate).
+model RevisionSectorAggregate {
+  id            String            @id @default(cuid())
+  groupType     RevisionGroupType
+  groupKey      String // sector name or subsector (industry) name
+  snapshotDate  DateTime          @db.Date
+  breadth       Float?
+  compositeMean Float?
+  nameCount     Int?
+  aggregatesJson Json? // per-signal means / breadth detail
+  createdAt     DateTime          @default(now())
+
+  @@unique([groupType, groupKey, snapshotDate])
+  @@index([groupType, snapshotDate])
+}
+
+/// Computed signal / score layer, keyed on the SAME (ticker, snapshotDate) as
+/// RevisionSnapshot but written by the signal service, not ingestion. Holds
+/// per-signal z-scores, the composite, deciles, and the week-over-week
+/// new-arrival flag (change detector).
+model RevisionScore {
+  id              String            @id @default(cuid())
+  ticker          String
+  snapshotDate    DateTime          @db.Date
+  peerGroupType   RevisionGroupType
+  peerGroupKey    String
+  composite       Float?
+  subsectorDecile Int?
+  sectorDecile    Int?
+  rank            Int?
+  newArrival      Boolean           @default(false)
+  scoreJson       Json? // all raw signals + their z-scores
+  createdAt       DateTime          @default(now())
+
+  @@unique([ticker, snapshotDate])
+  @@index([snapshotDate])
+  @@index([snapshotDate, rank])
+}
+
+/// Weekly ranked research-queue output cache (master rank table payload).
+/// One row per snapshotDate, overwritten on recompute.
+model ResearchQueueSnapshot {
+  id           String   @id @default(cuid())
+  snapshotDate DateTime @unique @db.Date
+  payloadJson  Json
+  computedAt   DateTime @default(now())
+}
+
+// ===========================================================================
+// Engine 2 — Fundamental-Inflection Discovery (FMP-backed)
+//
+// Extends Engine 1's append-only point-in-time design — same (ticker,
+// snapshotDate) weekly key, reuses RevisionReference (universe + sector
+// taxonomy) and RevisionGroupType (peer level) — rather than forking a parallel
+// store. Detects margin/growth/FCF/ROIC inflections + deleveraging, applies
+// quality filters (accruals trap, compounder consistency) and an intra-ticker
+// valuation-vs-own-history signal.
+//
+// Phase 0 (scripts/fundamental-fmp-validate.ts, live key): 32 quarters (~8yr)
+// of income/balance/cash-flow/ratios/key-metrics on mega + small-caps; OCF +
+// capex 32/32 covered on every small-cap (accruals inputs safe); FMP's gross
+// margin / FCF / EV reconcile exactly to our line-item formulas, but FMP's
+// `ebitda` field diverges structurally on small/loss-making names — so EBITDA
+// (and EBITDA-margin / net-debt-to-EBITDA) are computed OUR way (= operating
+// income + D&A) and stored; ROIC/ROE are trusted from FMP; FMP raw values are
+// retained in JSON for reconciliation.
+// ===========================================================================
+
+/// Provenance of a stored fiscal-period row. Pre-launch BACKFILL rows are
+/// restated-basis: their `firstSeenSnapshotDate` is the backfill date, NOT a
+/// true filing date, so as-first-reported semantics are intentionally fictional
+/// for them and must not be read as point-in-time truth. Only LIVE rows
+/// (captured weekly after launch) carry genuine as-first-reported integrity,
+/// and only LIVE-vs-LIVE differences are treated as restatements.
+enum FundamentalProvenance {
+  BACKFILL
+  LIVE
+}
+
+/// As-first-reported (for LIVE rows) fiscal-period statement facts + derived
+/// fields, keyed (ticker, fiscalDate, periodType). Written once — never
+/// overwritten — so trajectory is queryable and backtests are look-ahead-free
+/// for the LIVE span. Derived EBITDA/FCF/margins/accruals are stored (the value
+/// as computed from data known that date) to preserve point-in-time integrity.
+model FundamentalPeriod {
+  id                       String                @id @default(cuid())
+  ticker                   String
+  fiscalDate               DateTime              @db.Date
+  periodType               String // "annual" | "quarter"
+  fiscalLabel              String? // FY | Q1..Q4
+  // typed core line items (as-first-reported for LIVE rows)
+  revenue                  Decimal?              @db.Decimal(24, 4)
+  grossProfit              Decimal?              @db.Decimal(24, 4)
+  operatingIncome          Decimal?              @db.Decimal(24, 4)
+  netIncome                Decimal?              @db.Decimal(24, 4)
+  depreciationAmortization Decimal?              @db.Decimal(24, 4)
+  ebitda                   Decimal?              @db.Decimal(24, 4) // DERIVED = operatingIncome + D&A
+  totalDebt                Decimal?              @db.Decimal(24, 4)
+  cash                     Decimal?              @db.Decimal(24, 4)
+  totalAssets              Decimal?              @db.Decimal(24, 4)
+  totalEquity              Decimal?              @db.Decimal(24, 4)
+  preferredEquity          Decimal?              @db.Decimal(24, 4)
+  minorityInterest         Decimal?              @db.Decimal(24, 4)
+  operatingCashFlow        Decimal?              @db.Decimal(24, 4)
+  capex                    Decimal?              @db.Decimal(24, 4)
+  freeCashFlow             Decimal?              @db.Decimal(24, 4) // DERIVED = OCF + capex
+  sharesDiluted            Decimal?              @db.Decimal(24, 4)
+  // derived ratios computed at the storage boundary
+  grossMargin              Float?
+  ebitdaMargin             Float?
+  operatingMargin          Float?
+  netMargin                Float?
+  roic                     Float? // trusted from FMP
+  roe                      Float?
+  netDebtToEbitda          Float?
+  // valuation multiples priced at the fiscal date (FMP key-metrics) — own-history series
+  peRatio                  Float?
+  evToEbitda               Float?
+  priceToSales             Float?
+  // raw FMP (verify-before-trust) + extra line items
+  statementJson            Json?
+  ratiosJson               Json?
+  provenance               FundamentalProvenance @default(LIVE)
+  firstSeenSnapshotDate    DateTime              @db.Date
+  source                   String                @default("FMP")
+  createdAt                DateTime              @default(now())
+
+  @@unique([ticker, fiscalDate, periodType])
+  @@index([ticker, periodType, fiscalDate])
+  @@index([fiscalDate])
+}
+
+/// Append-only weekly point-in-time snapshot: the latest filed figures known on
+/// `snapshotDate` (TTM leading metrics + current valuation multiples priced at
+/// the snapshot) plus a `metricsJson` carrying the trailing per-period series
+/// the signals consume and the own-history valuation percentiles. Keyed
+/// (ticker, snapshotDate), never overwritten.
+model FundamentalSnapshot {
+  id               String   @id @default(cuid())
+  ticker           String
+  snapshotDate     DateTime @db.Date
+  latestFiscalDate DateTime? @db.Date
+  // typed leading metrics known as-of (TTM / latest)
+  revenueTtm       Decimal? @db.Decimal(24, 4)
+  grossMargin      Float?
+  ebitdaMargin     Float?
+  operatingMargin  Float?
+  netMargin        Float?
+  roic             Float?
+  roe              Float?
+  fcfTtm           Decimal? @db.Decimal(24, 4)
+  fcfMargin        Float?
+  revenueGrowthYoy Float?
+  netDebtToEbitda  Float?
+  accrualsRatio    Float?
+  // current valuation multiples (priced at snapshot via live quote)
+  peRatio          Decimal? @db.Decimal(20, 6)
+  evToEbitda       Decimal? @db.Decimal(20, 6)
+  priceToSales     Decimal? @db.Decimal(20, 6)
+  marketCap        Decimal? @db.Decimal(30, 2)
+  enterpriseValue  Decimal? @db.Decimal(30, 2)
+  metricsJson      Json?
+  source           String   @default("FMP")
+  createdAt        DateTime @default(now())
+
+  @@unique([ticker, snapshotDate])
+  @@index([snapshotDate])
+  @@index([ticker])
+}
+
+/// Computed signal / score layer for Engine 2, keyed on the same (ticker,
+/// snapshotDate) as FundamentalSnapshot but written by the scoring service.
+/// Cross-sectional inflection signals are z-scored within subsector (sector
+/// fallback); the valuation-vs-own-history signal is intra-ticker (percentile,
+/// not z-scored). Quality filters set trapFlag / compounderScore.
+model FundamentalScore {
+  id              String            @id @default(cuid())
+  ticker          String
+  snapshotDate    DateTime          @db.Date
+  peerGroupType   RevisionGroupType
+  peerGroupKey    String
+  composite       Float?
+  subsectorDecile Int?
+  sectorDecile    Int?
+  rank            Int?
+  newArrival      Boolean           @default(false)
+  trapFlag        Boolean           @default(false)
+  compounderScore Float?
+  valuationPercentile Float?
+  scoreJson       Json?
+  createdAt       DateTime          @default(now())
+
+  @@unique([ticker, snapshotDate])
+  @@index([snapshotDate])
+  @@index([snapshotDate, rank])
+}
+
+/// Sector / subsector aggregate weekly snapshot for Engine 2 (rotation /
+/// breadth of the inflection composite). Append-only.
+model FundamentalSectorAggregate {
+  id                   String            @id @default(cuid())
+  groupType            RevisionGroupType
+  groupKey             String
+  snapshotDate         DateTime          @db.Date
+  marginInflectionMean Float?
+  compositeMean        Float?
+  nameCount            Int?
+  aggregatesJson       Json?
+  createdAt            DateTime          @default(now())
+
+  @@unique([groupType, groupKey, snapshotDate])
+  @@index([groupType, snapshotDate])
+}
+
+/// Weekly ranked discovery-queue output cache (master discovery payload).
+/// One row per snapshotDate, overwritten on recompute.
+model DiscoveryQueueSnapshot {
+  id           String   @id @default(cuid())
+  snapshotDate DateTime @unique @db.Date
+  payloadJson  Json
+  computedAt   DateTime @default(now())
 }

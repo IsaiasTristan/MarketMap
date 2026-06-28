@@ -14,6 +14,33 @@ export function marketDataProviderId(): string {
   return process.env.MARKET_DATA_PROVIDER ?? "yahoo";
 }
 
+// ─── FMP (Financial Modeling Prep) — Engine 1 revision detector ────────────
+
+/** FMP API key. Empty string when unset (callers should fail loudly). */
+export function fmpApiKey(): string {
+  return process.env.FMP_API_KEY?.trim() ?? "";
+}
+
+/** FMP REST base URL (no trailing slash). */
+export function fmpBaseUrl(): string {
+  const v = process.env.FMP_BASE_URL?.trim();
+  return v && v.length ? v.replace(/\/$/, "") : "https://financialmodelingprep.com";
+}
+
+/**
+ * Plan tier hint, lower-cased. "ultimate" enables the bulk-CSV ingestion path;
+ * anything else falls back to the per-symbol worker pool. Validated key is
+ * Ultimate-class (bulk endpoints return data), so default to "ultimate".
+ */
+export function fmpTier(): "ultimate" | "premium" {
+  return process.env.FMP_TIER?.trim().toLowerCase() === "premium" ? "premium" : "ultimate";
+}
+
+/** Max FMP calls per minute (politeness budget). Premium 750, Ultimate 3000. */
+export function fmpCallsPerMinute(): number {
+  return readNumber("FMP_CALLS_PER_MINUTE", fmpTier() === "premium" ? 700 : 2800);
+}
+
 // ─── Cloudflare Access identity / admin role ──────────────────────────────
 
 /**

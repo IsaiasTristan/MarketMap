@@ -177,3 +177,76 @@ export const portfolioPositionsBody = z.object({
 export const renamePortfolioBody = z.object({
   name: z.string().min(1).max(120),
 });
+
+// ---------------------------------------------------------------------------
+// Engine 1 — analyst revision research queue
+// ---------------------------------------------------------------------------
+
+export const researchQueueQuery = z.object({
+  limit: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(1, Math.min(3000, Number(v))) : undefined))
+    .pipe(z.number().int().min(1).max(3000).optional()),
+});
+
+export const researchTrajectoryQuery = z.object({
+  ticker: z.string().min(1).max(12).transform((s) => s.trim().toUpperCase()),
+});
+
+export const researchGroupQuery = z.object({
+  groupType: z.enum(["SECTOR", "SUBSECTOR"]).optional().default("SUBSECTOR"),
+  weeks: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(2, Math.min(104, Number(v))) : 52))
+    .pipe(z.number().int().min(2).max(104)),
+});
+
+export const researchIngestBody = z.object({
+  snapshotDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  refreshReference: z.boolean().optional(),
+  referenceSource: z.enum(["MARKET_MAP", "FMP_SCREENER"]).optional(),
+  universeId: z.string().optional(),
+  backfillEvents: z.boolean().optional(),
+  enrichProfiles: z.boolean().optional(),
+  maxUniverse: z.number().int().min(1).max(5000).optional(),
+});
+
+// ─── Engine 2 — Fundamentals (discovery) ───────────────────────────────────
+
+export const fundamentalsQueueQuery = z.object({
+  limit: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(1, Math.min(3000, Number(v))) : undefined))
+    .pipe(z.number().int().min(1).max(3000).optional()),
+});
+
+export const fundamentalsDiligenceQuery = z.object({
+  ticker: z.string().min(1).max(12).transform((s) => s.trim().toUpperCase()),
+});
+
+export const fundamentalsFinancialsQuery = z.object({
+  ticker: z.string().min(1).max(12).transform((s) => s.trim().toUpperCase()),
+  basis: z.enum(["annual", "quarter"]).optional().default("annual"),
+});
+
+export const fundamentalsOverlapQuery = z.object({
+  topDecile: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(1, Math.min(10, Number(v))) : 8))
+    .pipe(z.number().int().min(1).max(10)),
+});
+
+export const fundamentalsIngestBody = z.object({
+  snapshotDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  refreshReference: z.boolean().optional(),
+  referenceSource: z.enum(["MARKET_MAP", "FMP_SCREENER"]).optional(),
+  universeId: z.string().min(1).optional(),
+  backfill: z.boolean().optional(),
+  enrichProfiles: z.boolean().optional(),
+  maxUniverse: z.number().int().min(1).max(5000).optional(),
+  quarters: z.number().int().min(4).max(60).optional(),
+});

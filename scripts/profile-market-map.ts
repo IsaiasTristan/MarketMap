@@ -23,7 +23,7 @@
  * Usage: `npx tsx scripts/profile-market-map.ts [RUNS]`   (default RUNS=3)
  */
 import { performance } from "node:perf_hooks";
-import { PrismaClient, Prisma } from "@prisma/client";
+import { PrismaClient, Prisma, type BenchmarkCode } from "@prisma/client";
 import { securityHorizonMetrics } from "../src/domain/calculations/security-metrics";
 import type { DateClose } from "../src/domain/calculations/alignment";
 import { riskFreeAnnual } from "../src/infrastructure/config/env";
@@ -116,7 +116,7 @@ function groupAndTrim(
 }
 
 async function loadBenchSeries(code: string): Promise<DateClose[]> {
-  const b = await prisma.benchmark.findUnique({ where: { code } });
+  const b = await prisma.benchmark.findUnique({ where: { code: code as BenchmarkCode } });
   if (!b) return [];
   const rows = await prisma.benchmarkPriceHistory.findMany({
     where: { benchmarkId: b.id },

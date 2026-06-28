@@ -443,6 +443,17 @@ html {
   padding: 0 2px;
 }
 
+.analysis-shell .bb-fa-spark-col {
+  width: 56px;
+  min-width: 56px;
+  padding: 0 2px;
+  vertical-align: middle;
+}
+.analysis-shell .bb-fa-spark-col svg {
+  display: block;
+  margin: 0 auto;
+}
+
 .analysis-shell .gap-1,
 .analysis-shell .gap-2,
 .analysis-shell .gap-3,
