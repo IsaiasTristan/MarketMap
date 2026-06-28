@@ -14,6 +14,7 @@ import { AlertsPanel } from "./panels/AlertsPanel";
 import { PortfolioPerStockToggle } from "./panels/PortfolioPerStockToggle";
 import { PerStockView } from "./panels/PerStockView";
 import { CorrelationsView } from "./panels/CorrelationsView";
+import { PriceCorrelationsView } from "./panels/PriceCorrelationsView";
 import { PortfolioTotalsPanel } from "./panels/PortfolioTotalsPanel";
 import { PortfolioFactorGrid } from "./panels/PortfolioFactorGrid";
 import { CoverageWarning } from "./panels/CoverageWarning";
@@ -232,8 +233,9 @@ export function FactorsClient() {
       <PortfolioPerStockToggle value={factorView} onChange={setFactorView} />
 
       {/* Top-level controls — per-stock renders its own toolbar internally,
-          so we only show the shared bar for portfolio + correlations. */}
-      {factorView !== "per_stock" && (
+          and price-correlations carries its own window control, so we only
+          show the shared bar for portfolio + factor correlations. */}
+      {(factorView === "portfolio" || factorView === "correlations") && (
         <FactorToolbar
           sectors={[]}
           subThemesBySector={{}}
@@ -252,6 +254,9 @@ export function FactorsClient() {
 
       {/* Correlations view */}
       {factorView === "correlations" && <CorrelationsView />}
+
+      {/* Price correlations view (Sector + Subsector heatmaps) */}
+      {factorView === "price_correlations" && <PriceCorrelationsView />}
 
       {/* Portfolio view (existing layout) */}
       {factorView === "portfolio" && showPortfolioEmptyState && (

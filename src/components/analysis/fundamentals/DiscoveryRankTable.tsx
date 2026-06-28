@@ -6,6 +6,7 @@ import { sectorColor, subThemeColor } from "@/lib/market-map/sector-colors";
 import { formatMetricValue } from "@/lib/format";
 import type { Horizon } from "@/domain/entities/horizons";
 import { BOX_REGISTRY, flatKey, type BoxKey } from "@/lib/fundamental/boxes";
+import { recomputeDiscoveryExclusions } from "@/lib/fundamental/discovery-exclude";
 import type { DiscoveryRow } from "./types";
 
 const PAGE_SIZE = 100;
@@ -368,6 +369,7 @@ function SortHeader({
   tilt = false,
   frame = false,
   width,
+  dim = false,
 }: {
   label: string;
   sortKey: SortKey;
@@ -379,6 +381,7 @@ function SortHeader({
   tilt?: boolean;
   frame?: boolean;
   width?: number;
+  dim?: boolean;
 }) {
   const active = activeKey === sortKey;
   // Active box column: top + side rails so the whole column reads as one frame.
@@ -387,7 +390,7 @@ function SortHeader({
     : undefined;
   if (tilt) {
     return (
-      <th style={{ ...wrapTh, width, boxShadow: frameShadow }} title={title ?? `Sort by ${label}`}>
+      <th style={{ ...wrapTh, width, boxShadow: frameShadow, opacity: dim ? 0.4 : undefined }} title={title ?? `Sort by ${label}`}>
         <WrapLabel onClick={() => onSort(sortKey)} active={active} dir={dir}>
           {label}
         </WrapLabel>
@@ -406,6 +409,7 @@ function SortHeader({
         color: active ? "var(--color-accent)" : undefined,
         width,
         boxShadow: frameShadow,
+        opacity: dim ? 0.4 : undefined,
       }}
       title={title ?? `Sort by ${label}`}
       onClick={() => onSort(sortKey)}
@@ -456,8 +460,37 @@ export function DiscoveryRankTable({
   const [sortKey, setSortKey] = useState<SortKey>("composite");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedBox, setExpandedBox] = useState<BoxKey | null>(null);
+  const [excludedBoxes, setExcludedBoxes] = useState<Set<BoxKey>>(new Set());
   const expandedDef = expandedBox ? BOX_REGISTRY.find((b) => b.key === expandedBox) ?? null : null;
   const expanded = expandedBox !== null;
+  const excludedCount = excludedBoxes.size;
+
+  // "What-if" lens: drop the excluded boxes from the composite and re-derive the
+  // composite / decile / rank live (display-only; the stored V1 score is unchanged).
+  const effectiveRows = useMemo(() => {
+    if (excludedCount === 0) return rows;
+    const recomputed = recomputeDiscoveryExclusions(rows, excludedBoxes);
+    return rows.map((r) => {
+      const rc = recomputed.get(r.ticker);
+      if (!rc) return r;
+      return {
+        ...r,
+        composite: rc.composite,
+        validBoxCount: rc.validBoxCount,
+        sectorDecile: rc.sectorDecile,
+        subsectorDecile: rc.subsectorDecile,
+        rank: rc.rank,
+      };
+    });
+  }, [rows, excludedBoxes, excludedCount]);
+
+  const toggleExcluded = (k: BoxKey) =>
+    setExcludedBoxes((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
   // Headers tilt + the heavy text columns narrow only when a box is expanded
   // (when the appended component columns need the room).
   const companyMax = expanded ? 130 : 220;
@@ -497,7 +530,7 @@ export function DiscoveryRankTable({
 
   const filtered = useMemo(() => {
     const q = query.trim().toUpperCase();
-    return rows.filter((r) => {
+    return effectiveRows.filter((r) => {
       if (onlyNew && !r.newArrival) return false;
       if (hideTraps && r.trapFlag) return false;
       if (sectorFilter && (r.sector?.trim() ?? "") !== sectorFilter) return false;
@@ -513,7 +546,7 @@ export function DiscoveryRankTable({
       if (q && !r.ticker.includes(q) && !(r.companyName ?? "").toUpperCase().includes(q)) return false;
       return true;
     });
-  }, [rows, onlyNew, hideTraps, query, sectorFilter, subsectorFilter, excludeSectorFilter, excludeSubsectorFilter]);
+  }, [effectiveRows, onlyNew, hideTraps, query, sectorFilter, subsectorFilter, excludeSectorFilter, excludeSubsectorFilter]);
 
   const sorted = useMemo(() => {
     const copy = [...filtered];
@@ -527,7 +560,7 @@ export function DiscoveryRankTable({
 
   useEffect(() => {
     setPage(1);
-  }, [onlyNew, hideTraps, query, sectorFilter, subsectorFilter, excludeSectorFilter, excludeSubsectorFilter, sortKey, sortDir]);
+  }, [onlyNew, hideTraps, query, sectorFilter, subsectorFilter, excludeSectorFilter, excludeSubsectorFilter, excludedBoxes, sortKey, sortDir]);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -612,6 +645,56 @@ export function DiscoveryRankTable({
           placeholder="Filter ticker / name"
           style={{ background: "var(--bg-surface)", border: "1px solid var(--chrome-border)", color: "var(--text-primary)", fontSize: 11, padding: "2px 6px" }}
         />
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <select
+            value=""
+            onChange={(e) => {
+              if (e.target.value) toggleExcluded(e.target.value as BoxKey);
+            }}
+            style={selectStyle}
+            aria-label="Exclude a metric from the composite"
+            title="Drop a box from the composite — Composite, Decile, and Rank recompute live."
+          >
+            <option value="">Exclude metric…</option>
+            {BOX_COLS.filter((c) => !excludedBoxes.has(c.key)).map((c) => (
+              <option key={c.key} value={c.key}>Exclude {c.label}</option>
+            ))}
+          </select>
+          {excludedCount > 0
+            ? BOX_COLS.filter((c) => excludedBoxes.has(c.key)).map((c) => (
+                <button
+                  key={c.key}
+                  type="button"
+                  onClick={() => toggleExcluded(c.key)}
+                  title={`Re-include ${c.label} in the composite`}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    background: "none",
+                    border: "1px solid var(--color-accent)",
+                    color: "var(--color-accent)",
+                    cursor: "pointer",
+                    fontSize: 10,
+                    fontWeight: 700,
+                    padding: "1px 6px",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {c.label} <span>✕</span>
+                </button>
+              ))
+            : null}
+          {excludedCount > 0 ? (
+            <button
+              type="button"
+              onClick={() => setExcludedBoxes(new Set())}
+              style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 10, textDecoration: "underline" }}
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 10, color: "var(--text-muted)" }}>
@@ -619,6 +702,9 @@ export function DiscoveryRankTable({
           Box-score columns show each box&apos;s peer-relative z + its z reconstructed over the last 8 quarters. Click a
           box cell to break it out into its components — each with its z-bar and 8-quarter trend — appended on the right
           for every name.
+          {excludedCount > 0
+            ? ` Composite/Decile recomputed without: ${BOX_COLS.filter((c) => excludedBoxes.has(c.key)).map((c) => c.label).join(", ")}.`
+            : ""}
         </span>
         {expandedDef ? (
           <button
@@ -677,10 +763,11 @@ export function DiscoveryRankTable({
                   dir={sortDir}
                   onSort={handleSort}
                   align="center"
-                  title={c.title}
+                  title={excludedBoxes.has(c.key) ? `${c.title}\n(excluded from composite)` : c.title}
                   tilt={expanded}
                   width={expanded ? WRAP_BOX_W : undefined}
                   frame={c.key === expandedBox}
+                  dim={excludedBoxes.has(c.key)}
                 />
               ))}
               {expanded && expandedDef
@@ -739,13 +826,14 @@ export function DiscoveryRankTable({
                 <td
                   style={{ padding: perfPad, width: META_COL_W, maxWidth: META_COL_W, textAlign: "right", color: r.composite != null ? heatSignedBloomberg(r.composite, 1.5) : "var(--text-muted)", fontWeight: 600 }}
                   className="bb-num"
-                  title={r.validBoxCount != null ? `${r.validBoxCount}/9 valid boxes` : undefined}
+                  title={r.validBoxCount != null ? `${r.validBoxCount}/${BOX_COLS.length - excludedCount} valid boxes` : undefined}
                 >
                   {r.composite != null ? r.composite.toFixed(2) : "—"}
                 </td>
                 <td style={{ padding: "2px 6px", textAlign: "right" }} className="bb-num">{r.subsectorDecile ?? r.sectorDecile ?? "—"}</td>
                 {BOX_COLS.map((c) => {
                   const isActive = expandedBox === c.key;
+                  const isExcluded = excludedBoxes.has(c.key);
                   const frameShadow = isActive
                     ? `inset 1px 0 0 var(--color-accent), inset -1px 0 0 var(--color-accent)${isLastRow ? ", inset 0 -1px 0 var(--color-accent)" : ""}`
                     : undefined;
@@ -757,6 +845,7 @@ export function DiscoveryRankTable({
                         padding: expanded ? "2px 4px" : "2px 6px",
                         cursor: "pointer",
                         boxShadow: frameShadow,
+                        opacity: isExcluded ? 0.4 : undefined,
                       }}
                       title={
                         expanded

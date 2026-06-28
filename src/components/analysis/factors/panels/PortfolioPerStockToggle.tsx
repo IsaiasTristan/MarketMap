@@ -10,6 +10,7 @@ const OPTIONS: { value: FactorView; label: string }[] = [
   { value: "portfolio", label: "Portfolio" },
   { value: "per_stock", label: "Per stock" },
   { value: "correlations", label: "Factor correlations" },
+  { value: "price_correlations", label: "Price correlations" },
 ];
 
 export function PortfolioPerStockToggle({ value, onChange }: PortfolioPerStockToggleProps) {

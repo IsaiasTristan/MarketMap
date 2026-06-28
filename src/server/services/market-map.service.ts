@@ -34,7 +34,7 @@ const PRICE_LOOKBACK_DAYS = 600;
  * constituent (~1,220 sequential queries on the full universe). Mirrors the
  * single-query pattern used by factor-per-stock.service.
  */
-async function loadRecentPricesBatch(
+export async function loadRecentPricesBatch(
   db: PrismaClient,
   securityIds: string[]
 ): Promise<Map<string, DateClose[]>> {

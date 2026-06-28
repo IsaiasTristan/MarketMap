@@ -31,7 +31,15 @@ export type FactorRiskWindow = 21 | 126 | 252 | 504 | 1260;
 export type FactorTsRollingWindow = 30 | 60 | 90 | 252 | "match";
 
 /** Top-level Factors-tab view (Portfolio aggregate vs per-stock grid vs correlations). */
-export type FactorView = "portfolio" | "per_stock" | "correlations";
+export type FactorView = "portfolio" | "per_stock" | "correlations" | "price_correlations";
+
+/**
+ * Lookback window (trading days) for the Price-correlations tab — the
+ * Sector / Sub-Theme price-performance correlation heatmaps. Decoupled from
+ * the factor HORIZON so the user can ask "how have sectors co-moved over the
+ * last 1M / 3M / 6M / 1Y?" without disturbing the factor regression window.
+ */
+export type PriceCorrWindow = 21 | 63 | 126 | 252;
 
 /** Active metric in the per-stock grid heatmap. */
 export type FactorGridMetric = "beta" | "return" | "risk";
@@ -151,6 +159,7 @@ interface AnalysisState {
   factorPeriod: FactorPeriod;
   factorRiskWindow: FactorRiskWindow;
   factorView: FactorView;
+  priceCorrWindow: PriceCorrWindow;
   factorGridMetric: FactorGridMetric;
   factorGridStat: FactorGridStat;
   factorTsRollingWindow: FactorTsRollingWindow;
@@ -207,6 +216,7 @@ interface AnalysisState {
   setFactorPeriod: (p: FactorPeriod) => void;
   setFactorRiskWindow: (w: FactorRiskWindow) => void;
   setFactorView: (v: FactorView) => void;
+  setPriceCorrWindow: (w: PriceCorrWindow) => void;
   setFactorGridMetric: (m: FactorGridMetric) => void;
   setFactorGridStat: (s: FactorGridStat) => void;
   setFactorTsRollingWindow: (w: FactorTsRollingWindow) => void;
@@ -276,6 +286,7 @@ export const useAnalysisStore = create<AnalysisState>()(
       factorPeriod: "1Y",
       factorRiskWindow: 252,
       factorView: "portfolio",
+      priceCorrWindow: 252,
       factorGridMetric: "beta",
       factorGridStat: "value",
       factorTsRollingWindow: 60,
@@ -304,6 +315,7 @@ export const useAnalysisStore = create<AnalysisState>()(
       setFactorPeriod: (factorPeriod) => set({ factorPeriod }),
       setFactorRiskWindow: (factorRiskWindow) => set({ factorRiskWindow }),
       setFactorView: (factorView) => set({ factorView }),
+      setPriceCorrWindow: (priceCorrWindow) => set({ priceCorrWindow }),
       setFactorGridMetric: (factorGridMetric) =>
         // Risk × T/CI is ill-defined — auto-flip Stat back to Value when the
         // user picks Risk, so the toolbar can never persist an invalid combo.
@@ -450,7 +462,10 @@ export const useAnalysisStore = create<AnalysisState>()(
       // v13 (2026-06-21): added factorRiskWindow (1M/6M/1Y/2Y/5Y in trading
       // days) — a decoupled Risk-tab window. Defaults to 252 (1Y); invalid
       // legacy values reseed to the same default.
-      version: 13,
+      // v14 (2026-06-28): added priceCorrWindow (1M/3M/6M/1Y in trading days)
+      // for the Price-correlations tab. Defaults to 252 (1Y); seeds the
+      // default when missing on prior sessions.
+      version: 14,
       partialize: (s) => ({
         activePortfolioId: s.activePortfolioId,
         dateRange: s.dateRange,
@@ -460,6 +475,7 @@ export const useAnalysisStore = create<AnalysisState>()(
         factorPeriod: s.factorPeriod,
         factorRiskWindow: s.factorRiskWindow,
         factorView: s.factorView,
+        priceCorrWindow: s.priceCorrWindow,
         factorGridMetric: s.factorGridMetric,
         factorGridStat: s.factorGridStat,
         factorTsRollingWindow: s.factorTsRollingWindow,
@@ -539,6 +555,12 @@ export const useAnalysisStore = create<AnalysisState>()(
           const validRiskWindows = [21, 126, 252, 504, 1260];
           if (!validRiskWindows.includes(next.factorRiskWindow as number)) {
             next.factorRiskWindow = 252;
+          }
+        }
+        if (version < 14) {
+          const validPriceCorrWindows = [21, 63, 126, 252];
+          if (!validPriceCorrWindows.includes(next.priceCorrWindow as number)) {
+            next.priceCorrWindow = 252;
           }
         }
         return next;

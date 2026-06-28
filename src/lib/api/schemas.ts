@@ -85,6 +85,19 @@ export const factorMarketQuery = z.object({
   model: z.enum(MODEL_PRESET_NAMES).optional(),
 });
 
+/** Price-correlation tab window: 1M=21, 3M=63, 6M=126, 1Y=252 trading days. */
+const PRICE_CORR_WINDOWS = [21, 63, 126, 252] as const;
+export const marketCorrelationQuery = z.object({
+  window: z
+    .string()
+    .optional()
+    .transform((v) => {
+      const n = v ? Number(v) : 252;
+      return (PRICE_CORR_WINDOWS as readonly number[]).includes(n) ? n : 252;
+    })
+    .pipe(z.number().int()),
+});
+
 export const parseUniverseBody = z.object({
   text: z.string().min(1),
   format: z.enum(["paste", "csv"]).optional(),
