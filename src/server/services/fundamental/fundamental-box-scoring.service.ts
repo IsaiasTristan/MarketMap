@@ -62,8 +62,8 @@ export interface FundamentalScoreSummary {
   methodologyVersion: string;
 }
 
-type PeriodRow = Prisma.FundamentalPeriodGetPayload<{}>;
-type SnapshotRow = Prisma.FundamentalSnapshotGetPayload<{}>;
+type PeriodRow = Prisma.FundamentalPeriodGetPayload<Record<string, never>>;
+type SnapshotRow = Prisma.FundamentalSnapshotGetPayload<Record<string, never>>;
 
 const PRICE_LOOKBACK_DAYS = 400; // covers 6-1m (~126 td) + since-last-earnings
 const DISPERSION_PRIOR_MIN_LAG_DAYS = 84; // ~12 weeks for the 90d dispersion change

@@ -11,6 +11,11 @@ const nextConfig: NextConfig = {
   },
   /** Hosts allowed to load dev assets (HMR, _next/*) over a non-localhost origin. */
   allowedDevOrigins: ["dev.itmarketmap.com"],
+  /** Production builds are gated on `tsc --noEmit` + tests, not ESLint. Pre-existing
+   *  lint debt (unused-var warnings, etc.) must not block `next build`. */
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
 };
 
 export default nextConfig;

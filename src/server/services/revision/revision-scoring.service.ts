@@ -46,7 +46,7 @@ export interface ScoreSummary {
   subsectorGroups: number;
 }
 
-type SnapshotRow = Prisma.RevisionSnapshotGetPayload<{}>;
+type SnapshotRow = Prisma.RevisionSnapshotGetPayload<Record<string, never>>;
 
 function dec(v: Prisma.Decimal | null): number | null {
   return v === null ? null : Number(v);
