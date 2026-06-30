@@ -6,6 +6,8 @@ import { describe, it, expect } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import {
   getPrecomputeFreshness,
+  isPriceTailStale,
+  isStaleSinceLastClose,
   lastTradingClose,
 } from "../../src/lib/factors/diagnostics/precompute-freshness";
 
@@ -22,6 +24,57 @@ function makeFakeDb(rows: Row[]): PrismaClient {
     },
   } as unknown as PrismaClient;
 }
+
+describe("isStaleSinceLastClose", () => {
+  // Monday 2026-06-29 21:00 local (after close) -> last completed session close
+  // is Monday 2026-06-29 17:00.
+  const monEvening = new Date(2026, 5, 29, 21, 0, 0);
+
+  it("stale when computed before the last completed close (Sunday vs Monday)", () => {
+    // The real bug: cache computed Sunday night, viewed Monday evening.
+    const sundayNight = new Date(2026, 5, 28, 23, 28, 0);
+    expect(isStaleSinceLastClose(sundayNight, monEvening)).toBe(true);
+  });
+
+  it("treats a missing artifact (null) as stale", () => {
+    expect(isStaleSinceLastClose(null, monEvening)).toBe(true);
+  });
+
+  it("fresh when computed after the last completed close", () => {
+    const monAfterClose = new Date(2026, 5, 29, 17, 5, 0);
+    expect(isStaleSinceLastClose(monAfterClose, monEvening)).toBe(false);
+  });
+
+  it("fresh intraday for a row computed earlier the same trading day", () => {
+    // Tuesday 11:00 local (before today's close) -> last close is Monday 17:00.
+    const tueMorning = new Date(2026, 5, 30, 11, 0, 0);
+    // Row computed Tuesday 09:00, before today's close but after Monday's.
+    const tueEarly = new Date(2026, 5, 30, 9, 0, 0);
+    expect(isStaleSinceLastClose(tueEarly, tueMorning)).toBe(false);
+  });
+});
+
+describe("isPriceTailStale", () => {
+  // Monday 2026-06-29 09:00 local (before close) -> last completed session is
+  // Friday 2026-06-26.
+  const monMorning = new Date(2026, 5, 29, 9, 0, 0);
+
+  it("fresh when the freshest bar is Friday (the last completed session)", () => {
+    expect(isPriceTailStale("2026-06-26", monMorning)).toBe(false);
+  });
+
+  it("stale when the freshest bar is only Thursday (Friday missing)", () => {
+    expect(isPriceTailStale("2026-06-25", monMorning)).toBe(true);
+  });
+
+  it("treats an empty tape (null) as stale", () => {
+    expect(isPriceTailStale(null, monMorning)).toBe(true);
+  });
+
+  it("fresh when a bar is dated after the last close (e.g. mid-session today)", () => {
+    expect(isPriceTailStale("2026-06-29", monMorning)).toBe(false);
+  });
+});
 
 describe("lastTradingClose", () => {
   it("on Friday at 18:00 returns the same Friday 17:00", () => {

@@ -22,6 +22,7 @@ function row(
     sparkline: [prevClose, price],
     prevDaySparkline: [],
     sparklineExtended: [],
+    intradayPoints: [],
     prevClose,
     dayOpen: prevClose,
     dayLow: prevClose,

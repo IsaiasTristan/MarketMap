@@ -74,6 +74,20 @@ const tdNum: CSSProperties = {
   textAlign: "right",
 };
 
+type RowMode = "row" | "footer" | "reference";
+
+const FOOTER_BG = "rgba(240,182,93,0.10)";
+const REFERENCE_BG = "rgba(110,180,210,0.08)";
+
+/** Inline background tint for non-position rows (footer/reference). */
+function rowBg(mode: RowMode): CSSProperties | undefined {
+  if (mode === "footer") return { background: FOOTER_BG };
+  if (mode === "reference") return { background: REFERENCE_BG };
+  return undefined;
+}
+
+const DASH = "—";
+
 type SortKey =
   | "ticker"
   | "price"
@@ -172,13 +186,14 @@ function sparkPositive(data: number[]) {
 function volCells(
   row: PositionRisk,
   annualVol: number,
-  isFooter: boolean,
+  mode: RowMode,
 ) {
   const dailyVol = annualToDailyVol(annualVol);
-  const footerBg = isFooter ? { background: "rgba(240,182,93,0.10)" } : undefined;
-  const cellStyle = { ...tdNum, color: "#fff", ...footerBg };
+  const bg = rowBg(mode);
+  const cellStyle = { ...tdNum, color: "#fff", ...bg };
   const volHeat = heatVolClassification(annualVol);
   const volPctStyle = { ...tdNum, color: "#fff", background: volHeat };
+  const isReference = mode === "reference";
   return (
     <>
       <td className="bb-num" style={volPctStyle}>
@@ -191,18 +206,17 @@ function volCells(
         {fmtBbShareVolDollar(row.lastPrice, dailyVol)}
       </td>
       <td className="bb-num" style={cellStyle}>
-        {fmtBbWholeDollar(row.marketValue * dailyVol)}
+        {isReference ? DASH : fmtBbWholeDollar(row.marketValue * dailyVol)}
       </td>
     </>
   );
 }
 
-function volSparkCell(data: number[], groupEnd: boolean, isFooter: boolean) {
-  const footerBg = isFooter ? { background: "rgba(240,182,93,0.10)" } : undefined;
+function volSparkCell(data: number[], groupEnd: boolean, mode: RowMode) {
   return (
     <td
       className={`bb-risk-spark-col${groupEnd ? " bb-col-group-end" : ""}`}
-      style={{ textAlign: "center", ...footerBg }}
+      style={{ textAlign: "center", ...rowBg(mode) }}
     >
       <Sparkline
         data={data}
@@ -218,20 +232,20 @@ function sharpeCells(
   value: number,
   spark: number[],
   groupEnd: boolean,
-  isFooter: boolean,
+  mode: RowMode,
 ) {
-  const footerBg = isFooter ? { background: "rgba(240,182,93,0.10)" } : undefined;
+  const bg = rowBg(mode);
   return (
     <>
       <td
         className="bb-num"
-        style={{ ...tdNum, color: sharpeColor(value), ...footerBg }}
+        style={{ ...tdNum, color: sharpeColor(value), ...bg }}
       >
         {fmtSharpe(value)}
       </td>
       <td
         className={`bb-risk-spark-col${groupEnd ? " bb-col-group-end" : ""}`}
-        style={{ textAlign: "center", ...footerBg }}
+        style={{ textAlign: "center", ...bg }}
       >
         <Sparkline
           data={spark}
@@ -244,21 +258,28 @@ function sharpeCells(
   );
 }
 
+function fmtFractionPct(frac: number | undefined): string {
+  if (frac == null || !Number.isFinite(frac)) return DASH;
+  return (frac * 100).toFixed(2);
+}
+
 function riskCells(
   dollars: number,
   notional: number,
   groupEnd: boolean,
-  isFooter: boolean,
+  mode: RowMode,
+  pctOverride?: number,
 ) {
-  const footerBg = isFooter ? { background: "rgba(240,182,93,0.10)" } : undefined;
+  const bg = rowBg(mode);
   const endCls = groupEnd ? " bb-col-group-end" : "";
+  const isReference = mode === "reference";
   return (
     <>
-      <td className="bb-num" style={{ ...tdNum, color: CYAN, ...footerBg }}>
-        {fmtBbWholeDollar(dollars)}
+      <td className="bb-num" style={{ ...tdNum, color: CYAN, ...bg }}>
+        {isReference ? DASH : fmtBbWholeDollar(dollars)}
       </td>
-      <td className={`bb-num${endCls}`} style={{ ...tdNum, color: MUTED, ...footerBg }}>
-        {fmtBbLossPct(dollars, notional)}
+      <td className={`bb-num${endCls}`} style={{ ...tdNum, color: MUTED, ...bg }}>
+        {isReference ? fmtFractionPct(pctOverride) : fmtBbLossPct(dollars, notional)}
       </td>
     </>
   );
@@ -300,28 +321,63 @@ function volCsvFields(row: PositionRisk, annualVol: number) {
   ];
 }
 
-function rowToCsv(row: PositionRisk): string {
-  const vals = [
-    row.ticker,
-    fmtSharePrice(row.lastPrice),
-    fmtWeightPct(row.weight),
-    fmtBbWholeDollar(row.marketValue),
-    ...volCsvFields(row, row.vol21d),
-    ...volCsvFields(row, row.vol63d),
-    ...volCsvFields(row, row.vol126d),
-    fmtSharpe(row.sharpe21d),
-    fmtSharpe(row.sharpe63d),
-    fmtSharpe(row.sharpe126d),
-    fmtBbWholeDollar(row.varDollar95),
-    fmtBbLossPct(row.varDollar95, row.marketValue),
-    fmtBbWholeDollar(row.cvar95),
-    fmtBbLossPct(row.cvar95, row.marketValue),
+function volCsvFieldsRef(row: PositionRisk, annualVol: number) {
+  const dailyVol = annualToDailyVol(annualVol);
+  return [
+    fmtBbVolPct1d(annualVol),
+    fmtBbVolPct1d(dailyVol),
+    fmtBbShareVolDollar(row.lastPrice, dailyVol),
+    DASH,
   ];
+}
+
+function rowToCsv(row: PositionRisk, isReference = false): string {
+  const vals = isReference
+    ? [
+        row.ticker,
+        fmtSharePrice(row.lastPrice),
+        DASH,
+        DASH,
+        ...volCsvFieldsRef(row, row.vol21d),
+        ...volCsvFieldsRef(row, row.vol63d),
+        ...volCsvFieldsRef(row, row.vol126d),
+        fmtSharpe(row.sharpe21d),
+        fmtSharpe(row.sharpe63d),
+        fmtSharpe(row.sharpe126d),
+        DASH,
+        fmtFractionPct(row.var95Pct),
+        DASH,
+        fmtFractionPct(row.cvar95Pct),
+      ]
+    : [
+        row.ticker,
+        fmtSharePrice(row.lastPrice),
+        fmtWeightPct(row.weight),
+        fmtBbWholeDollar(row.marketValue),
+        ...volCsvFields(row, row.vol21d),
+        ...volCsvFields(row, row.vol63d),
+        ...volCsvFields(row, row.vol126d),
+        fmtSharpe(row.sharpe21d),
+        fmtSharpe(row.sharpe63d),
+        fmtSharpe(row.sharpe126d),
+        fmtBbWholeDollar(row.varDollar95),
+        fmtBbLossPct(row.varDollar95, row.marketValue),
+        fmtBbWholeDollar(row.cvar95),
+        fmtBbLossPct(row.cvar95, row.marketValue),
+      ];
   return vals.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",");
 }
 
-function exportCsv(rows: PositionRisk[], filename: string) {
-  const body = rows.map(rowToCsv).join("\n");
+function exportCsv(
+  rows: PositionRisk[],
+  referenceRows: PositionRisk[],
+  filename: string,
+) {
+  const lines = [
+    ...rows.map((r) => rowToCsv(r)),
+    ...referenceRows.map((r) => rowToCsv(r, true)),
+  ];
+  const body = lines.join("\n");
   const blob = new Blob([CSV_HEADERS.join(",") + "\n" + body], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -334,6 +390,8 @@ function exportCsv(rows: PositionRisk[], filename: string) {
 interface RiskSummaryGridProps {
   rows: PositionRisk[];
   footerRow?: PositionRisk;
+  /** Notional-free index rows rendered below the footer (S&P 500 / NASDAQ / Dow). */
+  referenceRows?: PositionRisk[];
   searchFields: (row: PositionRisk) => string;
   dailyPnlByTicker?: Map<string, number>;
   pageSize?: number;
@@ -343,6 +401,7 @@ interface RiskSummaryGridProps {
 export function RiskSummaryGrid({
   rows,
   footerRow,
+  referenceRows,
   searchFields,
   dailyPnlByTicker,
   pageSize = 50,
@@ -427,66 +486,64 @@ export function RiskSummaryGrid({
     );
   };
 
-  const renderRow = (row: PositionRisk, isFooter: boolean) => (
-    <tr
-      key={isFooter ? `footer-${row.ticker}` : row.ticker}
-      className={isFooter ? "bb-risk-footer" : undefined}
-    >
-      <td
-        style={{
-          color: ACCENT,
-          fontWeight: isFooter ? 700 : 500,
-          fontFamily: BB_GRID_FONT_STACK,
-          whiteSpace: "nowrap",
-          background: isFooter ? "rgba(240,182,93,0.10)" : undefined,
-        }}
-      >
-        {row.ticker === "TOTAL" ? "Total" : row.ticker}
-      </td>
-      <td
-        className="bb-num"
-        style={{
-          ...tdNum,
-          color: "#fff",
-          background: isFooter ? "rgba(240,182,93,0.10)" : undefined,
-        }}
-      >
-        {isFooter ? "—" : fmtSharePrice(row.lastPrice)}
-      </td>
-      <td
-        className="bb-weight-bar-cell"
-        style={{
-          ...tdNum,
-          padding: 0,
-          overflow: "hidden",
-          background: isFooter ? "rgba(240,182,93,0.10)" : undefined,
-        }}
-      >
-        <WeightDataBarCell weight={row.weight} showBar={!isFooter} />
-      </td>
-      <td
-        className="bb-num bb-col-group-end"
-        style={{
-          ...tdNum,
-          color: "#fff",
-          background: isFooter ? "rgba(240,182,93,0.10)" : undefined,
-        }}
-      >
-        {fmtBbWholeDollar(row.marketValue)}
-      </td>
-      {volCells(row, row.vol21d, isFooter)}
-      {volSparkCell(row.vol21Spark, true, isFooter)}
-      {volCells(row, row.vol63d, isFooter)}
-      {volSparkCell(row.vol63Spark, true, isFooter)}
-      {volCells(row, row.vol126d, isFooter)}
-      {volSparkCell(row.vol126Spark, true, isFooter)}
-      {sharpeCells(row.sharpe21d, row.sharpe21Spark, true, isFooter)}
-      {sharpeCells(row.sharpe63d, row.sharpe63Spark, true, isFooter)}
-      {sharpeCells(row.sharpe126d, row.sharpe126Spark, true, isFooter)}
-      {riskCells(row.varDollar95, row.marketValue, true, isFooter)}
-      {riskCells(row.cvar95, row.marketValue, true, isFooter)}
-    </tr>
-  );
+  const renderRow = (
+    row: PositionRisk,
+    mode: RowMode,
+    firstReference = false,
+  ) => {
+    const isFooter = mode === "footer";
+    const isReference = mode === "reference";
+    const bg = rowBg(mode);
+    const trClass = isFooter
+      ? "bb-risk-footer"
+      : firstReference
+        ? "bb-risk-reference bb-risk-reference-first"
+        : isReference
+          ? "bb-risk-reference"
+          : undefined;
+    return (
+      <tr key={`${mode}-${row.ticker}`} className={trClass}>
+        <td
+          style={{
+            color: ACCENT,
+            fontWeight: isFooter ? 700 : 500,
+            fontFamily: BB_GRID_FONT_STACK,
+            whiteSpace: "nowrap",
+            ...bg,
+          }}
+        >
+          {row.ticker === "TOTAL" ? "Total" : row.ticker}
+        </td>
+        <td className="bb-num" style={{ ...tdNum, color: "#fff", ...bg }}>
+          {isFooter ? DASH : fmtSharePrice(row.lastPrice)}
+        </td>
+        <td
+          className="bb-weight-bar-cell"
+          style={{ ...tdNum, padding: 0, overflow: "hidden", ...bg }}
+        >
+          {isReference ? (
+            <span style={{ paddingRight: 6, color: MUTED }}>{DASH}</span>
+          ) : (
+            <WeightDataBarCell weight={row.weight} showBar={!isFooter} />
+          )}
+        </td>
+        <td className="bb-num bb-col-group-end" style={{ ...tdNum, color: "#fff", ...bg }}>
+          {isReference ? DASH : fmtBbWholeDollar(row.marketValue)}
+        </td>
+        {volCells(row, row.vol21d, mode)}
+        {volSparkCell(row.vol21Spark, true, mode)}
+        {volCells(row, row.vol63d, mode)}
+        {volSparkCell(row.vol63Spark, true, mode)}
+        {volCells(row, row.vol126d, mode)}
+        {volSparkCell(row.vol126Spark, true, mode)}
+        {sharpeCells(row.sharpe21d, row.sharpe21Spark, true, mode)}
+        {sharpeCells(row.sharpe63d, row.sharpe63Spark, true, mode)}
+        {sharpeCells(row.sharpe126d, row.sharpe126Spark, true, mode)}
+        {riskCells(row.varDollar95, row.marketValue, true, mode, row.var95Pct)}
+        {riskCells(row.cvar95, row.marketValue, true, mode, row.cvar95Pct)}
+      </tr>
+    );
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -513,7 +570,11 @@ export function RiskSummaryGrid({
         <button
           type="button"
           onClick={() =>
-            exportCsv(footerRow ? [...sorted, footerRow] : sorted, exportFilename)
+            exportCsv(
+              footerRow ? [...sorted, footerRow] : sorted,
+              referenceRows ?? [],
+              exportFilename,
+            )
           }
           style={{ ...btnFlat, color: "var(--text-secondary)", cursor: "pointer" }}
         >
@@ -624,9 +685,12 @@ export function RiskSummaryGrid({
             </tr>
           </thead>
           <tbody>
-            {paged.map((row) => renderRow(row, false))}
-            {footerRow && renderRow(footerRow, true)}
-            {paged.length === 0 && !footerRow && (
+            {paged.map((row) => renderRow(row, "row"))}
+            {footerRow && renderRow(footerRow, "footer")}
+            {referenceRows?.map((row, i) =>
+              renderRow(row, "reference", i === 0),
+            )}
+            {paged.length === 0 && !footerRow && !referenceRows?.length && (
               <tr>
                 <td
                   colSpan={29}

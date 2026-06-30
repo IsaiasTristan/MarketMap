@@ -88,6 +88,7 @@ type CompanyRow = {
   subTheme: string;
   lastDate: string | null;
   metrics: ReturnType<typeof securityHorizonMetrics>;
+  d1Source?: "AH" | "REGULAR";
 };
 
 function pickMetric(
@@ -126,6 +127,31 @@ export type MarketMapApiRow = {
   cells: Record<Horizon, number | null>;
   /** Last trade-date represented in this row's underlying series (COMPANY only). */
   lastDate?: string | null;
+  /**
+   * How the D1 RETURN cell was sourced when an extended-hours overlay is
+   * applied (COMPANY only): `"AH"` = a genuine after-hours print, `"REGULAR"`
+   * = fell back to the regular close-to-close move because the stock had no
+   * after-hours trade. Undefined on non-overlay rows. Lets the grid render the
+   * regular-fallback values with reduced emphasis so the after-hours 1D column
+   * stays honest instead of showing a blank cell.
+   */
+  d1Source?: "AH" | "REGULAR";
+};
+
+/**
+ * Health counters surfaced alongside the grid so a real data gap is visible
+ * (logged + chip in the UI) rather than appearing as a silent dash.
+ */
+export type MarketMapDiagnostics = {
+  /** Constituents skipped because they had fewer than 5 price bars. */
+  excludedInsufficientPrices: number;
+  /** Rendered rows whose every horizon cell is null for the requested metric. */
+  allNullRows: number;
+  /**
+   * D1 cells that fell back to the regular close move because the after-hours
+   * overlay had no genuine AH print. Expected/benign overnight — not a fault.
+   */
+  d1FallbackToRegular: number;
 };
 
 /** Calendar days between two yyyy-MM-dd strings (exclusive of start, inclusive span). */
@@ -277,6 +303,25 @@ export function applyLiveRegularOverlay(
 }
 
 /**
+ * Authoritative regular-session 1D return for a live quote = `price /
+ * prevClose - 1`. Returned only in `"live"` mode with a finite price and a
+ * positive finite `prevClose`; otherwise `null` (caller keeps the
+ * close-to-close chain). Anchoring 1D here keeps it correct even when the
+ * stored series is missing the prior trading day (e.g. Friday not yet ingested
+ * on Monday morning), which would otherwise make the chained 1D a multi-day
+ * move. `"frozen"` (after close) returns `null` so the official EOD close wins.
+ */
+export function liveRegular1D(
+  quote: LiveRegularQuote,
+  mode: LiveOverlayMode,
+): number | null {
+  if (mode !== "live") return null;
+  if (!Number.isFinite(quote.price)) return null;
+  if (!Number.isFinite(quote.prevClose) || quote.prevClose <= 0) return null;
+  return quote.price / quote.prevClose - 1;
+}
+
+/**
  * @deprecated Use {@link applyExtendedQuoteOverlay} — kept for unit tests.
  */
 export function applyExtendedOverlay(
@@ -316,7 +361,12 @@ export async function computeMarketMap(
   benchmark: BenchmarkCode,
   filters: { sector?: string; subTheme?: string },
   options: ComputeMarketMapOptions = {}
-): Promise<{ rows: MarketMapApiRow[]; asOf: string | null; warnings: string[] }> {
+): Promise<{
+  rows: MarketMapApiRow[];
+  asOf: string | null;
+  warnings: string[];
+  diagnostics: MarketMapDiagnostics;
+}> {
   const warnings: string[] = [];
   const rf = riskFreeAnnual();
 
@@ -335,7 +385,16 @@ export async function computeMarketMap(
   });
 
   if (constituents.length === 0) {
-    return { rows: [], asOf: null, warnings: ["No constituents in this universe."] };
+    return {
+      rows: [],
+      asOf: null,
+      warnings: ["No constituents in this universe."],
+      diagnostics: {
+        excludedInsufficientPrices: 0,
+        allNullRows: 0,
+        d1FallbackToRegular: 0,
+      },
+    };
   }
 
   const benchSeries = await loadBenchmarkSeries(db, benchmark);
@@ -358,9 +417,13 @@ export async function computeMarketMap(
   const live = options.liveQuotes;
   const liveMode: LiveOverlayMode = options.liveMode ?? "live";
 
+  let excludedInsufficientPrices = 0;
+  let d1FallbackToRegular = 0;
+
   for (const c of constituents) {
     let series = pricesBySecurity.get(c.securityId) ?? [];
     let ahOnly1D: number | null = null;
+    let liveOnly1D: number | null = null;
     let overlayApplied = false;
 
     if (overlay) {
@@ -378,9 +441,13 @@ export async function computeMarketMap(
         }
       }
     } else if (live) {
-      // Regular-session live overlay: append/replace today's price and let
-      // securityHorizonMetrics recompute every horizon (D1 = price / prior
-      // close). The close-to-close chain is intentionally kept intact.
+      // Regular-session live overlay: append/replace today's price so the
+      // multi-day horizons recompute on the close-to-close chain. For D1 we
+      // anchor to Yahoo's prevClose (the authoritative prior close) rather
+      // than the chain — otherwise a missing recent bar in PriceHistory (e.g.
+      // Friday not yet ingested on Monday morning) makes D1 a multi-day
+      // Mon/Thu move. Only in "live" mode; "frozen" keeps the chain so the
+      // official EOD close wins once written.
       const quote = live.get(c.security.ticker);
       if (quote) {
         const result = applyLiveRegularOverlay(series, quote, liveMode);
@@ -390,26 +457,38 @@ export async function computeMarketMap(
             `Live overlay skipped for ${c.security.ticker} (DB stale vs print date ${quote.tradeDateEt})`,
           );
         }
+        liveOnly1D = liveRegular1D(quote, liveMode);
       }
     }
 
     const lastDate = series.length ? series[series.length - 1]!.date : null;
     if (series.length < 5) {
+      excludedInsufficientPrices++;
       warnings.push(`Insufficient prices for ${c.security.ticker}`);
       continue;
     }
     const metrics = securityHorizonMetrics(series, benchForStock, rf);
+    let d1Source: "AH" | "REGULAR" | undefined;
     if (overlay) {
-      // Extended session: rank 1D on AH-only prints. Never fall back to the
-      // close-to-close chain — that mixes regular-session movers (SIVEF) and
-      // stale PRE quotes (BAYRY) into the after-hours leaderboard.
+      // Extended session: prefer the AH-only print for the 1D move so the
+      // after-hours leaderboard ranks genuine post-close action. When a stock
+      // has no after-hours trade, fall back to the regular close-to-close move
+      // (already computed by securityHorizonMetrics) instead of blanking the
+      // cell — the row is tagged `d1Source: "REGULAR"` so the grid can dim it
+      // and the leaderboard can tell the two apart.
       if (overlayApplied && ahOnly1D != null && Number.isFinite(ahOnly1D)) {
         metrics.D1.return = ahOnly1D;
+        d1Source = "AH";
       } else {
-        metrics.D1.return = null;
+        d1Source = "REGULAR";
+        d1FallbackToRegular++;
       }
     } else if (ahOnly1D != null && Number.isFinite(ahOnly1D)) {
       metrics.D1.return = ahOnly1D;
+    } else if (liveOnly1D != null && Number.isFinite(liveOnly1D)) {
+      // Regular-session: anchor 1D to price / prevClose so it stays correct
+      // even when the close-to-close chain is missing the prior trading day.
+      metrics.D1.return = liveOnly1D;
     }
     companies.push({
       ticker: c.security.ticker,
@@ -418,11 +497,21 @@ export async function computeMarketMap(
       subTheme: c.subTheme,
       lastDate,
       metrics,
+      d1Source,
     });
   }
 
   if (companies.length === 0) {
-    return { rows: [], asOf: null, warnings };
+    return {
+      rows: [],
+      asOf: null,
+      warnings,
+      diagnostics: {
+        excludedInsufficientPrices,
+        allNullRows: 0,
+        d1FallbackToRegular,
+      },
+    };
   }
 
   const asOf = companies.reduce<string | null>((min, co) => {
@@ -440,10 +529,35 @@ export async function computeMarketMap(
     return cells;
   };
 
+  const allNullRows = companies.reduce(
+    (n, co) =>
+      HORIZON_ORDER.some((h) => pickMetric(co.metrics, h, metric) != null)
+        ? n
+        : n + 1,
+    0,
+  );
+  const diagnostics: MarketMapDiagnostics = {
+    excludedInsufficientPrices,
+    allNullRows,
+    d1FallbackToRegular,
+  };
+  // Observability: never let a real data gap surface as a silent dash. The D1
+  // fallback is expected after hours, so it alone does not warrant a warn.
+  if (excludedInsufficientPrices > 0 || allNullRows > 0) {
+    console.warn(
+      `[market-map] universe=${universeId} metric=${metric} bench=${benchmark}: ` +
+        `${excludedInsufficientPrices} excluded (<5 bars), ${allNullRows} all-null row(s)` +
+        (d1FallbackToRegular > 0
+          ? `, ${d1FallbackToRegular} D1 fell back to regular close`
+          : ""),
+    );
+  }
+
   if (rowLevel === "COMPANY") {
     return {
       asOf,
       warnings,
+      diagnostics,
       rows: companies.map((co) => ({
         key: co.ticker,
         label: `${co.ticker} — ${co.name}`,
@@ -452,6 +566,7 @@ export async function computeMarketMap(
         ticker: co.ticker,
         cells: buildCells(co.metrics),
         lastDate: co.lastDate,
+        d1Source: co.d1Source,
       })),
     };
   }
@@ -469,7 +584,7 @@ export async function computeMarketMap(
       }
       rows.push({ key: s, label: s, cells });
     }
-    return { rows, asOf, warnings };
+    return { rows, asOf, warnings, diagnostics };
   }
 
   const keys = [
@@ -495,5 +610,5 @@ export async function computeMarketMap(
       cells,
     });
   }
-  return { rows, asOf, warnings };
+  return { rows, asOf, warnings, diagnostics };
 }

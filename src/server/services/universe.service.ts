@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import type { ParsedUniverseRow } from "@/domain/universe/parse";
+import { invalidateMarketMapCache } from "./market-map-cache.service";
 
 const DEFAULT_UNIVERSE_NAME = "Universe";
 
@@ -56,6 +57,9 @@ export async function removeUniverseConstituent(
   const result = await db.universeConstituent.deleteMany({
     where: { universeId, securityId: security.id },
   });
+  if (result.count > 0) {
+    await invalidateMarketMapCache(universeId);
+  }
   return result.count > 0;
 }
 
@@ -109,6 +113,8 @@ export async function updateUniverseConstituent(
     });
   });
 
+  await invalidateMarketMapCache(universeId);
+
   return { ticker: normalized, renamed };
 }
 
@@ -149,6 +155,7 @@ export async function replaceUniverseConstituents(
 
   if (ordered.length === 0) {
     await db.universeConstituent.deleteMany({ where: { universeId } });
+    await invalidateMarketMapCache(universeId);
     return {
       applied: 0,
       created: 0,
@@ -243,6 +250,8 @@ export async function replaceUniverseConstituents(
     // ~1k-row pastes; the default 5 s is what was failing for large lists.
     { timeout: 30_000, maxWait: 10_000 }
   );
+
+  await invalidateMarketMapCache(universeId);
 
   return {
     applied: ordered.length,
@@ -389,6 +398,8 @@ export async function addUniverseConstituents(
     },
     { timeout: 30_000, maxWait: 10_000 }
   );
+
+  await invalidateMarketMapCache(universeId);
 
   return {
     applied: ordered.length,

@@ -23,6 +23,7 @@ import { percentileColumnRanges } from "@/domain/calculations/percentile-range";
 import {
   computeMarketMap,
   type MarketMapApiRow,
+  type MarketMapDiagnostics,
   type ComputeMarketMapOptions,
 } from "./market-map.service";
 
@@ -31,6 +32,8 @@ export interface MarketMapSnapshotPayload {
   warnings: string[];
   rows: MarketMapApiRow[];
   columnRanges: { min: Record<string, number>; max: Record<string, number> };
+  /** Health counters (optional for blobs cached before this field existed). */
+  diagnostics?: MarketMapDiagnostics;
 }
 
 /** Read a cached COMPANY-level market map for a (universe, metric, benchmark). */
@@ -45,6 +48,32 @@ export async function readMarketMapCache(
   });
   if (!row) return null;
   return row.payloadJson as unknown as MarketMapSnapshotPayload;
+}
+
+/**
+ * Drop all cached market-map blobs for a universe (across every metric/benchmark).
+ * Called on constituent writes and after a price ingest that changed data, so
+ * the next GET cold-recomputes from fresh prices/groupings instead of serving
+ * the frozen blob.
+ */
+export async function invalidateMarketMapCache(
+  universeId: string,
+): Promise<void> {
+  await db.marketMapSnapshot.deleteMany({ where: { universeId } });
+}
+
+/**
+ * Whether a completed price ingest changed enough to warrant dropping the
+ * market-map cache for its universe. Price ingest writes `PriceHistory`
+ * directly but never touches the precomputed snapshot blob, so a backfill
+ * would otherwise keep showing stale/blank cells until the daily job runs.
+ * Pure so the ingest route can gate the (side-effecting) invalidation on it.
+ */
+export function ingestChangedMarketMap(result: {
+  bars: number;
+  autoDeactivated: string[];
+}): boolean {
+  return result.bars > 0 || result.autoDeactivated.length > 0;
 }
 
 /** Upsert a cached COMPANY-level market map. */
@@ -95,6 +124,7 @@ export async function computeAndCacheMarketMap(
     warnings: result.warnings,
     rows: result.rows,
     columnRanges: percentileColumnRanges(result.rows, HORIZON_ORDER),
+    diagnostics: result.diagnostics,
   };
   await writeMarketMapCache(universeId, metric, benchmark, payload);
   return payload;

@@ -12,7 +12,6 @@ const MODULE_TABS = [
   { href: "/research", label: "Research" },
   { href: "/fundamentals", label: "Fundamentals" },
   { href: "/data", label: "Data" },
-  { href: "/alerts", label: "Alerts" },
 ] as const;
 
 export function isModulePathActive(pathname: string, href: string): boolean {

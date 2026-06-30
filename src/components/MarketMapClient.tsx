@@ -25,6 +25,15 @@ type ApiRow = {
   ticker?: string;
   cells: Record<Horizon, number | null>;
   lastDate?: string | null;
+  /** "REGULAR" when the after-hours overlay had no print for this stock and the
+   *  D1 cell fell back to the regular close move (rendered dimmed). */
+  d1Source?: "AH" | "REGULAR";
+};
+
+type ApiDiagnostics = {
+  excludedInsufficientPrices: number;
+  allNullRows: number;
+  d1FallbackToRegular: number;
 };
 
 type ApiExtendedInfo = {
@@ -54,6 +63,7 @@ type ApiPayload = {
   columnRanges: { min: Record<string, number>; max: Record<string, number> };
   rows: ApiRow[];
   extended?: ApiExtendedInfo;
+  diagnostics?: ApiDiagnostics;
 };
 
 type SortState = { horizon: Horizon; dir: "asc" | "desc" } | null;
@@ -63,6 +73,8 @@ type CompanyLeaf = {
   name: string;
   cells: Record<Horizon, number | null>;
   lastDate?: string | null;
+  /** Mirrors {@link ApiRow.d1Source}: dim the D1 cell when "REGULAR". */
+  d1Source?: "AH" | "REGULAR";
 };
 
 type SubThemeNode = {
@@ -497,6 +509,7 @@ export function MarketMapClient({
             Loading…
           </span>
         )}
+        <DataGapChip diagnostics={data?.diagnostics} />
       </div>
 
       {err && (
@@ -703,6 +716,32 @@ export function MarketMapClient({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Compact health chip surfaced when the grid has a real data gap — stocks
+ * excluded for too few price bars, or rows with no values at all. The D1
+ * after-hours fallback is expected/benign overnight, so it is NOT chipped
+ * here (it's shown inline as a dimmed cell instead). Turns a mystery dash into
+ * a visible signal so a broken ingest doesn't hide behind blank cells.
+ */
+function DataGapChip({ diagnostics }: { diagnostics?: ApiDiagnostics }) {
+  if (!diagnostics) return null;
+  const { excludedInsufficientPrices, allNullRows } = diagnostics;
+  const gap = excludedInsufficientPrices + allNullRows;
+  if (gap <= 0) return null;
+  const parts: string[] = [];
+  if (excludedInsufficientPrices > 0)
+    parts.push(`${excludedInsufficientPrices} excluded (insufficient price history)`);
+  if (allNullRows > 0) parts.push(`${allNullRows} with no values`);
+  return (
+    <span
+      style={dataGapChip}
+      title={`Market-map data gap — ${parts.join(", ")}. Run a price ingest / refresh to backfill.`}
+    >
+      {`⚠ ${gap} ticker${gap === 1 ? "" : "s"} missing data`}
+    </span>
   );
 }
 
@@ -968,7 +1007,11 @@ function CompanyTableRow({
         </span>
       </td>
       {HORIZON_ORDER.map((h) =>
-        renderHeatCell(h, company.cells[h], metric, range[h], !isLast, "COMPANY")
+        renderHeatCell(h, company.cells[h], metric, range[h], !isLast, "COMPANY", {
+          // Under an applied after-hours overlay a stock with no AH trade shows
+          // its regular close move; dim it so it reads as "not an AH mover".
+          regularFallback: h === "D1" && company.d1Source === "REGULAR",
+        })
       )}
     </tr>
   );
@@ -982,15 +1025,22 @@ function renderHeatCell(
   metric: MetricKind,
   range: { min: number; max: number } | undefined,
   suppressBottom: boolean,
-  level: LevelKey
+  level: LevelKey,
+  opts?: { regularFallback?: boolean }
 ) {
   const min = range?.min ?? 0;
   const max = range?.max ?? 0;
   const bg = heatmapRgb(v, metric, min, max);
   const density = HEAT_CELL_DENSITY[level];
+  const regularFallback = !!opts?.regularFallback;
   return (
     <td
       key={h}
+      title={
+        regularFallback
+          ? "Regular close move — no after-hours trade for this stock"
+          : undefined
+      }
       style={{
         ...tdCellStyle,
         padding: density.padding,
@@ -1001,9 +1051,13 @@ function renderHeatCell(
         textAlign: "right",
         fontVariantNumeric: "tabular-nums",
         borderBottomColor: suppressBottom ? "transparent" : "var(--bg-border)",
+        ...(regularFallback ? { opacity: 0.5 } : {}),
       }}
     >
       {formatMetricValue(v, metric)}
+      {regularFallback && v != null && Number.isFinite(v) ? (
+        <span style={{ opacity: 0.7 }}>*</span>
+      ) : null}
     </td>
   );
 }
@@ -1026,6 +1080,7 @@ function buildTree(rows: ApiRow[]): SectorNode[] {
         : r.label,
       cells: r.cells,
       lastDate: r.lastDate ?? null,
+      d1Source: r.d1Source,
     });
   }
   const sectors = [...bySector.keys()].sort();
@@ -1427,7 +1482,9 @@ const treeToggleBtn: CSSProperties = {
 const btnGhost: CSSProperties = {
   padding: "1px 8px",
   borderRadius: 0,
-  border: "1px solid var(--bg-border)",
+  borderWidth: "1px",
+  borderStyle: "solid",
+  borderColor: "var(--bg-border)",
   background: "var(--bg-base)",
   color: "var(--text-secondary)",
   fontSize: "11px",
@@ -1471,4 +1528,14 @@ const extendedAsOf: CSSProperties = {
   color: "var(--text-secondary)",
   fontFamily:
     'var(--font-mono), "Andale Mono", "Consolas", "Liberation Mono", "Courier New", monospace',
+};
+
+const dataGapChip: CSSProperties = {
+  fontSize: "11px",
+  color: "var(--color-warning)",
+  border: "1px solid var(--color-warning)",
+  borderRadius: "3px",
+  padding: "1px 6px",
+  whiteSpace: "nowrap",
+  cursor: "help",
 };

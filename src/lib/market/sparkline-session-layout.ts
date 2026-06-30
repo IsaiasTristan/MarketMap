@@ -227,6 +227,70 @@ function formatSessionFractionLabel(fraction: number): string {
   return `${hour12}:${minute.toString().padStart(2, "0")} ${ampm}`;
 }
 
+/** Clock hours (ET) used to anchor X-axis time ticks: every 4 hours. */
+const CLOCK_TICK_HOURS = [0, 4, 8, 12, 16, 20] as const;
+
+/**
+ * Session fractions for the 4-hour clock marks (…, 4 AM, 8 AM, 12 PM, 4 PM,
+ * 8 PM) that fall inside the visible `[lo, hi]` fraction domain. On a
+ * regular-only day (`[0, 1]`) this is 12:00 PM (~0.385) and 4:00 PM (1.0);
+ * post-market extends `hi` so 8:00 PM (~1.615) appears, pre-market extends
+ * `lo` so 8:00 AM / 4:00 AM appear.
+ */
+export function buildSessionClockTicks(lo: number, hi: number): number[] {
+  const ticks: number[] = [];
+  for (const hour of CLOCK_TICK_HOURS) {
+    const frac =
+      (hour * 60 - REGULAR_SESSION_START_MIN) / REGULAR_SESSION_DURATION_MIN;
+    if (frac >= lo - 1e-9 && frac <= hi + 1e-9) ticks.push(frac);
+  }
+  return ticks;
+}
+
+/** `yyyy-MM-dd` in US Eastern — used to detect multi-day series spans. */
+export function etCalendarDay(iso: string): string {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return fmt.format(new Date(iso));
+}
+
+/** Standard ET clock time, e.g. `4:44 PM`. */
+export function formatEtTimeLabel(iso: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(new Date(iso));
+}
+
+/** ET weekday + date + time, e.g. `Fri Jun 27, 3:55 PM` (multi-day points). */
+export function formatEtDateTimeLabel(iso: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(new Date(iso));
+}
+
+/** ET calendar date, e.g. `Jun 27, 2026` (daily ranges). */
+export function formatEtDateLabel(iso: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(iso));
+}
+
 export interface TodayOnlyLayout {
   sessionProgress: number;
   totalWidth: number;

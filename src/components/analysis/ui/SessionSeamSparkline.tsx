@@ -269,7 +269,6 @@ export function SessionSeamSparkline({
               fill="none"
               stroke="var(--text-muted)"
               strokeWidth={1}
-              strokeDasharray="2 2"
               strokeLinecap="round"
             />
           )}
@@ -278,7 +277,6 @@ export function SessionSeamSparkline({
             fill="none"
             stroke="var(--text-muted)"
             strokeWidth={1}
-            strokeDasharray="2 2"
             strokeLinejoin="round"
             strokeLinecap="round"
           />

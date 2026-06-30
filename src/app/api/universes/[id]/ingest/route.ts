@@ -4,6 +4,10 @@ import {
   ingestUniverseSecurities,
   refreshUniverseTail,
 } from "@/server/services/ingest-universe.service";
+import {
+  invalidateMarketMapCache,
+  ingestChangedMarketMap,
+} from "@/server/services/market-map-cache.service";
 import { withIngestLock } from "@/server/services/ingest-inflight";
 import { requireAdminGuard } from "@/lib/api/guards";
 
@@ -62,6 +66,14 @@ export async function POST(req: Request, ctx: Ctx) {
         deduped: true,
         reason: "already-running",
       });
+    }
+    // Self-heal the warm cache: price ingest writes PriceHistory directly, but
+    // the precomputed MarketMapSnapshot blob is otherwise only refreshed by the
+    // daily job / regular-hours runner — so a freshly backfilled ticker would
+    // keep showing stale/blank cells until then. Drop the cache when this run
+    // actually changed data so the next grid read cold-recomputes fresh values.
+    if (ingestChangedMarketMap(outcome.result)) {
+      await invalidateMarketMapCache(id);
     }
     return NextResponse.json({ ok: true, ...outcome.result });
   } catch (e) {

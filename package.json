@@ -19,6 +19,7 @@
     "job:precompute-grid": "tsx scripts/precompute-per-stock-grid.ts",
     "job:backfill-names": "tsx scripts/backfill-security-names.ts",
     "job:revision": "tsx scripts/revision-weekly.ts",
+    "job:revision-daily": "tsx scripts/revision-daily.ts",
     "job:revision-validate": "tsx scripts/revision-fmp-validate.ts",
     "job:revision-backtest": "tsx scripts/revision-legb-backtest.ts",
     "job:fundamental": "tsx scripts/fundamental-weekly.ts",

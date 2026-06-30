@@ -36,7 +36,7 @@ function formatSignedBp(value: number | null): string {
 const SPARK_WIDTH = 60;
 const SPARK_HEIGHT = 18;
 
-function Chip({ quote }: { quote: MarketStripQuote }) {
+function Chip({ quote, "aria-hidden": ariaHidden }: { quote: MarketStripQuote; "aria-hidden"?: boolean }) {
   const positive = (quote.change ?? 0) >= 0;
   const color = quote.change == null
     ? "var(--text-muted)"
@@ -54,6 +54,7 @@ function Chip({ quote }: { quote: MarketStripQuote }) {
 
   return (
     <div
+      aria-hidden={ariaHidden}
       style={{
         display: "flex",
         alignItems: "center",
@@ -128,8 +129,7 @@ export function MarketTickerStrip() {
         minHeight: 24,
         display: "flex",
         alignItems: "center",
-        overflowX: "auto",
-        WebkitOverflowScrolling: "touch",
+        overflow: "hidden",
       }}
     >
       {quotes.length === 0 ? (
@@ -137,7 +137,12 @@ export function MarketTickerStrip() {
           Loading market data…
         </span>
       ) : (
-        quotes.map((q) => <Chip key={q.symbol} quote={q} />)
+        <div className="bb-ticker-track">
+          {quotes.map((q) => <Chip key={q.symbol} quote={q} />)}
+          {quotes.map((q) => (
+            <Chip key={`dup-${q.symbol}`} quote={q} aria-hidden />
+          ))}
+        </div>
       )}
     </div>
   );

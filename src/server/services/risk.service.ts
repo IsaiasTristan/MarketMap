@@ -64,6 +64,14 @@ export interface PositionRisk {
   sharpe126d: number;
   /** Historical expected shortfall (1-day 95%) in dollars. */
   cvar95: number;
+  /**
+   * Parametric daily 95% VaR as a return fraction. Populated for notional-free
+   * reference rows (indices); undefined for positions/total where the dollar
+   * VaR + market value already encode the same information.
+   */
+  var95Pct?: number;
+  /** 1-day 95% expected shortfall as a return fraction (reference rows only). */
+  cvar95Pct?: number;
   vol21Spark: number[];
   vol63Spark: number[];
   vol126Spark: number[];
@@ -133,22 +141,117 @@ async function getSecurityReturns(
   return dailyReturnsFromAdjustedCloses(prices);
 }
 
+type BenchmarkCode = "SP500" | "NASDAQ" | "DOW";
+
 /**
- * Fetch SP500 benchmark daily returns.
- * Returns [] if the SP500 benchmark row or its price history is missing —
- * in that case vol decomposition correctly falls back to 100% idiosyncratic,
- * which signals that a data refresh is needed.
+ * Fetch a benchmark's daily returns plus its latest index level (adjClose).
+ * Returns `{ returns: [], lastPrice: 0 }` if the benchmark row or its price
+ * history is missing — for SP500 this correctly drives vol decomposition to
+ * 100% idiosyncratic, signalling that a data refresh is needed.
  */
-async function getMarketReturns(windowDays = 1260): Promise<number[]> {
-  const bench = await db.benchmark.findUnique({ where: { code: "SP500" } });
-  if (!bench) return [];
+async function getBenchmarkReturns(
+  code: BenchmarkCode,
+  windowDays = 1260,
+): Promise<{ returns: number[]; lastPrice: number }> {
+  const bench = await db.benchmark.findUnique({ where: { code } });
+  if (!bench) return { returns: [], lastPrice: 0 };
   const rows = await db.benchmarkPriceHistory.findMany({
     where: { benchmarkId: bench.id },
     orderBy: { tradeDate: "desc" },
     take: windowDays + 1,
     select: { adjClose: true },
   });
-  return dailyReturnsFromAdjustedCloses(rows.reverse().map((r) => Number(r.adjClose)));
+  const ordered = rows.reverse().map((r) => Number(r.adjClose));
+  return {
+    returns: dailyReturnsFromAdjustedCloses(ordered),
+    lastPrice: ordered.length ? ordered[ordered.length - 1]! : 0,
+  };
+}
+
+/**
+ * SP500 daily returns — used for position/portfolio beta. Thin wrapper over
+ * getBenchmarkReturns preserving the prior call-site contract.
+ */
+async function getMarketReturns(windowDays = 1260): Promise<number[]> {
+  return (await getBenchmarkReturns("SP500", windowDays)).returns;
+}
+
+const BENCHMARK_LABELS: { code: BenchmarkCode; label: string }[] = [
+  { code: "SP500", label: "S&P 500" },
+  { code: "NASDAQ", label: "NASDAQ" },
+  { code: "DOW", label: "Dow" },
+];
+
+/**
+ * Build a notional-free risk row for an index benchmark, mirroring the
+ * per-position metric block. Dollar/notional fields stay 0 (rendered blank);
+ * VaR/CVaR are expressed as return fractions via var95Pct/cvar95Pct.
+ */
+async function buildBenchmarkRiskRow(
+  code: BenchmarkCode,
+  label: string,
+  windowDays = 504,
+): Promise<PositionRisk | null> {
+  const { returns: returns504, lastPrice } = await getBenchmarkReturns(code, windowDays);
+  if (returns504.length < 2) return null;
+
+  const annualRf = riskFreeAnnual();
+  const returns252 = returns504.slice(-252);
+  const returns126 = returns504.slice(-126);
+  const returns63 = returns504.slice(-63);
+  const returns21 = returns504.slice(-21);
+
+  const vol252 = annualizedRealizedVolatility(returns252) ?? 0;
+  const vol126 = annualizedRealizedVolatility(returns126) ?? 0;
+  const vol63 = annualizedRealizedVolatility(returns63) ?? 0;
+  const vol21 = annualizedRealizedVolatility(returns21) ?? 0;
+
+  const sharpe21 = sharpeRatio(returns21, annualRf) ?? 0;
+  const sharpe63 = sharpeRatio(returns63, annualRf) ?? 0;
+  const sharpe126 = sharpeRatio(returns126, annualRf) ?? 0;
+
+  const dailyVol252 = vol252 / Math.sqrt(252);
+  const var95Pct = Z_95 * dailyVol252;
+  const cvar95Pct = Math.abs(expectedShortfall(returns252, 0.05));
+
+  return {
+    ticker: label,
+    name: label,
+    weight: 0,
+    isShort: false,
+    marketValue: 0,
+    lastPrice,
+    varDollar95: 0,
+    varDollar99: 0,
+    marginalVar: 0,
+    componentVar: 0,
+    vol21d: vol21,
+    vol63d: vol63,
+    vol126d: vol126,
+    vol252d: vol252,
+    sharpe21d: sharpe21,
+    sharpe63d: sharpe63,
+    sharpe126d: sharpe126,
+    cvar95: 0,
+    var95Pct,
+    cvar95Pct,
+    vol21Spark: rollingVolSparkline(returns504, 21),
+    vol63Spark: rollingVolSparkline(returns504, 63),
+    vol126Spark: rollingVolSparkline(returns504, 126),
+    sharpe21Spark: rollingSharpeSparkline(returns504, 21, annualRf),
+    sharpe63Spark: rollingSharpeSparkline(returns504, 63, annualRf),
+    sharpe126Spark: rollingSharpeSparkline(returns504, 126, annualRf),
+    beta: 0,
+  };
+}
+
+async function buildBenchmarkRiskRows(windowDays = 504): Promise<PositionRisk[]> {
+  const rows = await Promise.all(
+    BENCHMARK_LABELS.map(({ code, label }) =>
+      buildBenchmarkRiskRow(code, label, windowDays),
+    ),
+  );
+  return rows.filter((r): r is PositionRisk => r !== null);
 }
 
 type PortfolioPositionRow = {
@@ -298,6 +401,7 @@ export async function computePositionRisk(
   positions: PositionRisk[];
   portfolioValue: number;
   portfolioTotal: PositionRisk | null;
+  benchmarks: PositionRisk[];
 }> {
   const positions = await db.portfolioPosition.findMany({
     where: { portfolioId },
@@ -305,7 +409,12 @@ export async function computePositionRisk(
   });
 
   if (!positions.length) {
-    return { positions: [], portfolioValue: 0, portfolioTotal: null };
+    return {
+      positions: [],
+      portfolioValue: 0,
+      portfolioTotal: null,
+      benchmarks: await buildBenchmarkRiskRows(504),
+    };
   }
 
   const equityPositions = positions.filter((p) => !p.isCash && p.securityId);
@@ -451,8 +560,14 @@ export async function computePositionRisk(
 
   const bundle504 = await loadPortfolioReturnBundle(positions, 504);
   const portfolioTotal = bundle504 ? await buildPortfolioTotalRisk(bundle504) : null;
+  const benchmarks = await buildBenchmarkRiskRows(504);
 
-  return { positions: positionRisks, portfolioValue: totalValue, portfolioTotal };
+  return {
+    positions: positionRisks,
+    portfolioValue: totalValue,
+    portfolioTotal,
+    benchmarks,
+  };
 }
 
 export async function computePortfolioRisk(

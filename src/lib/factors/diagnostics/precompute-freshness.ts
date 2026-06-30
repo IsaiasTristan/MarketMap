@@ -56,6 +56,55 @@ export function lastTradingClose(now: Date = new Date()): Date {
   return candidate;
 }
 
+/**
+ * Local-time date portion (yyyy-mm-dd) of a Date. Uses the same local-clock
+ * convention as `lastTradingClose` so the price-tail check and the factor-grid
+ * check agree on what "the last completed session" means.
+ */
+function localIsoDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Is the price tape stale — i.e. does the most recent `PriceHistory.tradeDate`
+ * lag the last completed trading session?
+ *
+ * @param maxTradeDateIso  yyyy-mm-dd of the freshest stored bar, or null when
+ *                         PriceHistory is empty (treated as stale).
+ * @param now              Reference time for `lastTradingClose` (injectable).
+ */
+export function isPriceTailStale(
+  maxTradeDateIso: string | null,
+  now: Date = new Date(),
+): boolean {
+  if (maxTradeDateIso === null) return true;
+  const expected = localIsoDate(lastTradingClose(now));
+  return maxTradeDateIso < expected;
+}
+
+/**
+ * Generic "has this been recomputed since the last completed session?" check,
+ * keyed on a `computedAt` timestamp against `lastTradingClose`. Used by the
+ * market-map cache catch-up so the cache and the factor grids agree on what
+ * "the last completed session" means. Never false-fires intraday: during
+ * REGULAR `lastTradingClose` is the prior day's close, so a row computed
+ * earlier the same trading day is still fresh.
+ *
+ * @param computedAt  When the cached artifact was last written, or null when
+ *                    it is missing (treated as stale).
+ * @param now         Reference time for `lastTradingClose` (injectable).
+ */
+export function isStaleSinceLastClose(
+  computedAt: Date | null,
+  now: Date = new Date(),
+): boolean {
+  if (computedAt === null) return true;
+  return computedAt < lastTradingClose(now);
+}
+
 export interface PrecomputeGridStatus {
   /** Trading days regression window. */
   window: number;

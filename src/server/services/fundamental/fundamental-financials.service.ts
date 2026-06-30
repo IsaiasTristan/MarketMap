@@ -25,6 +25,10 @@ import {
   type FaPeriodInput,
   type FaStatement,
 } from "@/lib/fundamental/financials";
+import {
+  getCompanyNamesByTicker,
+  pickDisplayName,
+} from "@/server/services/security-name.service";
 
 const MAX_ANNUAL_COLUMNS = 6;
 const MAX_QUARTER_COLUMNS = 8;
@@ -258,7 +262,7 @@ function netLeverageAsOf(period: FaPeriodInput, quarters: FaPeriodInput[]): numb
 
 export async function getFinancials(ticker: string, basis: FaBasis): Promise<FinancialsPayload | null> {
   const t = ticker.toUpperCase();
-  const [rows, snap, ref, revSnap] = await Promise.all([
+  const [rows, snap, ref, revSnap, namesByTicker] = await Promise.all([
     prisma.fundamentalPeriod.findMany({
       where: { ticker: t, periodType: "quarter" },
       orderBy: { fiscalDate: "asc" },
@@ -306,6 +310,7 @@ export async function getFinancials(ticker: string, basis: FaBasis): Promise<Fin
       orderBy: { snapshotDate: "desc" },
       select: { estimatesJson: true },
     }),
+    getCompanyNamesByTicker(prisma, [t]),
   ]);
 
   if (rows.length === 0) return null;
@@ -451,7 +456,7 @@ export async function getFinancials(ticker: string, basis: FaBasis): Promise<Fin
     perShare,
     bridge,
     ticker: t,
-    companyName: ref?.companyName ?? null,
+    companyName: pickDisplayName(namesByTicker, t, ref?.companyName ?? null),
     sector: ref?.sector ?? null,
     subsector: ref?.subsector ?? null,
     basis,

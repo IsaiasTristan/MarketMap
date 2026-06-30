@@ -7,19 +7,31 @@ interface MicroBarProps {
   maxAbs?: number;
   /** When true, render as percentage label instead of raw value. */
   asPct?: boolean;
+  /** Tighter footprint (narrower bar + label) for dense half-width tables. */
+  compact?: boolean;
 }
 
-export function MicroBar({ value, maxAbs = 1, asPct = false }: MicroBarProps) {
+export function MicroBar({
+  value,
+  maxAbs = 1,
+  asPct = false,
+  compact = false,
+}: MicroBarProps) {
   const scale = maxAbs > 0 ? maxAbs : 1;
   const abs = Math.min(1, Math.abs(value) / scale);
   const positive = value >= 0;
 
+  const barWidth = compact ? 44 : 72;
+  const labelWidth = compact ? 36 : 40;
+  const wrapMinWidth = compact ? 0 : 100;
+  const gap = compact ? 4 : 6;
+
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 100 }}>
+    <div style={{ display: "flex", alignItems: "center", gap, minWidth: wrapMinWidth }}>
       <div
         style={{
           position: "relative",
-          width: 72,
+          width: barWidth,
           height: 6,
           background: "var(--bg-elevated)",
           borderRadius: 0,
@@ -53,7 +65,7 @@ export function MicroBar({ value, maxAbs = 1, asPct = false }: MicroBarProps) {
           fontSize: 10,
           fontFamily: "var(--font-mono, monospace)",
           color: positive ? "var(--color-positive)" : "var(--color-negative)",
-          minWidth: 40,
+          minWidth: labelWidth,
           textAlign: "right",
         }}
       >

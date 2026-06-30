@@ -7,11 +7,13 @@ import { MasterRankTable } from "./MasterRankTable";
 import { RevisionTrajectory } from "./RevisionTrajectory";
 import { RotationFlow } from "./RotationFlow";
 import { BreadthHeatmap } from "./BreadthHeatmap";
+import { RatingChanges } from "./RatingChanges";
 
-type ResearchTab = "rank" | "trajectory" | "rotation" | "heatmap";
+type ResearchTab = "rank" | "events" | "trajectory" | "rotation" | "heatmap";
 
 const TABS: BloombergTabItem[] = [
   { key: "rank", label: "Master Rank" },
+  { key: "events", label: "Rating Changes" },
   { key: "trajectory", label: "Revision Trajectory" },
   { key: "rotation", label: "Rotation Flow" },
   { key: "heatmap", label: "Breadth Heatmap" },
@@ -45,6 +47,7 @@ export function ResearchClient() {
 
       <div>
         {tab === "rank" && <MasterRankTable onSelectTicker={openTrajectory} />}
+        {tab === "events" && <RatingChanges onSelectTicker={openTrajectory} />}
         {tab === "trajectory" && (
           <RevisionTrajectory ticker={selectedTicker} onPickTicker={setSelectedTicker} />
         )}

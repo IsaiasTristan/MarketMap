@@ -13,6 +13,8 @@ type Constituent = {
   subTheme: string;
 };
 
+type ResyncStatusState = "idle" | "running" | "done" | "error";
+
 type DefaultUniverse = {
   id: string;
   name: string;
@@ -50,11 +52,16 @@ export function ManageTickersModal({
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
-  const [removingTicker, setRemovingTicker] = useState<string | null>(null);
   const [editingTicker, setEditingTicker] = useState<string | null>(null);
-  const [updatingTicker, setUpdatingTicker] = useState<string | null>(null);
-  const [addingStock, setAddingStock] = useState(false);
+  // Working copy of the Current-tab rows. Edits/adds/removes mutate this only;
+  // nothing is persisted until the user clicks "Save & Apply".
+  const [draftRows, setDraftRows] = useState<Constituent[]>([]);
+  const [applyingCurrent, setApplyingCurrent] = useState(false);
+  const [resyncStatus, setResyncStatus] = useState<ResyncStatusState>("idle");
+  const [nameFillStatus, setNameFillStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Guards the automatic name backfill so it runs at most once per modal open.
+  const backfillAttemptedRef = useRef(false);
 
   const loadUniverse = useCallback(async () => {
     setLoadingUniverse(true);
@@ -81,9 +88,11 @@ export function ManageTickersModal({
         })
       );
       setConstituents(rows);
+      setDraftRows(rows);
     } catch {
       setUniverse(null);
       setConstituents([]);
+      setDraftRows([]);
     } finally {
       setLoadingUniverse(false);
     }
@@ -96,8 +105,47 @@ export function ManageTickersModal({
     setPreview(null);
     setPreviewFormat(null);
     setEditingTicker(null);
+    setResyncStatus("idle");
+    setNameFillStatus(null);
+    backfillAttemptedRef.current = false;
     void loadUniverse();
   }, [open, loadUniverse]);
+
+  // Auto-fill display names for any constituent whose name still equals its
+  // ticker. Runs once per modal open (the ref guard); a partial / failed fill
+  // leaves the rows for a later open rather than looping. Resolved names are
+  // written straight to the DB by the endpoint, so reloading surfaces them and
+  // re-opening finds nothing left to fill. Non-admins get a 403 we ignore.
+  useEffect(() => {
+    if (!open || !universe || backfillAttemptedRef.current) return;
+    const missing = constituents.filter((c) => c.name.trim() === c.ticker.trim());
+    if (missing.length === 0) return;
+    backfillAttemptedRef.current = true;
+    setNameFillStatus(`Filling ${missing.length} name${missing.length === 1 ? "" : "s"}…`);
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/universes/${universe.id}/backfill-names`, {
+          method: "POST",
+        });
+        const body = (await res.json().catch(() => null)) as
+          | { ok?: boolean; filled?: number }
+          | null;
+        if (cancelled) return;
+        if (res.ok && body?.ok && (body.filled ?? 0) > 0) {
+          setNameFillStatus(`Filled ${body.filled} name${body.filled === 1 ? "" : "s"}.`);
+          await loadUniverse();
+        } else {
+          setNameFillStatus(null);
+        }
+      } catch {
+        if (!cancelled) setNameFillStatus(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, universe, constituents, loadUniverse]);
 
   useEffect(() => {
     if (!open) return;
@@ -107,6 +155,53 @@ export function ManageTickersModal({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
+
+  // Kick off the background engine resync (sync RevisionReference + re-score
+  // Research/Fundamentals) after a taxonomy change. Fire-and-forget on the
+  // server; we move to "running" and poll for completion below.
+  const triggerResync = useCallback(async () => {
+    if (!universe) return;
+    try {
+      const res = await fetch(`/api/universes/${universe.id}/resync-engines`, {
+        method: "POST",
+      });
+      if (res.ok) setResyncStatus("running");
+    } catch {
+      // Best-effort; the next weekly job will still reconcile.
+    }
+  }, [universe]);
+
+  // Poll the resync status while a background recompute is running so the modal
+  // can surface "resyncing… / done" and refresh dependent views on completion.
+  useEffect(() => {
+    if (resyncStatus !== "running" || !universe) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/universes/${universe.id}/resync-engines`, {
+          cache: "no-store",
+        });
+        const body = (await res.json().catch(() => null)) as
+          | { status?: ResyncStatusState }
+          | null;
+        if (cancelled) return;
+        if (body?.status === "done") {
+          setResyncStatus("done");
+          onApplied?.();
+        } else if (body?.status === "error") {
+          setResyncStatus("error");
+        }
+      } catch {
+        // Keep polling; transient errors shouldn't abort the watcher.
+      }
+    };
+    void poll();
+    const id = setInterval(() => void poll(), 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [resyncStatus, universe, onApplied]);
 
   const onParse = async (format: "csv" | "paste") => {
     setParseErr(null);
@@ -208,11 +303,14 @@ export function ManageTickersModal({
       if (body.duplicatesDropped != null && body.duplicatesDropped > 0) {
         parts.push(`${body.duplicatesDropped} duplicate dropped`);
       }
-      setMsg(`${parts.join(" · ")} — pulling prices in the background.`);
+      setMsg(
+        `${parts.join(" · ")} — pulling prices and resyncing engines in the background.`
+      );
       setPreview(null);
       setPreviewFormat(null);
       await loadUniverse();
       onApplied?.();
+      await triggerResync();
       setTab("current");
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -221,143 +319,140 @@ export function ManageTickersModal({
     }
   };
 
-  const onRemoveTicker = useCallback(
-    async (ticker: string) => {
-      if (!universe) return;
-      const confirmed =
-        typeof window === "undefined"
-          ? true
-          : window.confirm(`Remove ${ticker} from the universe?`);
-      if (!confirmed) return;
-      setRemovingTicker(ticker);
-      setMsg(null);
-      try {
-        const res = await fetch(
-          `/api/universes/${universe.id}/constituents?ticker=${encodeURIComponent(ticker)}`,
-          { method: "DELETE" }
-        );
-        if (!res.ok) {
-          const body = (await res.json().catch(() => ({}))) as { error?: string };
-          throw new Error(body.error ?? `Failed to remove ${ticker}`);
-        }
-        setConstituents((prev) => prev.filter((c) => c.ticker !== ticker));
-        setUniverse((prev) =>
-          prev ? { ...prev, constituentCount: Math.max(0, prev.constituentCount - 1) } : prev
-        );
-        setMsg(`Removed ${ticker}.`);
-        onApplied?.();
-      } catch (e) {
-        setMsg(e instanceof Error ? e.message : String(e));
-      } finally {
-        setRemovingTicker(null);
-      }
-    },
-    [universe, onApplied]
-  );
+  // Staged edits — these mutate the in-memory draft only. Nothing is persisted
+  // until "Save & Apply".
+  const onStageRemove = useCallback((ticker: string) => {
+    setDraftRows((prev) => prev.filter((c) => c.ticker !== ticker));
+    setEditingTicker((cur) => (cur === ticker ? null : cur));
+  }, []);
 
-  const onAddStock = useCallback(
+  const onStageAdd = useCallback(
     async (row: ParsedUniverseRow): Promise<boolean> => {
-      if (!universe) return false;
-      setAddingStock(true);
-      setMsg(null);
-      try {
-        const res = await fetch(
-          `/api/universes/${universe.id}/constituents?mode=append`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rows: [row] }),
-          }
-        );
-        const body = (await res.json().catch(() => null)) as
-          | { ok?: boolean; error?: string; created?: number; updated?: number }
-          | null;
-        if (!res.ok || !body?.ok) {
-          throw new Error(
-            body?.error ?? `Failed to add ${row.ticker} (HTTP ${res.status})`
-          );
+      const ticker = row.ticker.trim().toUpperCase();
+      if (!ticker) return false;
+      const next: Constituent = {
+        ticker,
+        name: row.companyName.trim(),
+        sector: row.sector.trim(),
+        subTheme: row.subTheme.trim(),
+      };
+      setDraftRows((prev) => {
+        const idx = prev.findIndex((c) => c.ticker.toUpperCase() === ticker);
+        if (idx >= 0) {
+          const copy = [...prev];
+          copy[idx] = next;
+          return copy;
         }
-
-        // Pull prices for the newly-added ticker in the background; the
-        // dashboard polls and will pick up bars as they land.
-        void fetch(`/api/universes/${universe.id}/ingest?mode=missing`, {
-          method: "POST",
-          keepalive: true,
-        }).catch(() => undefined);
-
-        const wasUpdate = (body.updated ?? 0) > 0 && (body.created ?? 0) === 0;
-        setMsg(
-          wasUpdate
-            ? `Updated ${row.ticker} — pulling prices in the background.`
-            : `Added ${row.ticker} — pulling prices in the background.`
-        );
-        await loadUniverse();
-        onApplied?.();
-        return true;
-      } catch (e) {
-        setMsg(e instanceof Error ? e.message : String(e));
-        return false;
-      } finally {
-        setAddingStock(false);
-      }
+        return [...prev, next];
+      });
+      setMsg(null);
+      return true;
     },
-    [universe, loadUniverse, onApplied]
+    []
   );
 
-  const onUpdateStock = useCallback(
+  const onStageUpdate = useCallback(
     async (
       ticker: string,
       fields: { companyName: string; sector: string; subTheme: string }
     ): Promise<boolean> => {
-      if (!universe) return false;
-      setUpdatingTicker(ticker);
+      setDraftRows((prev) =>
+        prev.map((c) =>
+          c.ticker === ticker
+            ? {
+                ...c,
+                name: fields.companyName.trim(),
+                sector: fields.sector.trim(),
+                subTheme: fields.subTheme.trim(),
+              }
+            : c
+        )
+      );
+      setEditingTicker(null);
       setMsg(null);
-      try {
-        const res = await fetch(
-          `/api/universes/${universe.id}/constituents?ticker=${encodeURIComponent(ticker)}`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              companyName: fields.companyName.trim(),
-              sector: fields.sector.trim(),
-              subTheme: fields.subTheme.trim(),
-            }),
-          }
-        );
-        const body = (await res.json().catch(() => null)) as
-          | { ok?: boolean; error?: string }
-          | null;
-        if (!res.ok || !body?.ok) {
-          throw new Error(
-            body?.error ?? `Failed to update ${ticker} (HTTP ${res.status})`
-          );
-        }
-        setConstituents((prev) =>
-          prev.map((c) =>
-            c.ticker === ticker
-              ? {
-                  ...c,
-                  name: fields.companyName.trim(),
-                  sector: fields.sector.trim(),
-                  subTheme: fields.subTheme.trim(),
-                }
-              : c
-          )
-        );
-        setEditingTicker(null);
-        setMsg(`Updated ${ticker}.`);
-        onApplied?.();
-        return true;
-      } catch (e) {
-        setMsg(e instanceof Error ? e.message : String(e));
-        return false;
-      } finally {
-        setUpdatingTicker(null);
-      }
+      return true;
     },
-    [universe, onApplied]
+    []
   );
+
+  const dirty = useMemo(
+    () => rowsSignature(draftRows) !== rowsSignature(constituents),
+    [draftRows, constituents]
+  );
+
+  const onReloadCurrent = useCallback(() => {
+    if (
+      dirty &&
+      typeof window !== "undefined" &&
+      !window.confirm("Discard unsaved changes and reload the saved list?")
+    ) {
+      return;
+    }
+    setEditingTicker(null);
+    setMsg(null);
+    void loadUniverse();
+  }, [dirty, loadUniverse]);
+
+  const onSaveApply = useCallback(async () => {
+    if (!universe) return;
+    if (draftRows.length === 0) {
+      setMsg("Add at least one ticker before applying.");
+      return;
+    }
+    setApplyingCurrent(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/universes/${universe.id}/constituents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rows: draftRows.map((r) => ({
+            ticker: r.ticker,
+            companyName: r.name,
+            sector: r.sector,
+            subTheme: r.subTheme,
+          })),
+        }),
+      });
+      const body = (await res.json().catch(() => null)) as
+        | {
+            ok?: boolean;
+            error?: string;
+            applied?: number;
+            created?: number;
+            duplicatesDropped?: number;
+          }
+        | null;
+      if (!res.ok || !body?.ok) {
+        throw new Error(
+          body?.error ?? `Failed to apply changes (HTTP ${res.status})`
+        );
+      }
+
+      // Pull prices for any newly-added tickers in the background.
+      void fetch(`/api/universes/${universe.id}/ingest?mode=missing`, {
+        method: "POST",
+        keepalive: true,
+      }).catch(() => undefined);
+
+      const parts: string[] = [
+        `Applied ${body.applied ?? draftRows.length} tickers`,
+      ];
+      if (body.duplicatesDropped != null && body.duplicatesDropped > 0) {
+        parts.push(`${body.duplicatesDropped} duplicate dropped`);
+      }
+      setMsg(
+        `${parts.join(" · ")} — resyncing Research & Fundamentals in the background.`
+      );
+      await loadUniverse();
+      onApplied?.();
+      await triggerResync();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setApplyingCurrent(false);
+    }
+  }, [universe, draftRows, loadUniverse, onApplied, triggerResync]);
 
   const onFile = async (file: File) => {
     const text = await file.text();
@@ -407,7 +502,7 @@ export function ManageTickersModal({
             active={tab === "current"}
             onClick={() => setTab("current")}
           >
-            Current ({count})
+            Current ({draftRows.length})
           </TabBtn>
         </div>
 
@@ -533,18 +628,20 @@ export function ManageTickersModal({
 
           {tab === "current" && (
             <CurrentTab
-              rows={constituents}
+              rows={draftRows}
               loading={loadingUniverse}
-              onRefresh={() => void loadUniverse()}
-              onRemove={(ticker) => void onRemoveTicker(ticker)}
-              removingTicker={removingTicker}
-              onAdd={onAddStock}
-              adding={addingStock}
+              onReload={onReloadCurrent}
+              onRemove={onStageRemove}
+              onAdd={onStageAdd}
               editingTicker={editingTicker}
-              updatingTicker={updatingTicker}
               onStartEdit={setEditingTicker}
               onCancelEdit={() => setEditingTicker(null)}
-              onUpdate={onUpdateStock}
+              onUpdate={onStageUpdate}
+              dirty={dirty}
+              applying={applyingCurrent}
+              onSaveApply={() => void onSaveApply()}
+              resyncStatus={resyncStatus}
+              nameFillStatus={nameFillStatus}
             />
           )}
         </div>
@@ -639,6 +736,17 @@ function PreviewTable({ rows }: { rows: ParsedUniverseRow[] }) {
       </div>
     </div>
   );
+}
+
+/**
+ * Order-independent signature of a constituent set, used to detect whether the
+ * working draft differs from the saved list (enables the Save & Apply button).
+ */
+function rowsSignature(rows: Constituent[]): string {
+  return rows
+    .map((r) => `${r.ticker}\u0001${r.name}\u0001${r.sector}\u0001${r.subTheme}`)
+    .sort()
+    .join("\u0002");
 }
 
 function computeSectorOptions(rows: Constituent[]): string[] {
@@ -740,6 +848,7 @@ function ConstituentRow({
               value={sector}
               onChange={(e) => setSector(e.target.value)}
               style={cellInput}
+              placeholder="Type to add or pick a theme"
               aria-label={`Theme for ${row.ticker}`}
             />
             <datalist id={sectorListId}>
@@ -754,6 +863,7 @@ function ConstituentRow({
               value={subTheme}
               onChange={(e) => setSubTheme(e.target.value)}
               style={cellInput}
+              placeholder="Type to add or pick a sub-theme"
               aria-label={`Subtheme for ${row.ticker}`}
             />
             <datalist id={subThemeListId}>
@@ -826,32 +936,36 @@ function ConstituentRow({
 function CurrentTab({
   rows,
   loading,
-  onRefresh,
+  onReload,
   onRemove,
-  removingTicker,
   onAdd,
-  adding,
   editingTicker,
-  updatingTicker,
   onStartEdit,
   onCancelEdit,
   onUpdate,
+  dirty,
+  applying,
+  onSaveApply,
+  resyncStatus,
+  nameFillStatus,
 }: {
   rows: Constituent[];
   loading: boolean;
-  onRefresh: () => void;
+  onReload: () => void;
   onRemove: (ticker: string) => void;
-  removingTicker: string | null;
   onAdd: (row: ParsedUniverseRow) => Promise<boolean>;
-  adding: boolean;
   editingTicker: string | null;
-  updatingTicker: string | null;
   onStartEdit: (ticker: string) => void;
   onCancelEdit: () => void;
   onUpdate: (
     ticker: string,
     fields: { companyName: string; sector: string; subTheme: string }
   ) => Promise<boolean>;
+  dirty: boolean;
+  applying: boolean;
+  onSaveApply: () => void;
+  resyncStatus: ResyncStatusState;
+  nameFillStatus: string | null;
 }) {
   const [ticker, setTicker] = useState("");
   const [name, setName] = useState("");
@@ -874,7 +988,12 @@ function CurrentTab({
 
   return (
     <div>
-      <AddStockForm rows={rows} onAdd={onAdd} adding={adding} />
+      <AddStockForm rows={rows} onAdd={onAdd} />
+      <p style={{ ...hint, marginBottom: "0.5rem" }}>
+        Edit a row, then click <strong>Save &amp; Apply</strong> below. Theme and
+        sub-theme accept new values — just type one in. Changes propagate to every
+        tab (Research &amp; Fundamentals resync in the background).
+      </p>
       <div style={filterRow}>
         <FilterInput
           label="Ticker"
@@ -928,24 +1047,20 @@ function CurrentTab({
             ) : (
               filtered.map((r) => {
                 const isEditing = editingTicker === r.ticker;
-                const isUpdating = updatingTicker === r.ticker;
-                const actionsDisabled =
-                  (editingTicker !== null && !isEditing) ||
-                  updatingTicker !== null ||
-                  removingTicker !== null;
+                const actionsDisabled = editingTicker !== null && !isEditing;
                 return (
                   <ConstituentRow
                     key={r.ticker}
                     row={r}
                     allRows={rows}
                     isEditing={isEditing}
-                    isUpdating={isUpdating}
+                    isUpdating={false}
                     actionsDisabled={actionsDisabled}
                     onStartEdit={() => onStartEdit(r.ticker)}
                     onCancelEdit={onCancelEdit}
                     onSave={(fields) => onUpdate(r.ticker, fields)}
                     onRemove={() => onRemove(r.ticker)}
-                    isRemoving={removingTicker === r.ticker}
+                    isRemoving={false}
                   />
                 );
               })
@@ -953,23 +1068,78 @@ function CurrentTab({
           </tbody>
         </table>
       </div>
-      <div style={{ marginTop: "0.5rem", display: "flex", justifyContent: "flex-end" }}>
-        <button type="button" onClick={onRefresh} style={btnGhost}>
-          Reload
-        </button>
+      <div
+        style={{
+          marginTop: "0.6rem",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "0.75rem",
+        }}
+      >
+        <span style={{ fontSize: "0.8rem", color: resyncStatusColor(resyncStatus) }}>
+          {nameFillStatus ?? resyncStatusLabel(resyncStatus, dirty)}
+        </span>
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+          <button
+            type="button"
+            onClick={onReload}
+            title="Discard unsaved changes and reload the saved list"
+            style={btnGhost}
+          >
+            Reload
+          </button>
+          <button
+            type="button"
+            onClick={onSaveApply}
+            disabled={!dirty || applying}
+            style={{ ...btnSuccess, opacity: !dirty || applying ? 0.5 : 1 }}
+            title={
+              dirty
+                ? "Persist changes and resync every tab"
+                : "No unsaved changes"
+            }
+          >
+            {applying ? "Saving & applying…" : "Save & Apply"}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
+function resyncStatusLabel(s: ResyncStatusState, dirty: boolean): string {
+  switch (s) {
+    case "running":
+      return "Resyncing Research & Fundamentals…";
+    case "done":
+      return "Research & Fundamentals resynced.";
+    case "error":
+      return "Engine resync failed — will reconcile on the next weekly job.";
+    default:
+      return dirty ? "Unsaved changes" : "";
+  }
+}
+
+function resyncStatusColor(s: ResyncStatusState): string {
+  switch (s) {
+    case "done":
+      return "#7bd88f";
+    case "error":
+      return "#ff8d8d";
+    case "running":
+      return "#6aa6ff";
+    default:
+      return "#8c99a8";
+  }
+}
+
 function AddStockForm({
   rows,
   onAdd,
-  adding,
 }: {
   rows: Constituent[];
   onAdd: (row: ParsedUniverseRow) => Promise<boolean>;
-  adding: boolean;
 }) {
   const [ticker, setTicker] = useState("");
   const [name, setName] = useState("");
@@ -1009,7 +1179,6 @@ function AddStockForm({
   }, [ticker, name]);
 
   const canAdd =
-    !adding &&
     ticker.trim().length > 0 &&
     name.trim().length > 0 &&
     sector.trim().length > 0 &&
@@ -1093,7 +1262,7 @@ function AddStockForm({
           disabled={!canAdd}
           style={{ ...btnPrimary, opacity: canAdd ? 1 : 0.5, whiteSpace: "nowrap" }}
         >
-          {adding ? "Adding…" : "Add"}
+          Add
         </button>
       </div>
       {err && <p style={{ ...errStyle, marginTop: "0.4rem" }}>{err}</p>}

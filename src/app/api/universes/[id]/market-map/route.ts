@@ -87,6 +87,11 @@ export async function GET(req: Request, ctx: Ctx) {
   let asOf: string | null;
   let warnings: string[];
   let ranges: { min: Record<string, number>; max: Record<string, number> };
+  let diagnostics = {
+    excludedInsufficientPrices: 0,
+    allNullRows: 0,
+    d1FallbackToRegular: 0,
+  };
 
   if (cacheable) {
     const cached =
@@ -96,6 +101,7 @@ export async function GET(req: Request, ctx: Ctx) {
     asOf = cached.asOf;
     warnings = cached.warnings;
     ranges = cached.columnRanges;
+    if (cached.diagnostics) diagnostics = cached.diagnostics;
   } else {
     const result = await computeMarketMap(
       prisma,
@@ -109,6 +115,7 @@ export async function GET(req: Request, ctx: Ctx) {
     rows = result.rows;
     asOf = result.asOf;
     warnings = result.warnings;
+    diagnostics = result.diagnostics;
     // Winsorized (p5/p95) span so a few extreme stocks don't compress the heat
     // scale and wash out the rest of the grid. Shared by the grid, Top Movers,
     // and Factor Top Movers (all keyed off this company-level range).
@@ -125,6 +132,8 @@ export async function GET(req: Request, ctx: Ctx) {
     horizons: HORIZON_ORDER,
     columnRanges: ranges,
     rows,
+    /** Grid health counters — drives the "data gap" chip + ops visibility. */
+    diagnostics,
     extended: {
       requested: !!parsed.data.extended,
       applied: overlayActive,

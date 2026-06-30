@@ -4,7 +4,6 @@ import { useMemo } from "react";
 import {
   Area,
   ComposedChart,
-  Line,
   ReferenceLine,
   ResponsiveContainer,
   XAxis,
@@ -12,20 +11,18 @@ import {
 } from "recharts";
 import { fmtPrice, fmtPct } from "@/components/analysis/overview/formatters";
 import {
-  computeTodayOnlyLayout,
-  mapSeriesToX,
-  sessionFractionToEtLabel,
+  extendedSessionFractionToEtLabel,
+  timestampToExtendedSessionFraction,
 } from "@/lib/market/sparkline-session-layout";
-import { useSessionClock } from "@/lib/market/use-session-clock";
-import { getUsMarketSession } from "@/lib/market-map/market-session";
+import type { TodaySessionPoint } from "@/lib/holdings/intraday-split";
 
 const POS = "#26a269";
 const NEG = "#e0533d";
 
 export interface LivePriceChartTileProps {
   ticker: string;
-  sparkline: number[];
-  sparklineExtended?: number[];
+  /** Today's pre -> regular -> post timestamped intraday series. */
+  intradayPoints: TodaySessionPoint[];
   prevClose: number;
   currentPrice: number;
   chg1dPct: number;
@@ -38,64 +35,37 @@ interface TilePoint {
   extended: number | null;
 }
 
-function buildSessionTilePoints(
-  sparkline: number[],
-  sparklineExtended: number[],
-  now: Date,
-): TilePoint[] {
-  const regular = sparkline.length >= 2 ? sparkline : [];
-  const extended = sparklineExtended ?? [];
-
-  const layout = computeTodayOnlyLayout({
-    hasToday: regular.length >= 2,
-    hasExtended: extended.length >= 2,
-    now,
-    clockSession: getUsMarketSession(now),
+/**
+ * Map today's session points onto the extended ET time axis (pre-market is
+ * negative, regular is [0, 1], post-market is > 1). A regular bar adjacent to
+ * an extended bar also carries the extended value so the gray pre/post segments
+ * visually connect to the colored regular line instead of floating away.
+ */
+function buildTilePoints(points: TodaySessionPoint[]): TilePoint[] {
+  return points.map((p, i) => {
+    const isExt = p.session === "extended";
+    const adjacentToExt =
+      points[i - 1]?.session === "extended" ||
+      points[i + 1]?.session === "extended";
+    return {
+      sessionX: timestampToExtendedSessionFraction(p.t),
+      regular: isExt ? null : p.price,
+      extended: isExt ? p.price : adjacentToExt ? p.price : null,
+    };
   });
-
-  const [tStart, tEnd] = layout.todayXRange;
-  const out: TilePoint[] = regular.map((price, i) => ({
-    sessionX: mapSeriesToX(i, regular.length, tStart, tEnd),
-    regular: price,
-    extended: null,
-  }));
-
-  const extRange = layout.extendedXRange;
-  if (extRange && extended.length >= 2) {
-    for (let i = 0; i < extended.length; i++) {
-      out.push({
-        sessionX: mapSeriesToX(i, extended.length, extRange[0], extRange[1]),
-        regular: null,
-        extended: extended[i]!,
-      });
-    }
-  }
-
-  if (out.length === 0 && extended.length >= 2 && extRange) {
-    return extended.map((price, i) => ({
-      sessionX: mapSeriesToX(i, extended.length, extRange[0], extRange[1]),
-      regular: null,
-      extended: price,
-    }));
-  }
-
-  return out.sort((a, b) => a.sessionX - b.sessionX);
 }
 
 export function LivePriceChartTile({
   ticker,
-  sparkline,
-  sparklineExtended = [],
+  intradayPoints,
   prevClose,
   currentPrice,
   chg1dPct,
   onClick,
 }: LivePriceChartTileProps) {
-  const now = useSessionClock(20_000);
-
   const points = useMemo(
-    () => buildSessionTilePoints(sparkline, sparklineExtended, now),
-    [sparkline, sparklineExtended, now],
+    () => buildTilePoints(intradayPoints),
+    [intradayPoints],
   );
 
   const last = currentPrice;
@@ -115,7 +85,33 @@ export function LivePriceChartTile({
     return [lo - pad, hi + pad];
   }, [points, prevClose]);
 
+  // X domain across the full pre/regular/post day, anchored on the regular
+  // [0, 1] window and stretched to whatever pre/post data exists.
+  const xDomain = useMemo<[number, number]>(() => {
+    let lo = 0;
+    let hi = 1;
+    for (const p of points) {
+      if (p.sessionX < lo) lo = p.sessionX;
+      if (p.sessionX > hi) hi = p.sessionX;
+    }
+    return [lo, hi];
+  }, [points]);
+
+  const splitOffset = useMemo<number | null>(() => {
+    if (!(prevClose > 0) || !yDomain) return null;
+    const [lo, hi] = yDomain;
+    if (hi === lo) return null;
+    return Math.min(1, Math.max(0, (hi - prevClose) / (hi - lo)));
+  }, [prevClose, yDomain]);
+
+  const fillGradId = `tile-${ticker}`;
+  const strokeGradId = `tile-stroke-${ticker}`;
+
   const hasRenderable = points.length >= 2;
+  const hasExtended = useMemo(
+    () => points.some((p) => p.extended != null),
+    [points],
+  );
 
   return (
     <div
@@ -208,17 +204,36 @@ export function LivePriceChartTile({
               margin={{ top: 14, right: 4, bottom: 0, left: 0 }}
             >
               <defs>
-                <linearGradient id={`tile-${ticker}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={color} stopOpacity={0.28} />
-                  <stop offset="100%" stopColor={color} stopOpacity={0} />
-                </linearGradient>
+                {splitOffset != null ? (
+                  <>
+                    {/* Fill: green above the prior close, red below. */}
+                    <linearGradient id={fillGradId} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={POS} stopOpacity={0.28} />
+                      <stop offset={`${splitOffset * 100}%`} stopColor={POS} stopOpacity={0.04} />
+                      <stop offset={`${splitOffset * 100}%`} stopColor={NEG} stopOpacity={0.04} />
+                      <stop offset="100%" stopColor={NEG} stopOpacity={0.28} />
+                    </linearGradient>
+                    {/* Stroke: hard green/red split at the prior close. */}
+                    <linearGradient id={strokeGradId} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={POS} />
+                      <stop offset={`${splitOffset * 100}%`} stopColor={POS} />
+                      <stop offset={`${splitOffset * 100}%`} stopColor={NEG} />
+                      <stop offset="100%" stopColor={NEG} />
+                    </linearGradient>
+                  </>
+                ) : (
+                  <linearGradient id={fillGradId} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={color} stopOpacity={0.28} />
+                    <stop offset="100%" stopColor={color} stopOpacity={0} />
+                  </linearGradient>
+                )}
               </defs>
               <XAxis
                 type="number"
                 dataKey="sessionX"
-                domain={[0, 1]}
-                ticks={[0, 1]}
-                tickFormatter={(v: number) => sessionFractionToEtLabel(v)}
+                domain={xDomain}
+                ticks={xDomain}
+                tickFormatter={(v: number) => extendedSessionFractionToEtLabel(v)}
                 tick={{ fontSize: 7, fill: "var(--text-muted)" }}
                 axisLine={{ stroke: "var(--bg-border)" }}
                 tickLine={false}
@@ -242,23 +257,25 @@ export function LivePriceChartTile({
               <Area
                 type="monotone"
                 dataKey="regular"
-                stroke={color}
+                stroke={splitOffset != null ? `url(#${strokeGradId})` : color}
                 strokeWidth={1.2}
-                fill={`url(#tile-${ticker})`}
+                fill={`url(#${fillGradId})`}
                 connectNulls={false}
                 isAnimationActive={false}
                 dot={false}
               />
-              <Line
-                type="monotone"
-                dataKey="extended"
-                stroke="var(--text-muted)"
-                strokeWidth={1}
-                strokeDasharray="3 3"
-                connectNulls
-                isAnimationActive={false}
-                dot={false}
-              />
+              {hasExtended && (
+                <Area
+                  type="monotone"
+                  dataKey="extended"
+                  stroke="var(--text-muted)"
+                  strokeWidth={1}
+                  fill="none"
+                  connectNulls={false}
+                  isAnimationActive={false}
+                  dot={false}
+                />
+              )}
             </ComposedChart>
           </ResponsiveContainer>
         )}
@@ -273,7 +290,7 @@ export function LivePriceChartTile({
           justifyContent: "space-between",
         }}
       >
-        <span>Live intraday (5m)</span>
+        <span>Pre / regular / after-hours</span>
         <span>Click to expand</span>
       </div>
     </div>

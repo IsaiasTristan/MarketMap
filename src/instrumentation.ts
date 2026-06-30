@@ -33,6 +33,17 @@ export async function register() {
       );
     }
     try {
+      const { maybeRunPriceTailCatchUp } = await import(
+        "@/server/services/price-tail-catchup"
+      );
+      void maybeRunPriceTailCatchUp();
+    } catch (e) {
+      console.error(
+        "[instrumentation] failed to schedule price-tail catch-up:",
+        e,
+      );
+    }
+    try {
       const { startExtendedHoursRunner } = await import(
         "@/server/services/extended-hours-runner"
       );
@@ -73,6 +84,17 @@ export async function register() {
     } catch (e) {
       console.error(
         "[instrumentation] failed to start snapshot-refresh runner:",
+        e,
+      );
+    }
+    try {
+      const { startRevisionRunner } = await import(
+        "@/server/services/revision-runner"
+      );
+      startRevisionRunner();
+    } catch (e) {
+      console.error(
+        "[instrumentation] failed to start revision runner:",
         e,
       );
     }

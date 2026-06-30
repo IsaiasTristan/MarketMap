@@ -6,6 +6,7 @@ import {
 } from "@/lib/holdings/day-range";
 import {
   composeCurrentSparkline,
+  composeTodaySessionPoints,
   splitIntradayByEtDate,
   splitIntradaySessions,
 } from "@/lib/holdings/intraday-split";
@@ -227,6 +228,66 @@ describe("composeCurrentSparkline", () => {
 
     expect(regular).toEqual([200, 201]);
     expect(extended).toEqual([202, 203]);
+  });
+});
+
+describe("composeTodaySessionPoints", () => {
+  it("keeps today's PRE -> REGULAR -> POST in chronological order, tagged", () => {
+    const ts = [
+      etUnix("2026-06-23T08:00:00-04:00"), // PRE
+      etUnix("2026-06-23T10:00:00-04:00"), // REGULAR
+      etUnix("2026-06-23T15:30:00-04:00"), // REGULAR
+      etUnix("2026-06-23T17:00:00-04:00"), // POST
+    ];
+    const closes = [98, 100, 102, 103];
+    const now = new Date("2026-06-23T18:30:00-04:00");
+
+    const points = composeTodaySessionPoints(ts, closes, now);
+
+    expect(points.map((p) => p.price)).toEqual([98, 100, 102, 103]);
+    expect(points.map((p) => p.session)).toEqual([
+      "extended",
+      "regular",
+      "regular",
+      "extended",
+    ]);
+    // Chronological by timestamp.
+    const xs = points.map((p) => new Date(p.t).getTime());
+    expect([...xs].sort((a, b) => a - b)).toEqual(xs);
+  });
+
+  it("includes the pre-market bars after the close (unlike composeCurrentSparkline)", () => {
+    const ts = [
+      etUnix("2026-06-23T08:00:00-04:00"), // PRE
+      etUnix("2026-06-23T10:00:00-04:00"), // REGULAR
+      etUnix("2026-06-23T17:00:00-04:00"), // POST
+    ];
+    const closes = [98, 100, 103];
+    const now = new Date("2026-06-23T18:30:00-04:00");
+
+    const points = composeTodaySessionPoints(ts, closes, now);
+
+    // The PRE bar is preserved here even though the regular-session sparkline
+    // would have dropped it.
+    expect(points[0]).toMatchObject({ price: 98, session: "extended" });
+    expect(points).toHaveLength(3);
+  });
+
+  it("carries the most recent prior session when today has no bars", () => {
+    const ts = [
+      etUnix("2026-06-20T10:00:00-04:00"),
+      etUnix("2026-06-20T15:30:00-04:00"),
+    ];
+    const closes = [50, 51];
+    const now = new Date("2026-06-22T08:00:00-04:00"); // Monday pre-open, no Mon bars
+
+    const points = composeTodaySessionPoints(ts, closes, now);
+
+    expect(points.map((p) => p.price)).toEqual([50, 51]);
+  });
+
+  it("returns empty when there are no finite bars", () => {
+    expect(composeTodaySessionPoints([], [], new Date())).toEqual([]);
   });
 });
 

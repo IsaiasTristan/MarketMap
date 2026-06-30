@@ -1,12 +1,17 @@
 import { describe, it, expect } from "vitest";
 import {
+  buildSessionClockTicks,
   computeSeamLayout,
   computeSessionProgress,
   computeTodayOnlyLayout,
   DEFAULT_PRIOR_ZONE_FRAC,
+  etCalendarDay,
   EXTENDED_SESSION_MAX_FRACTION,
   EXTENDED_SESSION_MIN_FRACTION,
   extendedSessionFractionToEtLabel,
+  formatEtDateLabel,
+  formatEtDateTimeLabel,
+  formatEtTimeLabel,
   mapSeriesToX,
   sessionFractionToEtLabel,
   timestampToExtendedSessionFraction,
@@ -266,5 +271,62 @@ describe("computeTodayOnlyLayout", () => {
       now: et(12, 0),
     });
     expect(layout.todayXRange[0]).toBe(0);
+  });
+});
+
+describe("buildSessionClockTicks", () => {
+  it("regular-only [0,1] yields 12 PM (~0.385) and 4 PM (1.0)", () => {
+    const ticks = buildSessionClockTicks(0, 1);
+    expect(ticks).toHaveLength(2);
+    expect(ticks[0]).toBeCloseTo(150 / 390, 3); // 12:00 PM
+    expect(ticks[1]).toBeCloseTo(1, 9); // 4:00 PM
+    expect(ticks.map((t) => sessionFractionToEtLabel(t))).toEqual([
+      "12:00 PM",
+      "4:00 PM",
+    ]);
+  });
+
+  it("post-market domain adds 8 PM at the max fraction", () => {
+    const ticks = buildSessionClockTicks(0, EXTENDED_SESSION_MAX_FRACTION);
+    expect(ticks.some((t) => Math.abs(t - EXTENDED_SESSION_MAX_FRACTION) < 1e-9)).toBe(
+      true,
+    );
+    expect(
+      ticks.map((t) => extendedSessionFractionToEtLabel(t)),
+    ).toContain("8:00 PM");
+  });
+
+  it("pre-market domain adds 8 AM and 4 AM marks", () => {
+    const ticks = buildSessionClockTicks(EXTENDED_SESSION_MIN_FRACTION, 1);
+    const labels = ticks.map((t) => extendedSessionFractionToEtLabel(t));
+    expect(labels).toContain("8:00 AM");
+    expect(labels).toContain("4:00 AM");
+  });
+});
+
+describe("ET datetime formatters", () => {
+  // Tue 2026-06-23 16:44 ET (EDT = UTC-4) -> 20:44 UTC.
+  const iso = new Date(Date.UTC(2026, 5, 23, 20, 44)).toISOString();
+
+  it("formatEtTimeLabel returns standard clock time", () => {
+    expect(formatEtTimeLabel(iso)).toBe("4:44 PM");
+  });
+
+  it("formatEtDateTimeLabel includes the weekday and date", () => {
+    const label = formatEtDateTimeLabel(iso);
+    expect(label).toContain("Jun 23");
+    expect(label).toContain("4:44 PM");
+    expect(label).toMatch(/^Tue/);
+  });
+
+  it("formatEtDateLabel returns a readable date", () => {
+    expect(formatEtDateLabel(iso)).toBe("Jun 23, 2026");
+  });
+
+  it("etCalendarDay returns the ET yyyy-MM-dd", () => {
+    expect(etCalendarDay(iso)).toBe("2026-06-23");
+    // 01:00 UTC on Jun 24 is still Jun 23 in ET (21:00 prior day).
+    const lateNight = new Date(Date.UTC(2026, 5, 24, 1, 0)).toISOString();
+    expect(etCalendarDay(lateNight)).toBe("2026-06-23");
   });
 });

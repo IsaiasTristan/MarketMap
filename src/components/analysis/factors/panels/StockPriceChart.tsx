@@ -28,9 +28,12 @@ import {
   mergeIntradayPoints,
 } from "@/lib/holdings/merge-intraday-points";
 import {
-  EXTENDED_SESSION_AXIS_TICKS,
+  buildSessionClockTicks,
+  etCalendarDay,
   extendedSessionFractionToEtLabel,
-  REGULAR_SESSION_AXIS_TICKS,
+  formatEtDateLabel,
+  formatEtDateTimeLabel,
+  formatEtTimeLabel,
   sessionFractionToEtLabel,
   timestampToExtendedSessionFraction,
 } from "@/lib/market/sparkline-session-layout";
@@ -75,10 +78,9 @@ export interface StockPriceChartProps {
   embedded?: boolean;
 }
 
-function formatLabel(t: string, intraday: boolean): string {
+function formatLabel(t: string, intraday: boolean, multiDay: boolean): string {
   if (intraday) {
-    const d = new Date(t);
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return multiDay ? formatEtDateTimeLabel(t) : formatEtTimeLabel(t);
   }
   return t; // YYYY-MM-DD
 }
@@ -98,6 +100,7 @@ function toChartPoints(
   raw: { t: string; price: number; session?: PointSession }[],
   intraday: boolean,
   session1D: boolean,
+  multiDay: boolean,
 ): ChartPoint[] {
   const sessions = raw.map((p) => p.session);
   return raw.map((p, i) => {
@@ -111,7 +114,7 @@ function toChartPoints(
       idx: i,
       t: p.t,
       price: p.price,
-      label: formatLabel(p.t, intraday),
+      label: formatLabel(p.t, intraday, multiDay),
       session: p.session,
       regPrice: isExt ? null : p.price,
       extPrice: isExt ? p.price : adjacentToExt ? p.price : null,
@@ -192,9 +195,15 @@ export function StockPriceChart({
 
   const seriesPoints = isIntradayRange ? mergedPoints : (data?.points ?? []);
 
+  const multiDay = useMemo(
+    () => new Set(seriesPoints.map((p) => etCalendarDay(p.t))).size > 1,
+    [seriesPoints],
+  );
+
   const points: ChartPoint[] = useMemo(
-    () => toChartPoints(seriesPoints, !!intraday, session1D && !!intraday),
-    [seriesPoints, intraday, session1D],
+    () =>
+      toChartPoints(seriesPoints, !!intraday, session1D && !!intraday, multiDay),
+    [seriesPoints, intraday, session1D, multiDay],
   );
 
   const prevClose =
@@ -283,11 +292,10 @@ export function StockPriceChart({
 
   const sessionTicks = useMemo<number[] | undefined>(() => {
     if (!useSessionAxis) return undefined;
-    if (!hasExtended) return [...REGULAR_SESSION_AXIS_TICKS];
-    const hi = sessionDomain ? sessionDomain[1] : 1;
     const lo = sessionDomain ? sessionDomain[0] : 0;
-    return EXTENDED_SESSION_AXIS_TICKS.filter((t) => t >= lo - 1e-9 && t <= hi + 1e-9);
-  }, [useSessionAxis, hasExtended, sessionDomain]);
+    const hi = sessionDomain ? sessionDomain[1] : 1;
+    return buildSessionClockTicks(lo, hi);
+  }, [useSessionAxis, sessionDomain]);
 
   const gradientId = `spc-${ticker}-${embedded ? "emb" : "std"}`;
   const strokeGradId = `${gradientId}-stroke`;
@@ -528,6 +536,18 @@ export function StockPriceChart({
               <Tooltip
                 contentStyle={bbTooltipStyle}
                 labelStyle={{ color: "var(--text-muted)", fontSize: 10 }}
+                labelFormatter={(_label, payload) => {
+                  const p = (
+                    payload as unknown as
+                      | { payload?: ChartPoint }[]
+                      | undefined
+                  )?.[0]?.payload;
+                  if (!p) return "";
+                  if (!intraday) return formatEtDateLabel(p.t);
+                  return multiDay
+                    ? formatEtDateTimeLabel(p.t)
+                    : formatEtTimeLabel(p.t);
+                }}
                 formatter={(v, name) => {
                   const n = Number(v);
                   if (v == null || !Number.isFinite(n)) return [];
@@ -582,7 +602,6 @@ export function StockPriceChart({
                   name="After hours"
                   stroke="var(--text-muted)"
                   strokeWidth={1.2}
-                  strokeDasharray="3 3"
                   fill="none"
                   isAnimationActive={false}
                   connectNulls={false}

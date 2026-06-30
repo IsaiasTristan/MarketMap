@@ -39,6 +39,16 @@ export const factorQueryParams = z.object({
   benchmark: z.enum(["SP500", "NASDAQ", "DOW"]).optional(),
 });
 
+/** Portfolio news feed query. */
+export const portfolioNewsQuery = z.object({
+  portfolioId: z.string().min(1),
+  limit: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(1, Math.min(50, Number(v))) : 25))
+    .pipe(z.number().int().min(1).max(50)),
+});
+
 /** Per-stock grid query (no portfolioId — universe-driven). */
 export const factorPerStockQuery = z.object({
   model: z.enum(MODEL_PRESET_NAMES).optional().default("MACRO14"),
@@ -214,6 +224,19 @@ export const researchGroupQuery = z.object({
     .optional()
     .transform((v) => (v ? Math.max(2, Math.min(104, Number(v))) : 52))
     .pipe(z.number().int().min(2).max(104)),
+});
+
+export const researchEventsQuery = z.object({
+  ticker: z
+    .string()
+    .max(12)
+    .optional()
+    .transform((s) => (s && s.trim() ? s.trim().toUpperCase() : undefined)),
+  limit: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(1, Math.min(1000, Number(v))) : undefined))
+    .pipe(z.number().int().min(1).max(1000).optional()),
 });
 
 export const researchIngestBody = z.object({

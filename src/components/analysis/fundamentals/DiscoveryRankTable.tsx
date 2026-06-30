@@ -430,6 +430,7 @@ const selectStyle: CSSProperties = {
 
 export function DiscoveryRankTable({
   rows,
+  heatReferenceRows,
   snapshotDate,
   onSelectTicker,
   sectorFilter,
@@ -442,6 +443,13 @@ export function DiscoveryRankTable({
   onExcludeSubsectorFilterChange,
 }: {
   rows: DiscoveryRow[];
+  /**
+   * Optional row set used solely to compute the 1D-1Y performance heat
+   * percentiles. When provided, perf heat is shaded against this reference
+   * (e.g. the full universe) rather than the displayed `rows` — so a filtered
+   * subset (like a portfolio) keeps universe-relative shading. Defaults to `rows`.
+   */
+  heatReferenceRows?: DiscoveryRow[];
   snapshotDate?: string;
   onSelectTicker: (t: string) => void;
   sectorFilter: string | null;
@@ -499,7 +507,10 @@ export function DiscoveryRankTable({
 
   // Whole-set per-column percentiles (independent of filter/sort/page) so a
   // name's heat is absolute across the full discovery set, like the market map.
-  const perfPercentiles = useMemo(() => buildPercentiles(rows), [rows]);
+  const perfPercentiles = useMemo(
+    () => buildPercentiles(heatReferenceRows ?? rows),
+    [heatReferenceRows, rows],
+  );
 
   const sectors = useMemo(() => {
     const set = new Set<string>();

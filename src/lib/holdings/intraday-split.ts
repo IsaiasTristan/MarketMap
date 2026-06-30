@@ -17,11 +17,32 @@ export type IntradaySessionSplit = {
   byDatePost: Map<string, number[]>;
 };
 
+/** One timestamped intraday bar, tagged regular vs extended (PRE/POST). */
+export type TodaySessionPoint = {
+  /** ISO datetime of the bar. */
+  t: string;
+  price: number;
+  session: "regular" | "extended";
+};
+
+/** Max points kept for a tile's full-day (pre+regular+post) series. */
+const TODAY_POINTS_MAX = 96;
+
 /** Decimate by stride, preserving first and last samples. */
 export function decimateSparkline(arr: number[], maxLen: number): number[] {
   if (arr.length <= maxLen) return arr;
   const stride = Math.ceil(arr.length / maxLen);
   const out: number[] = [];
+  for (let i = 0; i < arr.length; i += stride) out.push(arr[i]!);
+  if (out[out.length - 1] !== arr[arr.length - 1]) out.push(arr[arr.length - 1]!);
+  return out;
+}
+
+/** Decimate an array of objects by stride, always preserving first and last. */
+function decimatePoints<T>(arr: T[], maxLen: number): T[] {
+  if (arr.length <= maxLen) return arr;
+  const stride = Math.ceil(arr.length / maxLen);
+  const out: T[] = [];
   for (let i = 0; i < arr.length; i += stride) out.push(arr[i]!);
   if (out[out.length - 1] !== arr[arr.length - 1]) out.push(arr[arr.length - 1]!);
   return out;
@@ -133,6 +154,61 @@ export function composeCurrentSparkline(
   }
 
   return { regular: [], extended: [] };
+}
+
+/**
+ * Build today's full pre -> regular -> post intraday series as timestamped
+ * points for the Live Prices tiles. Unlike {@link composeCurrentSparkline}
+ * (which keeps only the POST tail after the open and renders by index), this
+ * preserves every session in chronological order with real timestamps so the
+ * tile can place pre-market before the open and post-market after the close on
+ * an accurate ET time axis.
+ *
+ * Falls back to the most recent prior trading day when today has no bars yet
+ * (weekend / holiday / pre-open before the first print) so a tile is never
+ * blank when recent data exists.
+ */
+export function composeTodaySessionPoints(
+  timestamps: number[],
+  closes: (number | null)[],
+  now: Date = new Date(),
+): TodaySessionPoint[] {
+  type RawBar = { unix: number; price: number; session: "regular" | "extended" };
+  const byDate = new Map<string, RawBar[]>();
+  for (let i = 0; i < timestamps.length; i++) {
+    const c = closes[i];
+    if (c == null || !Number.isFinite(c)) continue;
+    const unix = timestamps[i]!;
+    const d = tradeDateEtFromUnix(unix);
+    const session =
+      classifyEtTimeOfDay(unix) === "REGULAR" ? "regular" : "extended";
+    const bucket = byDate.get(d) ?? [];
+    bucket.push({ unix, price: c, session });
+    byDate.set(d, bucket);
+  }
+
+  const todayEt = todayEtIsoDate(now);
+  let targetDate: string | null = byDate.has(todayEt) ? todayEt : null;
+  if (!targetDate) {
+    const priorDates = [...byDate.keys()].filter((d) => d < todayEt).sort();
+    for (let i = priorDates.length - 1; i >= 0; i--) {
+      if ((byDate.get(priorDates[i]!)?.length ?? 0) >= MIN_SESSION_BARS) {
+        targetDate = priorDates[i]!;
+        break;
+      }
+    }
+  }
+  if (!targetDate) return [];
+
+  const bars = (byDate.get(targetDate) ?? [])
+    .slice()
+    .sort((a, b) => a.unix - b.unix);
+
+  return decimatePoints(bars, TODAY_POINTS_MAX).map((b) => ({
+    t: new Date(b.unix * 1000).toISOString(),
+    price: b.price,
+    session: b.session,
+  }));
 }
 
 /**

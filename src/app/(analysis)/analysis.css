@@ -437,6 +437,9 @@ html {
 .analysis-shell .bb-risk-grid tbody tr.bb-risk-footer td {
   box-shadow: inset 0 1px 0 var(--color-accent);
 }
+.analysis-shell .bb-risk-grid tbody tr.bb-risk-reference-first td {
+  box-shadow: inset 0 1px 0 var(--chrome-border);
+}
 .analysis-shell .bb-risk-grid .bb-risk-spark-col {
   width: 56px;
   min-width: 56px;
@@ -472,4 +475,24 @@ html {
 .analysis-shell ::-webkit-scrollbar-thumb {
   background: var(--chrome-border);
   border-radius: 0;
+}
+
+/* Market ticker tape — continuous auto-scroll marquee */
+@keyframes bb-ticker-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+.bb-ticker-track {
+  display: flex;
+  align-items: center;
+  width: max-content;
+  animation: bb-ticker-scroll 117s linear infinite;
+}
+.bb-ticker-track:hover {
+  animation-play-state: paused;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bb-ticker-track {
+    animation: none;
+  }
 }

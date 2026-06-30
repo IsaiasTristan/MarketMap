@@ -36,3 +36,4 @@ export {
 } from "./statements";
 export { fetchRatios, fetchKeyMetrics } from "./ratios";
 export { fetchQuote } from "./quote";
+export { fetchStockNews, fetchStockPressReleases } from "./news";

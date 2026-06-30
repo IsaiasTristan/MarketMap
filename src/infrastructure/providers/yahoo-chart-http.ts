@@ -1,10 +1,12 @@
 import type { Bar } from "@/infrastructure/providers/market-data";
 import {
   composeCurrentSparkline,
+  composeTodaySessionPoints,
   priorDaySettlementClose,
   splitIntradayByEtDate,
   splitIntradaySessions,
   todaySettlementSeries,
+  type TodaySessionPoint,
 } from "@/lib/holdings/intraday-split";
 import { classifyEtTimeOfDay, tradeDateEtFromUnix } from "@/lib/market-map/market-session";
 
@@ -398,6 +400,10 @@ export interface YahooStripQuote {
   prevDayCloses: number[];
   /** PRE/POST tail for Current Price (dashed gray in UI). */
   extendedCloses: number[];
+  /** Today's full pre -> regular -> post intraday series as timestamped points
+   *  (Live Prices tiles render this on an accurate ET time axis). Empty for
+   *  non-holdings strip quotes that don't need it. */
+  todaySessionPoints: TodaySessionPoint[];
   /** First intraday print (session open proxy). */
   dayOpen: number;
   /** Intraday low from today's bar series. */
@@ -415,6 +421,7 @@ function buildStripQuoteFromChart(
   options?: {
     allowSessionPrevClose?: boolean;
     extendedCloses?: number[];
+    todaySessionPoints?: TodaySessionPoint[];
     prevCloseMode?: StripPrevCloseMode;
     settlementPrevClose?: number | null;
     settlementLivePrice?: number | null;
@@ -495,6 +502,7 @@ function buildStripQuoteFromChart(
     intradayCloses,
     prevDayCloses,
     extendedCloses: options?.extendedCloses ?? [],
+    todaySessionPoints: options?.todaySessionPoints ?? [],
     dayOpen,
     dayLow,
     dayHigh,
@@ -620,6 +628,7 @@ function buildHoldingsSparklineQuote(
   return buildStripQuoteFromChart(r0, regular, prevDayCloses, {
     allowSessionPrevClose: true,
     extendedCloses: extended,
+    todaySessionPoints: composeTodaySessionPoints(ts, rawCloses),
   });
 }
 

@@ -7,7 +7,14 @@
  */
 import { prisma } from "@/infrastructure/db/client";
 import { getOrCreateDefaultUniverse } from "@/server/services/universe.service";
-import { readMarketMapCache } from "@/server/services/market-map-cache.service";
+import {
+  readMarketMapCache,
+  computeAndCacheMarketMap,
+} from "@/server/services/market-map-cache.service";
+import {
+  getCompanyNamesByTicker,
+  pickDisplayName,
+} from "@/server/services/security-name.service";
 import { HORIZON_ORDER, type Horizon } from "@/domain/entities/horizons";
 
 function isoOf(d: Date): string {
@@ -33,7 +40,11 @@ async function loadReturnsByTicker(): Promise<Map<string, Record<Horizon, number
   const byTicker = new Map<string, Record<Horizon, number | null>>();
   try {
     const universe = await getOrCreateDefaultUniverse(prisma);
-    const mm = await readMarketMapCache(universe.id, "RETURN", "SP500");
+    // Read-first; on a cold miss compute + cache so the columns populate (and
+    // the market-map page is warmed) instead of rendering dashes.
+    const mm =
+      (await readMarketMapCache(universe.id, "RETURN", "SP500")) ??
+      (await computeAndCacheMarketMap(universe.id, "RETURN", "SP500"));
     if (!mm) return byTicker;
     for (const row of mm.rows) {
       const ticker = (row.ticker ?? row.key)?.toUpperCase();
@@ -58,18 +69,43 @@ function attachReturns(
   });
 }
 
-/** Latest ranked discovery queue (optionally truncated), enriched with per-name returns. */
+/**
+ * Override each row's `companyName` from the live market-map source
+ * (`Security.name`) so display names stay consistent with the market map and
+ * pick up custom edits immediately. Falls back to the row's baked name then the
+ * ticker for any ticker outside the universe.
+ */
+function attachCompanyNames(
+  rows: Array<Record<string, unknown>>,
+  namesByTicker: Map<string, string>,
+): Array<Record<string, unknown>> {
+  return rows.map((r) => {
+    const ticker = typeof r.ticker === "string" ? r.ticker : null;
+    if (!ticker) return r;
+    const baked = typeof r.companyName === "string" ? r.companyName : null;
+    return { ...r, companyName: pickDisplayName(namesByTicker, ticker, baked) };
+  });
+}
+
+/** Latest ranked discovery queue (optionally truncated), enriched with per-name returns + live names. */
 export async function getDiscoveryQueue(limit?: number): Promise<DiscoveryQueuePayload | null> {
   const snap = await prisma.discoveryQueueSnapshot.findFirst({ orderBy: { snapshotDate: "desc" } });
   if (!snap) return null;
   const payload = snap.payloadJson as unknown as DiscoveryQueuePayload;
-  const returnsByTicker = await loadReturnsByTicker();
   const rows = Array.isArray(payload.rows)
     ? limit
       ? payload.rows.slice(0, limit)
       : payload.rows
     : [];
-  return { ...payload, rows: attachReturns(rows, returnsByTicker) };
+  const tickers = rows
+    .map((r) => (typeof r.ticker === "string" ? r.ticker : null))
+    .filter((t): t is string => t !== null);
+  const [returnsByTicker, namesByTicker] = await Promise.all([
+    loadReturnsByTicker(),
+    getCompanyNamesByTicker(prisma, tickers),
+  ]);
+  const enriched = attachCompanyNames(attachReturns(rows, returnsByTicker), namesByTicker);
+  return { ...payload, rows: enriched };
 }
 
 export interface DiligencePayload {
@@ -116,7 +152,7 @@ export interface DiligencePayload {
 /** Per-name diligence panel: latest metrics, score detail, and the full series. */
 export async function getDiligence(ticker: string): Promise<DiligencePayload | null> {
   const t = ticker.toUpperCase();
-  const [snap, score, ref, periods] = await Promise.all([
+  const [snap, score, ref, periods, namesByTicker] = await Promise.all([
     prisma.fundamentalSnapshot.findFirst({ where: { ticker: t }, orderBy: { snapshotDate: "desc" } }),
     prisma.fundamentalScore.findFirst({ where: { ticker: t }, orderBy: { snapshotDate: "desc" } }),
     prisma.revisionReference.findUnique({ where: { ticker: t }, select: { companyName: true, sector: true, subsector: true } }),
@@ -136,6 +172,7 @@ export async function getDiligence(ticker: string): Promise<DiligencePayload | n
         revenue: true,
       },
     }),
+    getCompanyNamesByTicker(prisma, [t]),
   ]);
   if (!snap && periods.length === 0) return null;
 
@@ -149,7 +186,7 @@ export async function getDiligence(ticker: string): Promise<DiligencePayload | n
 
   return {
     ticker: t,
-    companyName: ref?.companyName ?? null,
+    companyName: pickDisplayName(namesByTicker, t, ref?.companyName ?? null),
     sector: ref?.sector ?? null,
     subsector: ref?.subsector ?? null,
     snapshotDate: snap ? isoOf(snap.snapshotDate) : null,

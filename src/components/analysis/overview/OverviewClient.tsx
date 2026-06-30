@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getUsMarketSession } from "@/lib/market-map/market-session";
 import { useAnalysisStore } from "@/store/analysis";
@@ -8,13 +7,10 @@ import { FloatingPerStockDetail } from "@/components/analysis/factors/panels/Flo
 import { MetricCard } from "@/components/analysis/ui/MetricCard";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
 import { ContributorsChart } from "@/components/analysis/overview/ContributorsChart";
-import {
-  CapitalAllocationCard,
-  type AllocHorizon,
-  type AllocView,
-} from "@/components/analysis/overview/CapitalAllocationCard";
 import { HoldingsDashboard } from "@/components/analysis/overview/HoldingsDashboard";
 import { HoldingsRiskTable } from "@/components/analysis/overview/HoldingsRiskTable";
+import { PortfolioNews } from "@/components/analysis/overview/PortfolioNews";
+import { HoldingsFundamentalsTable } from "@/components/analysis/overview/HoldingsFundamentalsTable";
 import { HoldingsLiveChartGrid } from "@/components/analysis/overview/HoldingsLiveChartGrid";
 import { PortfolioFactorSummary } from "@/components/analysis/overview/PortfolioFactorSummary";
 import { fmt$, fmtPct } from "@/components/analysis/overview/formatters";
@@ -41,37 +37,6 @@ type PnlData = {
     dailyPnl: number;
     dailyPnlPct: number;
   }[];
-  allocation: {
-    byPosition: { name: string; value: number; pct: number }[];
-    bySector: { name: string; value: number; pct: number }[];
-  };
-};
-
-type ReturnRiskAlloc = {
-  horizon: AllocHorizon;
-  byReturn: {
-    name: string;
-    value: number;
-    signed: number;
-    negative: boolean;
-    marketValue: number;
-    dollar: number;
-  }[];
-  byRisk: {
-    name: string;
-    value: number;
-    pct: number;
-    dollar: number;
-    negative: false;
-    marketValue: number;
-  }[];
-  totals: {
-    returnPct: number;
-    returnDollar: number;
-    varDollar: number;
-    varPct: number;
-    grossValue: number;
-  };
 };
 
 export function OverviewClient() {
@@ -81,10 +46,6 @@ export function OverviewClient() {
   const factorPeriod = useAnalysisStore((s) => s.factorPeriod);
   const openFactorDetailPanels = useAnalysisStore((s) => s.openFactorDetailPanels);
   const openFactorDetailPanel = useAnalysisStore((s) => s.openFactorDetailPanel);
-  const [allocView, setAllocView] = useState<AllocView>("byPosition");
-  const [horizon, setHorizon] = useState<AllocHorizon>("1D");
-
-  const needsHorizonData = allocView === "byReturn" || allocView === "byRisk";
 
   const { data, isLoading, error } = useQuery<PnlData>({
     queryKey: ["pnl", activePortfolioId],
@@ -100,16 +61,6 @@ export function OverviewClient() {
       return body as PnlData;
     },
     enabled: !!activePortfolioId,
-    refetchInterval: 60_000,
-  });
-
-  const { data: rrAlloc } = useQuery<ReturnRiskAlloc>({
-    queryKey: ["allocation", activePortfolioId, horizon],
-    queryFn: () =>
-      fetch(
-        `/api/analysis/portfolio/allocation?portfolioId=${activePortfolioId}&horizon=${horizon}`,
-      ).then((r) => r.json()),
-    enabled: !!activePortfolioId && needsHorizonData,
     refetchInterval: 60_000,
   });
 
@@ -145,6 +96,7 @@ export function OverviewClient() {
     positions: PositionRisk[];
     portfolioValue: number;
     portfolioTotal: PositionRisk | null;
+    benchmarks: PositionRisk[];
   }>({
     queryKey: ["pos-risk", activePortfolioId],
     queryFn: () =>
@@ -227,7 +179,7 @@ export function OverviewClient() {
     );
   }
 
-  const { summary, positions, allocation } = data;
+  const { summary, positions } = data;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -260,14 +212,10 @@ export function OverviewClient() {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, alignItems: "stretch" }}>
         <ContributorsChart positions={positions} />
-        <CapitalAllocationCard
-          totalValue={summary.totalValue}
-          allocation={allocation}
-          allocView={allocView}
-          onAllocViewChange={setAllocView}
-          horizon={horizon}
-          onHorizonChange={setHorizon}
-          rrAlloc={rrAlloc}
+        <PortfolioFactorSummary
+          exposure={exposure}
+          attribution={attribution}
+          loading={exposureLoading || attributionLoading}
         />
       </div>
 
@@ -287,8 +235,16 @@ export function OverviewClient() {
       <HoldingsRiskTable
         positions={posRiskData?.positions ?? []}
         portfolioTotal={posRiskData?.portfolioTotal}
+        benchmarks={posRiskData?.benchmarks ?? []}
         dailyPnlByTicker={new Map(positions.map((p) => [p.ticker, p.dailyPnl]))}
         loading={posRiskLoading}
+      />
+
+      <PortfolioNews portfolioId={activePortfolioId} />
+
+      <HoldingsFundamentalsTable
+        tickers={(holdingsData?.rows ?? []).map((r) => r.ticker)}
+        loading={holdingsLoading}
       />
 
       <HoldingsLiveChartGrid
@@ -297,12 +253,6 @@ export function OverviewClient() {
           new Map(positions.map((p) => [p.ticker, p.dailyPnl]))
         }
         loading={holdingsLoading}
-      />
-
-      <PortfolioFactorSummary
-        exposure={exposure}
-        attribution={attribution}
-        loading={exposureLoading || attributionLoading}
       />
 
       {perStockData &&

@@ -106,8 +106,7 @@ export function HoldingsLiveChartGrid({
               <DeferUntilVisible key={row.ticker} minHeight={168}>
                 <LivePriceChartTile
                   ticker={row.ticker}
-                  sparkline={row.sparkline}
-                  sparklineExtended={row.sparklineExtended}
+                  intradayPoints={row.intradayPoints}
                   prevClose={row.prevClose}
                   currentPrice={row.currentPrice}
                   chg1dPct={row.chg1dPct}

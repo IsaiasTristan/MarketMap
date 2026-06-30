@@ -9,6 +9,7 @@ import {
   toYahooSymbol,
   type YahooStripQuote,
 } from "@/infrastructure/providers/yahoo-chart-http";
+import type { TodaySessionPoint } from "@/lib/holdings/intraday-split";
 import {
   getPriorSessionSparkline,
 } from "./prior-session-sparkline.service";
@@ -36,6 +37,8 @@ export interface HoldingRow {
   sparkline: number[];
   prevDaySparkline: number[];
   sparklineExtended: number[];
+  /** Today's pre -> regular -> post timestamped series for the Live Prices tile. */
+  intradayPoints: TodaySessionPoint[];
   prevClose: number;
   dayOpen: number;
   dayLow: number;
@@ -132,6 +135,7 @@ function resolveQuote(
   sparkline: number[];
   prevDaySparkline: number[];
   sparklineExtended: number[];
+  intradayPoints: TodaySessionPoint[];
   dayOpen: number;
   dayLow: number;
   dayHigh: number;
@@ -145,6 +149,7 @@ function resolveQuote(
       sparkline: q?.intradayCloses ?? [],
       prevDaySparkline: q?.prevDayCloses ?? [],
       sparklineExtended: q?.extendedCloses ?? [],
+      intradayPoints: q?.todaySessionPoints ?? [],
       dayOpen: q?.dayOpen ?? p,
       dayLow: q?.dayLow ?? p,
       dayHigh: q?.dayHigh ?? p,
@@ -158,6 +163,7 @@ function resolveQuote(
       sparkline: q.intradayCloses ?? [],
       prevDaySparkline: q.prevDayCloses ?? [],
       sparklineExtended: q.extendedCloses ?? [],
+      intradayPoints: q.todaySessionPoints ?? [],
       dayOpen: q.dayOpen,
       dayLow: q.dayLow,
       dayHigh: q.dayHigh,
@@ -171,6 +177,7 @@ function resolveQuote(
       sparkline: [],
       prevDaySparkline: [],
       sparklineExtended: [],
+      intradayPoints: [],
       dayOpen: p,
       dayLow: p,
       dayHigh: p,
@@ -182,6 +189,7 @@ function resolveQuote(
     sparkline: [],
     prevDaySparkline: [],
     sparklineExtended: [],
+    intradayPoints: [],
     dayOpen: 0,
     dayLow: 0,
     dayHigh: 0,
@@ -304,6 +312,7 @@ export async function getPortfolioHoldings(
         sparkline: [],
         prevDaySparkline: [],
         sparklineExtended: [],
+        intradayPoints: [],
         prevClose: 1,
         dayOpen: 1,
         dayLow: 1,
@@ -395,6 +404,7 @@ export async function getPortfolioHoldings(
       sparkline: q.sparkline,
       prevDaySparkline,
       sparklineExtended: q.sparklineExtended,
+      intradayPoints: q.intradayPoints,
       prevClose: q.prevClose,
       dayOpen: q.dayOpen,
       dayLow: q.dayLow,

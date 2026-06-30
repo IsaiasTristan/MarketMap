@@ -437,3 +437,31 @@ export interface NormalizedQuote {
   marketCap: number | null;
   sharesOutstanding: number | null;
 }
+
+// ─── Stock news (/stable/news/stock) ───────────────────────────────────────
+
+/** Raw row from /stable/news/stock — one article tagged to a single symbol. */
+export interface FmpStockNewsRaw {
+  symbol?: string;
+  publishedDate?: string; // ISO timestamp
+  publisher?: string;
+  title?: string;
+  image?: string;
+  site?: string;
+  text?: string; // article snippet / preview
+  url?: string;
+}
+
+/** Raw row from /stable/news/press-releases - same shape as stock news. */
+export type FmpPressReleaseRaw = FmpStockNewsRaw;
+
+/** Normalized news article tagged to one ticker. */
+export interface NormalizedStockNews {
+  ticker: string;
+  publishedDate: string;
+  title: string;
+  text: string | null;
+  url: string;
+  site: string | null;
+  publisher: string | null;
+}

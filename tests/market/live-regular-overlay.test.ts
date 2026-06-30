@@ -4,7 +4,10 @@
  * quote's ET trade date, keeping the close-to-close chain intact.
  */
 import { describe, it, expect } from "vitest";
-import { applyLiveRegularOverlay } from "../../src/server/services/market-map.service";
+import {
+  applyLiveRegularOverlay,
+  liveRegular1D,
+} from "../../src/server/services/market-map.service";
 import type { DateClose } from "../../src/domain/calculations/alignment";
 import type { LiveRegularQuote } from "../../src/server/services/live-regular.service";
 import { securityHorizonMetrics } from "../../src/domain/calculations/security-metrics";
@@ -108,5 +111,52 @@ describe("applyLiveRegularOverlay", () => {
     expect(m.D1.return).toBeCloseTo(120 / 109 - 1, 12);
     // 5D telescopes to price / close 5 bars back (105 -> index 5 = 105).
     expect(m.D5.return).toBeCloseTo(120 / 105 - 1, 12);
+  });
+});
+
+describe("liveRegular1D (prevClose-anchored 1D)", () => {
+  it("live mode: 1D = price / prevClose - 1, independent of the series", () => {
+    // price 6.01, prevClose (Friday) 5.97 -> ~+0.67%, the correct intraday 1D.
+    expect(liveRegular1D(quote("2026-06-29", 6.01, 5.97), "live")).toBeCloseTo(
+      6.01 / 5.97 - 1,
+      12,
+    );
+  });
+
+  it("missing-Friday tape: chain is unusable but the anchor stays correct", () => {
+    // Stored series ends Thursday (Friday never ingested). The Thu->Mon gap is
+    // 4 calendar days, so the live overlay SKIPS (stale_db) and the chain is
+    // left stale — exactly the case the prevClose anchor must rescue.
+    const thuSeries: DateClose[] = [
+      { date: "2026-06-18", adjClose: 5.0 },
+      { date: "2026-06-19", adjClose: 5.1 },
+      { date: "2026-06-22", adjClose: 5.2 },
+      { date: "2026-06-23", adjClose: 5.15 },
+      { date: "2026-06-24", adjClose: 5.29 },
+      { date: "2026-06-25", adjClose: 5.08 }, // Thursday (Friday missing)
+    ];
+    const monQuote = quote("2026-06-29", 5.35, 5.97);
+    const overlaid = applyLiveRegularOverlay(thuSeries, monQuote, "live");
+    expect(overlaid.applied).toBe(false);
+    expect(overlaid.skipReason).toBe("stale_db");
+    // The chain alone would mis-report 1D as the stale Thu/Wed move…
+    const chainedD1 = securityHorizonMetrics(overlaid.series, null, 0).D1.return;
+    expect(chainedD1).toBeCloseTo(5.08 / 5.29 - 1, 12); // stale, wrong
+    // …but the anchor uses Friday's prevClose for the correct Mon 1D.
+    const anchored = liveRegular1D(monQuote, "live")!;
+    expect(anchored).toBeCloseTo(5.35 / 5.97 - 1, 12);
+    expect(anchored).not.toBeCloseTo(chainedD1!, 6);
+  });
+
+  it("frozen mode returns null (chain / official close wins)", () => {
+    expect(liveRegular1D(quote("2026-06-29", 6.01, 5.97), "frozen")).toBeNull();
+  });
+
+  it("invalid prevClose (0 / NaN) returns null (falls back to chain)", () => {
+    expect(liveRegular1D(quote("2026-06-29", 6.01, 0), "live")).toBeNull();
+    expect(liveRegular1D(quote("2026-06-29", 6.01, NaN), "live")).toBeNull();
+    expect(
+      liveRegular1D(quote("2026-06-29", NaN, 5.97), "live"),
+    ).toBeNull();
   });
 });

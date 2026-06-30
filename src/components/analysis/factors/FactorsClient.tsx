@@ -10,7 +10,6 @@ import { DriversPanel } from "./panels/DriversPanel";
 import { ScenariosPanel } from "./panels/ScenariosPanel";
 import { RiskPanel } from "./panels/RiskPanel";
 import { MarketContextPanel } from "./panels/MarketContextPanel";
-import { AlertsPanel } from "./panels/AlertsPanel";
 import { PortfolioPerStockToggle } from "./panels/PortfolioPerStockToggle";
 import { PerStockView } from "./panels/PerStockView";
 import { CorrelationsView } from "./panels/CorrelationsView";
@@ -22,11 +21,11 @@ import { FloatingPortfolioDetail } from "./panels/FloatingPortfolioDetail";
 import { FloatingPerStockDetail } from "./panels/FloatingPerStockDetail";
 import { BloombergTabStrip } from "@/components/analysis/BloombergTabStrip";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
-import type { FactorExposureSnapshot, AttributionResult, DriversResult, RiskDecomposition, FactorAlert } from "@/types/factors";
+import type { FactorExposureSnapshot, AttributionResult, DriversResult, RiskDecomposition } from "@/types/factors";
 import type { PerStockResult } from "@/server/services/factor-per-stock.service";
 import type { PortfolioWeight } from "@/server/services/portfolio.service";
 
-type PortfolioTab = "exposure" | "attribution" | "risk" | "drivers" | "scenarios" | "market" | "alerts";
+type PortfolioTab = "exposure" | "attribution" | "risk" | "drivers" | "scenarios" | "market";
 
 const PORTFOLIO_TABS: { key: PortfolioTab; label: string }[] = [
   { key: "exposure", label: "Exposure" },
@@ -35,7 +34,6 @@ const PORTFOLIO_TABS: { key: PortfolioTab; label: string }[] = [
   { key: "drivers", label: "Drivers" },
   { key: "scenarios", label: "Scenarios" },
   { key: "market", label: "Market Context" },
-  { key: "alerts", label: "Alerts" },
 ];
 
 function factorParams(model: string, win: number) {
@@ -183,18 +181,6 @@ export function FactorsClient() {
   });
   const portfolioWeights: PortfolioWeight[] = portfolioWeightsResp?.weights ?? [];
 
-  // Alerts (tab)
-  const { data: alertsRaw } = useQuery<FactorAlert[]>({
-    queryKey: ["factor-alerts", activePortfolioId],
-    queryFn: () =>
-      fetch(`${baseUrl}/alerts?portfolioId=${activePortfolioId}`)
-        .then((r) => r.json()),
-    enabled: portfolioEnabled && activeTab === "alerts",
-    staleTime: 60_000,
-  });
-
-  const alerts: FactorAlert[] = Array.isArray(alertsRaw) ? alertsRaw : [];
-
   async function handleRefreshPipeline() {
     setPipelineLoading(true);
     try {
@@ -303,7 +289,6 @@ export function FactorsClient() {
               tabs={PORTFOLIO_TABS.map((t) => ({
                 key: t.key,
                 label: t.label,
-                badge: t.key === "alerts" ? alerts.length : undefined,
               }))}
               activeKey={activeTab}
               onChange={(k) => setActiveTab(k as PortfolioTab)}
@@ -343,7 +328,6 @@ export function FactorsClient() {
             )}
             {activeTab === "scenarios" && <ScenariosPanel />}
             {activeTab === "market" && <MarketContextPanel />}
-            {activeTab === "alerts" && <AlertsPanel alerts={alerts} />}
           </div>
 
           {/* Floating per-stock detail panels triggered from the heatmap rows. */}
