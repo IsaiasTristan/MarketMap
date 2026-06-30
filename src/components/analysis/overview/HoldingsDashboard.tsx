@@ -138,6 +138,17 @@ const nameButtonStyle: CSSProperties = {
   cursor: "pointer",
 };
 
+const tickerButtonStyle: CSSProperties = {
+  padding: 0,
+  margin: 0,
+  border: "none",
+  background: "transparent",
+  font: "inherit",
+  color: "inherit",
+  textAlign: "left",
+  cursor: "pointer",
+};
+
 function HoldingRowView({
   row,
   periodRanges,
@@ -160,7 +171,18 @@ function HoldingRowView({
           fontWeight: 500,
         }}
       >
-        {row.ticker}
+        {nameClickable ? (
+          <button
+            type="button"
+            title={`View ${row.ticker} detail`}
+            onClick={() => onNameClick(row.ticker)}
+            style={tickerButtonStyle}
+          >
+            {row.ticker}
+          </button>
+        ) : (
+          row.ticker
+        )}
       </td>
       <td style={{ ...tdBase, maxWidth: 120 }}>
         {nameClickable ? (

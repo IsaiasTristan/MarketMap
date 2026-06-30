@@ -396,6 +396,8 @@ interface RiskSummaryGridProps {
   dailyPnlByTicker?: Map<string, number>;
   pageSize?: number;
   exportFilename?: string;
+  /** When set, data-row ticker cells become clickable and call this with the ticker. */
+  onTickerClick?: (ticker: string) => void;
 }
 
 export function RiskSummaryGrid({
@@ -406,6 +408,7 @@ export function RiskSummaryGrid({
   dailyPnlByTicker,
   pageSize = 50,
   exportFilename = "holdings-risk.csv",
+  onTickerClick,
 }: RiskSummaryGridProps) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
@@ -512,7 +515,28 @@ export function RiskSummaryGrid({
             ...bg,
           }}
         >
-          {row.ticker === "TOTAL" ? "Total" : row.ticker}
+          {mode === "row" && onTickerClick && row.ticker !== "CASH" ? (
+            <button
+              type="button"
+              title={`View ${row.ticker} detail`}
+              onClick={() => onTickerClick(row.ticker)}
+              style={{
+                padding: 0,
+                margin: 0,
+                border: "none",
+                background: "transparent",
+                font: "inherit",
+                color: "inherit",
+                cursor: "pointer",
+              }}
+            >
+              {row.ticker}
+            </button>
+          ) : row.ticker === "TOTAL" ? (
+            "Total"
+          ) : (
+            row.ticker
+          )}
         </td>
         <td className="bb-num" style={{ ...tdNum, color: "#fff", ...bg }}>
           {isFooter ? DASH : fmtSharePrice(row.lastPrice)}

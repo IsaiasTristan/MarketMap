@@ -238,6 +238,7 @@ export function OverviewClient() {
         benchmarks={posRiskData?.benchmarks ?? []}
         dailyPnlByTicker={new Map(positions.map((p) => [p.ticker, p.dailyPnl]))}
         loading={posRiskLoading}
+        onTickerClick={openFactorDetailPanel}
       />
 
       <PortfolioNews portfolioId={activePortfolioId} />
@@ -261,6 +262,7 @@ export function OverviewClient() {
             key={panel.ticker}
             panel={panel}
             data={perStockData}
+            periodOverride="1D"
           />
         ))}
       {perStockLoading && openFactorDetailPanels.length > 0 && !perStockData && (

@@ -10,6 +10,7 @@ interface HoldingsRiskTableProps {
   benchmarks?: PositionRisk[];
   dailyPnlByTicker?: Map<string, number>;
   loading?: boolean;
+  onTickerClick?: (ticker: string) => void;
 }
 
 export function HoldingsRiskTable({
@@ -18,6 +19,7 @@ export function HoldingsRiskTable({
   benchmarks,
   dailyPnlByTicker,
   loading,
+  onTickerClick,
 }: HoldingsRiskTableProps) {
   return (
     <ChartCard
@@ -44,6 +46,7 @@ export function HoldingsRiskTable({
           dailyPnlByTicker={dailyPnlByTicker}
           pageSize={50}
           exportFilename="holdings-risk.csv"
+          onTickerClick={onTickerClick}
         />
       )}
     </ChartCard>
