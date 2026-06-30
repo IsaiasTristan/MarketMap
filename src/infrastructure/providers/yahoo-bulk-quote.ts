@@ -8,8 +8,11 @@
  *
  *   GET /v8/finance/spark?symbols=AAPL,MSFT,...&range=1d&interval=1d
  *
- * which returns one aggregated bar per symbol in a single request. Chunking
- * ~50 symbols/request turns ~2000 tickers into ~40 requests.
+ * which returns one aggregated bar per symbol in a single request. Yahoo caps
+ * the endpoint at 20 symbols/request (HTTP 400 "Number of symbols needs to be
+ * less than or equal to 20" above that), so we chunk at 20 and run the chunks
+ * through a small concurrent worker pool to keep a full ~2000-ticker sweep
+ * comfortably inside the runner's 60s cadence.
  *
  * Spark is currently reachable anonymously (HTTP 200) and returns
  * `chartPreviousClose` (prior regular close) + a single `close` (live tape),
@@ -42,11 +45,14 @@ export interface BulkQuoteResult {
   failed: string[];
 }
 
-/** Symbols per spark request. Yahoo accepts long symbol lists; ~50 keeps the
- *  URL comfortably short and the per-request payload small. */
-const CHUNK_SIZE = 50;
-/** Politeness gap between chunk requests so a full sweep does not burst Yahoo
- *  into HTTP 429. */
+/** Symbols per spark request. Yahoo rejects requests with more than 20 symbols
+ *  (HTTP 400), so this is a hard upstream cap, not a tunable. */
+const CHUNK_SIZE = 20;
+/** Concurrent chunk requests. ~2871 tickers / 20 = ~144 chunks; at 5 workers a
+ *  full sweep finishes in ~15-20s, well inside the runner's 60s cadence. */
+const CONCURRENCY = 5;
+/** Per-worker politeness gap between chunk requests so a full sweep does not
+ *  burst Yahoo into HTTP 429. */
 const CHUNK_DELAY_MS = 150;
 const MAX_ATTEMPTS = 4;
 
@@ -177,7 +183,25 @@ async function fetchSparkChunk(
     }
     break;
   }
-  if (!res || !res.ok) return null;
+  if (!res) return null;
+  if (!res.ok) {
+    // Non-retryable upstream rejection (e.g. HTTP 400 if Yahoo lowers the
+    // per-request symbol cap below CHUNK_SIZE). Surface it loudly — a silent
+    // null here means the whole live sweep returns zero quotes and the grid
+    // quietly serves the stale close-to-close cache.
+    let snippet = "";
+    try {
+      snippet = (await res.text()).slice(0, 200);
+    } catch {
+      /* ignore body read failure */
+    }
+    console.warn(
+      `[bulk-quote] spark chunk failed: HTTP ${res.status} (${symbols.length} symbols)${
+        snippet ? ` — ${snippet}` : ""
+      }`,
+    );
+    return null;
+  }
 
   try {
     const json = (await res.json()) as unknown;
@@ -206,17 +230,26 @@ export async function fetchYahooBulkQuotes(
   const symbols = [...symToTicker.keys()];
   const chunks = chunk(symbols, CHUNK_SIZE);
 
-  for (let i = 0; i < chunks.length; i++) {
-    const symChunk = chunks[i]!;
-    const bySym = await fetchSparkChunk(symChunk);
-    for (const sym of symChunk) {
-      const ticker = symToTicker.get(sym)!;
-      const q = bySym?.get(sym);
-      if (q) quotes.set(ticker, q);
-      else failed.push(ticker);
+  // Bounded-concurrency worker pool over the chunks (mirrors the universe /
+  // extended-hours sweep pattern). Workers share a cursor and write into the
+  // result Map / failed array; safe under JS single-threaded turn semantics.
+  let cursor = 0;
+  const workers = Array.from({ length: CONCURRENCY }, async () => {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= chunks.length) return;
+      const symChunk = chunks[idx]!;
+      const bySym = await fetchSparkChunk(symChunk);
+      for (const sym of symChunk) {
+        const ticker = symToTicker.get(sym)!;
+        const q = bySym?.get(sym);
+        if (q) quotes.set(ticker, q);
+        else failed.push(ticker);
+      }
+      if (CHUNK_DELAY_MS > 0) await sleep(CHUNK_DELAY_MS);
     }
-    if (i < chunks.length - 1 && CHUNK_DELAY_MS > 0) await sleep(CHUNK_DELAY_MS);
-  }
+  });
+  await Promise.all(workers);
 
   return { quotes, servedVia: "spark", failed };
 }

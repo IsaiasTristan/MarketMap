@@ -112,8 +112,8 @@ describe("fetchYahooBulkQuotes", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await fetchYahooBulkQuotes(tickers);
-    // 120 symbols / 50 per chunk = 3 requests.
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // 120 symbols / 20 per chunk (Yahoo's cap) = 6 requests.
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     expect(res.quotes.size).toBe(120);
     expect(res.quotes.get("T0")).toEqual({ price: 10, prevClose: 9, asOfUnix: 1 });
     expect(res.servedVia).toBe("spark");
