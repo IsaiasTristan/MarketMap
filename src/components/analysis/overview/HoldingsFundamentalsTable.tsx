@@ -11,11 +11,17 @@ import type { DiscoveryPayload } from "@/components/analysis/fundamentals/types"
 export interface HoldingsFundamentalsTableProps {
   /** The active portfolio's holding tickers. */
   tickers: string[];
+  /**
+   * Raw daily dollar P&L per ticker. When provided, the table defaults to
+   * ordering by |daily $| (desc) — matching the rest of the Overview page.
+   */
+  dailyPnlByTicker?: Map<string, number>;
   loading?: boolean;
 }
 
 export function HoldingsFundamentalsTable({
   tickers,
+  dailyPnlByTicker,
   loading = false,
 }: HoldingsFundamentalsTableProps) {
   const [sectorFilter, setSectorFilter] = useState<string | null>(null);
@@ -96,6 +102,7 @@ export function HoldingsFundamentalsTable({
             <DiscoveryRankTable
               rows={portfolioRows}
               heatReferenceRows={universeRows}
+              contributionByTicker={dailyPnlByTicker}
               snapshotDate={data?.snapshotDate}
               onSelectTicker={setSelectedTicker}
               sectorFilter={sectorFilter}

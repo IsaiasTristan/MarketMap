@@ -99,6 +99,7 @@ type SortKey =
   | "subsector"
   | "composite"
   | "decile"
+  | "contribution"
   | `box:${BoxKey}`
   | "perf_D1"
   | "perf_D5"
@@ -268,7 +269,11 @@ function FlagChips({ flags }: { flags: string[] | undefined }) {
   );
 }
 
-function sortValue(row: DiscoveryRow, key: SortKey): string | number | null {
+function sortValue(
+  row: DiscoveryRow,
+  key: SortKey,
+  contributionByTicker?: Map<string, number>,
+): string | number | null {
   switch (key) {
     case "rank":
       return row.rank;
@@ -284,6 +289,10 @@ function sortValue(row: DiscoveryRow, key: SortKey): string | number | null {
       return row.composite;
     case "decile":
       return row.subsectorDecile ?? row.sectorDecile;
+    case "contribution": {
+      const v = contributionByTicker?.get(row.ticker);
+      return v != null && Number.isFinite(v) ? Math.abs(v) : null;
+    }
     case "perf_D1":
       return row.returns?.D1 ?? null;
     case "perf_D5":
@@ -300,9 +309,15 @@ function sortValue(row: DiscoveryRow, key: SortKey): string | number | null {
   }
 }
 
-function compareRows(a: DiscoveryRow, b: DiscoveryRow, key: SortKey, dir: SortDir): number {
-  const av = sortValue(a, key);
-  const bv = sortValue(b, key);
+function compareRows(
+  a: DiscoveryRow,
+  b: DiscoveryRow,
+  key: SortKey,
+  dir: SortDir,
+  contributionByTicker?: Map<string, number>,
+): number {
+  const av = sortValue(a, key, contributionByTicker);
+  const bv = sortValue(b, key, contributionByTicker);
   const aNull = av === null || av === undefined || (typeof av === "number" && !Number.isFinite(av));
   const bNull = bv === null || bv === undefined || (typeof bv === "number" && !Number.isFinite(bv));
   if (aNull && bNull) return 0;
@@ -431,6 +446,7 @@ const selectStyle: CSSProperties = {
 export function DiscoveryRankTable({
   rows,
   heatReferenceRows,
+  contributionByTicker,
   snapshotDate,
   onSelectTicker,
   sectorFilter,
@@ -450,6 +466,12 @@ export function DiscoveryRankTable({
    * subset (like a portfolio) keeps universe-relative shading. Defaults to `rows`.
    */
   heatReferenceRows?: DiscoveryRow[];
+  /**
+   * Raw daily dollar P&L per ticker. When provided, the table defaults to
+   * ordering rows by |daily $| (desc) so it matches the rest of the Overview
+   * page; clicking any column header still re-sorts normally.
+   */
+  contributionByTicker?: Map<string, number>;
   snapshotDate?: string;
   onSelectTicker: (t: string) => void;
   sectorFilter: string | null;
@@ -465,7 +487,9 @@ export function DiscoveryRankTable({
   const [hideTraps, setHideTraps] = useState(false);
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
-  const [sortKey, setSortKey] = useState<SortKey>("composite");
+  const [sortKey, setSortKey] = useState<SortKey>(
+    contributionByTicker && contributionByTicker.size > 0 ? "contribution" : "composite",
+  );
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [expandedBox, setExpandedBox] = useState<BoxKey | null>(null);
   const [excludedBoxes, setExcludedBoxes] = useState<Set<BoxKey>>(new Set());
@@ -561,9 +585,9 @@ export function DiscoveryRankTable({
 
   const sorted = useMemo(() => {
     const copy = [...filtered];
-    copy.sort((a, b) => compareRows(a, b, sortKey, sortDir));
+    copy.sort((a, b) => compareRows(a, b, sortKey, sortDir, contributionByTicker));
     return copy;
-  }, [filtered, sortKey, sortDir]);
+  }, [filtered, sortKey, sortDir, contributionByTicker]);
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);

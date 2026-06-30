@@ -180,6 +180,7 @@ export function OverviewClient() {
   }
 
   const { summary, positions } = data;
+  const dailyPnlByTicker = new Map(positions.map((p) => [p.ticker, p.dailyPnl]));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -236,7 +237,7 @@ export function OverviewClient() {
         positions={posRiskData?.positions ?? []}
         portfolioTotal={posRiskData?.portfolioTotal}
         benchmarks={posRiskData?.benchmarks ?? []}
-        dailyPnlByTicker={new Map(positions.map((p) => [p.ticker, p.dailyPnl]))}
+        dailyPnlByTicker={dailyPnlByTicker}
         loading={posRiskLoading}
         onTickerClick={openFactorDetailPanel}
       />
@@ -245,14 +246,13 @@ export function OverviewClient() {
 
       <HoldingsFundamentalsTable
         tickers={(holdingsData?.rows ?? []).map((r) => r.ticker)}
+        dailyPnlByTicker={dailyPnlByTicker}
         loading={holdingsLoading}
       />
 
       <HoldingsLiveChartGrid
         rows={holdingsData?.rows ?? []}
-        dailyPnlByTicker={
-          new Map(positions.map((p) => [p.ticker, p.dailyPnl]))
-        }
+        dailyPnlByTicker={dailyPnlByTicker}
         loading={holdingsLoading}
       />
 
