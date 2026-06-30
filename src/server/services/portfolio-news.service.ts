@@ -29,7 +29,7 @@ const LOOKBACK_DAYS = 21;
 const SYMBOLS_PER_CALL = 30;
 const PER_CALL_LIMIT = 250;
 const PER_TICKER_CAP = 4;
-const DEFAULT_LIMIT = 25;
+const DEFAULT_LIMIT = 40;
 
 export interface PortfolioNewsResult {
   rows: PortfolioNewsRow[];

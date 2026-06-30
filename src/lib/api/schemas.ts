@@ -45,8 +45,8 @@ export const portfolioNewsQuery = z.object({
   limit: z
     .string()
     .optional()
-    .transform((v) => (v ? Math.max(1, Math.min(50, Number(v))) : 25))
-    .pipe(z.number().int().min(1).max(50)),
+    .transform((v) => (v ? Math.max(1, Math.min(40, Number(v))) : 40))
+    .pipe(z.number().int().min(1).max(40)),
 });
 
 /** Per-stock grid query (no portfolioId — universe-driven). */

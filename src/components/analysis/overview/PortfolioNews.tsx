@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
 import { getUsMarketSession } from "@/lib/market-map/market-session";
@@ -8,6 +9,9 @@ import type { PortfolioNewsResult } from "@/server/services/portfolio-news.servi
 export interface PortfolioNewsProps {
   portfolioId: string | null;
 }
+
+const PAGE_SIZE = 10;
+const MAX_ARTICLES = 40;
 
 function formatPublished(iso: string): string {
   const d = new Date(iso);
@@ -32,11 +36,17 @@ const cellBase: React.CSSProperties = {
 };
 
 export function PortfolioNews({ portfolioId }: PortfolioNewsProps) {
+  const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    setPage(1);
+  }, [portfolioId]);
+
   const { data, isLoading, error } = useQuery<PortfolioNewsResult>({
     queryKey: ["portfolio-news", portfolioId],
     queryFn: async () => {
       const r = await fetch(
-        `/api/analysis/portfolio/news?portfolioId=${portfolioId}&limit=25`,
+        `/api/analysis/portfolio/news?portfolioId=${portfolioId}&limit=${MAX_ARTICLES}`,
       );
       if (!r.ok) {
         throw new Error(
@@ -52,14 +62,19 @@ export function PortfolioNews({ portfolioId }: PortfolioNewsProps) {
   });
 
   const rows = data?.rows ?? [];
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  const pageRows = rows.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   return (
-    <ChartCard
-      title="Market News"
-      subtitle="Filtered, holdings-tagged articles · company press releases first · hover for detail"
-    >
+    <ChartCard title="Market News">
       {isLoading ? (
-        <div style={msgStyle}>Loading news…</div>
+        <div style={msgStyle}>Loading news.</div>
       ) : error ? (
         <div style={{ ...msgStyle, color: "var(--color-negative)" }}>
           {error instanceof Error ? error.message : "Failed to load news."}
@@ -67,67 +82,96 @@ export function PortfolioNews({ portfolioId }: PortfolioNewsProps) {
       ) : rows.length === 0 ? (
         <div style={msgStyle}>No recent news found for this portfolio&apos;s holdings.</div>
       ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
-            <colgroup>
-              <col style={{ width: 64 }} />
-              <col style={{ width: 180 }} />
-              <col style={{ width: "32%" }} />
-              <col />
-            </colgroup>
-            <thead>
-              <tr>
-                <th style={headStyle}>Ticker</th>
-                <th style={headStyle}>Company</th>
-                <th style={headStyle}>Title</th>
-                <th style={headStyle}>Preview</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, i) => (
-                <tr key={`${row.url}-${i}`}>
-                  <td
-                    style={{
-                      ...cellBase,
-                      fontFamily: "var(--font-mono, monospace)",
-                      fontWeight: 700,
-                      color: "var(--color-accent)",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {row.ticker}
-                  </td>
-                  <td style={{ ...cellBase, color: "var(--text-secondary)" }} title={row.companyName}>
-                    {row.companyName}
-                  </td>
-                  <td
-                    style={{ ...cellBase }}
-                    title={[
-                      row.title,
-                      [row.site || row.publisher, formatPublished(row.publishedDate)]
-                        .filter(Boolean)
-                        .join(" · "),
-                    ]
-                      .filter(Boolean)
-                      .join("\n")}
-                  >
-                    {row.isPressRelease && <span style={prChipStyle}>PR</span>}
-                    <a
-                      href={row.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ color: "var(--text-primary)", fontWeight: 600, textDecoration: "none" }}
-                    >
-                      {row.title}
-                    </a>
-                  </td>
-                  <td style={{ ...cellBase, color: "var(--text-secondary)" }} title={row.preview}>
-                    {row.preview || <span style={{ color: "var(--text-muted)" }}>—</span>}
-                  </td>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+              <colgroup>
+                <col style={{ width: 64 }} />
+                <col style={{ width: 180 }} />
+                <col style={{ width: "32%" }} />
+                <col />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th style={headStyle}>Ticker</th>
+                  <th style={headStyle}>Company</th>
+                  <th style={headStyle}>Title</th>
+                  <th style={headStyle}>Preview</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {pageRows.map((row, i) => (
+                  <tr key={`${row.url}-${i}`}>
+                    <td
+                      style={{
+                        ...cellBase,
+                        fontFamily: "var(--font-mono, monospace)",
+                        fontWeight: 700,
+                        color: "var(--color-accent)",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {row.ticker}
+                    </td>
+                    <td style={{ ...cellBase, color: "var(--text-secondary)" }} title={row.companyName}>
+                      {row.companyName}
+                    </td>
+                    <td
+                      style={{ ...cellBase }}
+                      title={[
+                        row.title,
+                        [row.site || row.publisher, formatPublished(row.publishedDate)]
+                          .filter(Boolean)
+                          .join(" · "),
+                      ]
+                        .filter(Boolean)
+                        .join("\n")}
+                    >
+                      {row.isPressRelease && <span style={prChipStyle}>PR</span>}
+                      <a
+                        href={row.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ color: "var(--text-primary)", fontWeight: 600, textDecoration: "none" }}
+                      >
+                        {row.title}
+                      </a>
+                    </td>
+                    <td style={{ ...cellBase, color: "var(--text-secondary)" }} title={row.preview}>
+                      {row.preview || <span style={{ color: "var(--text-muted)" }}>—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {rows.length > PAGE_SIZE ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 11, color: "var(--text-muted)" }}>
+              <button
+                type="button"
+                className="bb-tab"
+                disabled={safePage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                style={{ border: "1px solid var(--chrome-border)", opacity: safePage <= 1 ? 0.4 : 1 }}
+              >
+                Prev
+              </button>
+              <span>
+                Page {safePage} of {totalPages} · showing {(safePage - 1) * PAGE_SIZE + 1}–
+                {Math.min(safePage * PAGE_SIZE, rows.length)} of {rows.length}
+              </span>
+              <button
+                type="button"
+                className="bb-tab"
+                disabled={safePage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                style={{ border: "1px solid var(--chrome-border)", opacity: safePage >= totalPages ? 0.4 : 1 }}
+              >
+                Next
+              </button>
+            </div>
+          ) : null}
         </div>
       )}
     </ChartCard>
