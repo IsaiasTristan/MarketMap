@@ -19,6 +19,16 @@ import type { TodaySessionPoint } from "@/lib/holdings/intraday-split";
 const POS = "#26a269";
 const NEG = "#e0533d";
 
+// Chart layout (px). The split gradient is anchored to the plot area in user
+// space (not each path's bounding box), so the green/red prior-close split lands
+// at the true `prevClose` pixel. Keep these in sync with the chart props below.
+const CHART_HEIGHT = 120;
+const MARGIN_TOP = 14;
+const MARGIN_BOTTOM = 0;
+const X_AXIS_HEIGHT = 16;
+const PLOT_TOP = MARGIN_TOP;
+const PLOT_BOTTOM = CHART_HEIGHT - MARGIN_BOTTOM - X_AXIS_HEIGHT;
+
 export interface LivePriceChartTileProps {
   ticker: string;
   /** Today's pre -> regular -> post timestamped intraday series. */
@@ -198,23 +208,38 @@ export function LivePriceChartTile({
             No intraday data
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height={120}>
+          <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
             <ComposedChart
               data={points}
-              margin={{ top: 14, right: 4, bottom: 0, left: 0 }}
+              margin={{ top: MARGIN_TOP, right: 4, bottom: MARGIN_BOTTOM, left: 0 }}
             >
               <defs>
                 {splitOffset != null ? (
                   <>
-                    {/* Fill: green above the prior close, red below. */}
-                    <linearGradient id={fillGradId} x1="0" y1="0" x2="0" y2="1">
+                    {/* Fill: green above the prior close, red below. Anchored to
+                        the plot area in user space so the split is at prevClose. */}
+                    <linearGradient
+                      id={fillGradId}
+                      gradientUnits="userSpaceOnUse"
+                      x1="0"
+                      x2="0"
+                      y1={PLOT_TOP}
+                      y2={PLOT_BOTTOM}
+                    >
                       <stop offset="0%" stopColor={POS} stopOpacity={0.28} />
                       <stop offset={`${splitOffset * 100}%`} stopColor={POS} stopOpacity={0.04} />
                       <stop offset={`${splitOffset * 100}%`} stopColor={NEG} stopOpacity={0.04} />
                       <stop offset="100%" stopColor={NEG} stopOpacity={0.28} />
                     </linearGradient>
                     {/* Stroke: hard green/red split at the prior close. */}
-                    <linearGradient id={strokeGradId} x1="0" y1="0" x2="0" y2="1">
+                    <linearGradient
+                      id={strokeGradId}
+                      gradientUnits="userSpaceOnUse"
+                      x1="0"
+                      x2="0"
+                      y1={PLOT_TOP}
+                      y2={PLOT_BOTTOM}
+                    >
                       <stop offset="0%" stopColor={POS} />
                       <stop offset={`${splitOffset * 100}%`} stopColor={POS} />
                       <stop offset={`${splitOffset * 100}%`} stopColor={NEG} />
@@ -237,7 +262,7 @@ export function LivePriceChartTile({
                 tick={{ fontSize: 7, fill: "var(--text-muted)" }}
                 axisLine={{ stroke: "var(--bg-border)" }}
                 tickLine={false}
-                height={16}
+                height={X_AXIS_HEIGHT}
               />
               <YAxis domain={yDomain ?? ["auto", "auto"]} hide width={0} />
               {prevClose > 0 && (

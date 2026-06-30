@@ -48,6 +48,14 @@ const RANGES: PriceRange[] = ["1D", "5D", "1M", "6M", "YTD", "1Y", "5Y", "MAX"];
 const POS = "#26a269";
 const NEG = "#e0533d";
 
+// Chart layout (px). The split gradient is anchored to the plot area in user
+// space (not each path's bounding box) so the green/red prior-close split lands
+// at the true `prevClose` pixel. Keep MARGIN_TOP / X_AXIS_HEIGHT in sync with
+// the <AreaChart margin> and the default recharts XAxis height (30).
+const MARGIN_TOP = 6;
+const MARGIN_BOTTOM = 0;
+const X_AXIS_HEIGHT = 30;
+
 type PointSession = "regular" | "extended";
 
 interface ChartPoint {
@@ -465,7 +473,7 @@ export function StockPriceChart({
           <ResponsiveContainer width="100%" height={height}>
             <AreaChart
               data={points}
-              margin={{ top: 6, right: 8, bottom: 0, left: 0 }}
+              margin={{ top: MARGIN_TOP, right: 8, bottom: MARGIN_BOTTOM, left: 0 }}
               onMouseDown={(e) => {
                 const idx = toIdx(e?.activeTooltipIndex);
                 if (idx == null) return;
@@ -484,15 +492,30 @@ export function StockPriceChart({
               <defs>
                 {splitOffset != null ? (
                   <>
-                    {/* Fill: green above the prior close, red below. */}
-                    <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                    {/* Fill: green above the prior close, red below. Anchored to
+                        the plot area in user space so the split is at prevClose. */}
+                    <linearGradient
+                      id={gradientId}
+                      gradientUnits="userSpaceOnUse"
+                      x1="0"
+                      x2="0"
+                      y1={MARGIN_TOP}
+                      y2={height - MARGIN_BOTTOM - X_AXIS_HEIGHT}
+                    >
                       <stop offset="0%" stopColor={POS} stopOpacity={0.26} />
                       <stop offset={`${splitOffset * 100}%`} stopColor={POS} stopOpacity={0.04} />
                       <stop offset={`${splitOffset * 100}%`} stopColor={NEG} stopOpacity={0.04} />
                       <stop offset="100%" stopColor={NEG} stopOpacity={0.26} />
                     </linearGradient>
                     {/* Stroke: hard green/red split at the prior close. */}
-                    <linearGradient id={strokeGradId} x1="0" y1="0" x2="0" y2="1">
+                    <linearGradient
+                      id={strokeGradId}
+                      gradientUnits="userSpaceOnUse"
+                      x1="0"
+                      x2="0"
+                      y1={MARGIN_TOP}
+                      y2={height - MARGIN_BOTTOM - X_AXIS_HEIGHT}
+                    >
                       <stop offset="0%" stopColor={POS} />
                       <stop offset={`${splitOffset * 100}%`} stopColor={POS} />
                       <stop offset={`${splitOffset * 100}%`} stopColor={NEG} />
