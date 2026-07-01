@@ -278,3 +278,94 @@ export const fundamentalsIngestBody = z.object({
   maxUniverse: z.number().int().min(1).max(5000).optional(),
   quarters: z.number().int().min(4).max(60).optional(),
 });
+
+// ---------------------------------------------------------------------------
+// Engine 3 — Institutional Capital-Flow (Flows) query params
+// ---------------------------------------------------------------------------
+
+/** Optional filing-period (quarter-end YYYY-MM-DD); omitted = latest settled.
+ *  Refined so a well-formed-but-impossible date (e.g. 2026-99-99) is rejected
+ *  (400) rather than passed through to silently return empty results. */
+const periodParam = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((s) => {
+    const d = new Date(`${s}T00:00:00.000Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+  }, "not a valid calendar date")
+  .optional();
+
+/** Bounded integer query param with a default; non-numeric input falls back to
+ *  the default instead of producing NaN (which would crash Prisma `take`). */
+const boundedInt = (def: number, min: number, max: number) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => {
+      const n = v === undefined || v === "" ? NaN : Number(v);
+      return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.trunc(n))) : def;
+    });
+
+export const flowsOverviewQuery = z.object({ period: periodParam });
+
+export const flowsQuadrantQuery = z.object({
+  period: periodParam,
+  minFunds: boundedInt(2, 1, 10),
+});
+
+export const flowsTrajectoriesQuery = z.object({
+  period: periodParam,
+  limit: boundedInt(12, 3, 60),
+  sort: z.enum(["delta", "holders"]).optional().default("delta"),
+});
+
+export const flowsTrajectoryQuery = z.object({
+  ticker: z.string().min(1).max(12).transform((s) => s.trim().toUpperCase()),
+});
+
+export const flowsRotationQuery = z.object({ period: periodParam });
+
+export const flowsLedgerQuery = z.object({
+  ticker: z.string().min(1).max(12).transform((s) => s.trim().toUpperCase()),
+  period: periodParam,
+});
+
+export const flowsFirstMoversQuery = z.object({
+  period: periodParam,
+  broadThreshold: boundedInt(6, 3, 30),
+});
+
+export const flowsExitClustersQuery = z.object({
+  period: periodParam,
+  minExits: boundedInt(3, 2, 20),
+});
+
+export const flowsCrowdingQuery = z.object({
+  period: periodParam,
+  tickers: z
+    .string()
+    .min(1)
+    .transform((s) => s.split(",").map((t) => t.trim().toUpperCase()).filter(Boolean).slice(0, 200)),
+});
+
+export const flowsIngestBody = z.object({
+  mode: z.enum(["full", "refresh", "aggregate"]).optional().default("refresh"),
+  quarters: z.number().int().min(1).max(60).optional(),
+});
+
+export const flowsFundCreateBody = z.object({
+  cik: z.string().min(1).max(20),
+  name: z.string().min(1).max(120),
+  edgarName: z.string().max(160).optional(),
+  tier: z.number().int().min(1).max(3).optional(),
+  isMostRespected: z.boolean().optional(),
+});
+
+export const flowsFundPatchBody = z.object({
+  name: z.string().min(1).max(120).optional(),
+  edgarName: z.string().max(160).nullable().optional(),
+  tier: z.number().int().min(1).max(3).optional(),
+  isMostRespected: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+  notes: z.string().max(500).nullable().optional(),
+});

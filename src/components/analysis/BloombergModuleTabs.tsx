@@ -11,6 +11,7 @@ const MODULE_TABS = [
   { href: "/factors", label: "Factors" },
   { href: "/research", label: "Research" },
   { href: "/fundamentals", label: "Fundamentals" },
+  { href: "/flows", label: "Flows" },
   { href: "/data", label: "Data" },
 ] as const;
 

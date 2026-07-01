@@ -894,3 +894,168 @@ model EarningsSurprise {
   @@unique([ticker, reportDate])
   @@index([ticker, reportDate])
 }
+
+// ===========================================================================
+// Engine 3 — Institutional Capital-Flow Discovery (13F, FMP-backed)
+//
+// The lagging confirmation layer. Quarterly, backfillable day-one. Mirrors the
+// Engine 1/2 append-only, period-keyed design (here keyed by `filingPeriod` =
+// 13F period-of-report / quarter-end) and reuses RevisionReference (sector /
+// subsector / marketCap taxonomy) + RevisionGroupType (peer level). NO composite
+// scores — raw counts + two visible axes (breadth, conviction) + categorical
+// labels only, diffed vs the prior quarter (change detector).
+//
+// Phase 0 (scripts/institutional-fmp-validate.ts, live key): 68/68 watchlist
+// CIKs resolve; per-fund holdings via /stable/institutional-ownership/extract
+// (full, un-paginated; carries symbol + shares + value$); total book via
+// holder-performance-summary; history backfillable to ~2013; small/mid-cap
+// coverage strong (edge zone). A fund can report multiple rows per symbol
+// (share classes + PUT/CALL) — ingestion aggregates to one long-equity position
+// per (fund, ticker, period) and excludes put/call from the accumulation signal
+// (raw rows retained in rawJson).
+// ===========================================================================
+
+/// Position lifecycle for a (fund, ticker) vs its prior filing period.
+enum InstitutionalAction {
+  NEW
+  ADDED
+  HELD
+  TRIMMED
+  EXITED
+}
+
+/// Editable watchlist (~68 curated funds, seeded from the CIK list, then
+/// user-maintained via the admin UI). `cik` is the 10-digit zero-padded filer id.
+model InstitutionalFund {
+  id              String   @id @default(cuid())
+  cik             String   @unique
+  name            String // display name
+  edgarName       String? // EDGAR 13F-HR filer name
+  tier            Int      @default(1) // 1 growth/quality · 2 value · 3 activist
+  isMostRespected Boolean  @default(false) // hand-weighted subset → first-mover view
+  isActive        Boolean  @default(true) // include in aggregates
+  notes           String?
+  addedAt         DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  holdings FundHoldingSnapshot[]
+  books    FundBookSnapshot[]
+
+  @@index([isActive])
+  @@index([tier])
+}
+
+/// Fact table: one aggregated long-equity position per (fund, ticker, period).
+/// Append-only / write-once per key. `action` is set by the diff layer.
+model FundHoldingSnapshot {
+  id           String              @id @default(cuid())
+  fundId       String
+  cik          String
+  filingPeriod DateTime            @db.Date // quarter-end / period-of-report
+  ticker       String
+  cusip        String?
+  nameOfIssuer String?
+  shares       Decimal             @db.Decimal(24, 2) // common shares (puts/calls excluded)
+  value        Decimal             @db.Decimal(24, 2) // reported $ value
+  pctOfBook    Float? // value / fund total book — the conviction dimension
+  action       InstitutionalAction
+  prevShares   Decimal?            @db.Decimal(24, 2)
+  filingDate   DateTime?           @db.Date
+  acceptedDate DateTime?           @db.Date
+  rawJson      Json? // put/call + share-class rows retained for reconciliation
+  createdAt    DateTime            @default(now())
+
+  fund InstitutionalFund @relation(fields: [fundId], references: [id], onDelete: Cascade)
+
+  @@unique([fundId, ticker, filingPeriod])
+  @@index([filingPeriod])
+  @@index([ticker, filingPeriod])
+  @@index([cik, filingPeriod])
+}
+
+/// Per-fund per-quarter portfolio totals (FMP holder-performance-summary).
+/// Supplies the book-value denominator for % of book + a cross-check on the
+/// per-name add/remove counts. Append-only, one row per (fund, period).
+model FundBookSnapshot {
+  id                String   @id @default(cuid())
+  fundId            String
+  cik               String
+  filingPeriod      DateTime @db.Date
+  portfolioSize     Int? // # positions reported
+  marketValue       Decimal? @db.Decimal(24, 2) // total 13F book $
+  securitiesAdded   Int?
+  securitiesRemoved Int?
+  turnover          Float?
+  rawJson           Json?
+  createdAt         DateTime @default(now())
+
+  fund InstitutionalFund @relation(fields: [fundId], references: [id], onDelete: Cascade)
+
+  @@unique([fundId, filingPeriod])
+  @@index([filingPeriod])
+}
+
+/// Per-name × quarter aggregate over the tracked watchlist — powers the overview,
+/// crowding-vs-conviction quadrant, and accumulation-trajectory views. Written by
+/// the aggregation/diff service, not ingestion. Deciles are peer-relative ranks
+/// (shared signal convention), NOT a blended score.
+model InstitutionalNameAggregate {
+  id                     String   @id @default(cuid())
+  ticker                 String
+  filingPeriod           DateTime @db.Date
+  companyName            String?
+  sector                 String?
+  subsector              String?
+  marketCapTier          String? // small | mid | large | mega
+  fundsHolding           Int      @default(0)
+  fundsNew               Int      @default(0)
+  fundsAdded             Int      @default(0)
+  fundsHeld              Int      @default(0)
+  fundsTrimmed           Int      @default(0)
+  fundsExited            Int      @default(0)
+  fundsBought            Int      @default(0) // new + added
+  fundsSold              Int      @default(0) // trimmed + exited
+  deltaHolders           Int      @default(0) // vs prior quarter (bubble size)
+  pctOfFunds             Float    @default(0) // breadth axis (% of tracked funds)
+  medianPctOfBook        Float? // conviction axis
+  totalValue             Decimal? @db.Decimal(24, 2)
+  trajectoryLabel        String? // durable | accelerating | spike | choppy
+  quadrant               String? // early | crowded | ignored | broad-low
+  marketInvestorsHolding Int? // secondary market-wide crowding (context only)
+  newArrival             Boolean  @default(false) // change detector
+  breadthDecile          Int?
+  convictionDecile       Int?
+  createdAt              DateTime @default(now())
+
+  @@unique([ticker, filingPeriod])
+  @@index([filingPeriod])
+  @@index([filingPeriod, fundsHolding])
+}
+
+/// Per-sector/subsector × quarter flow aggregate — powers sector rotation.
+/// Mirrors RevisionSectorAggregate; keyed (groupType, groupKey, filingPeriod).
+model InstitutionalSectorAggregate {
+  id             String            @id @default(cuid())
+  groupType      RevisionGroupType
+  groupKey       String
+  filingPeriod   DateTime          @db.Date
+  netFundsAdding Int               @default(0) // (new+added) − (trimmed+exited)
+  fundsAdding    Int               @default(0)
+  fundsTrimming  Int               @default(0)
+  nameCount      Int               @default(0)
+  netValueFlow   Decimal?          @db.Decimal(24, 2)
+  aggregatesJson Json?
+  createdAt      DateTime          @default(now())
+
+  @@unique([groupType, groupKey, filingPeriod])
+  @@index([filingPeriod])
+}
+
+/// Cached landing-page payload per quarter (mirrors ResearchQueueSnapshot).
+/// One row per filingPeriod, overwritten on recompute.
+model InstitutionalQuarterSnapshot {
+  id           String   @id @default(cuid())
+  filingPeriod DateTime @unique @db.Date
+  payloadJson  Json
+  computedAt   DateTime @default(now())
+}

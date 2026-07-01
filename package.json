@@ -28,7 +28,10 @@
     "job:fundamental-enrich-boxes": "tsx scripts/fundamental-enrich-boxes.ts",
     "job:fundamental-validate": "tsx scripts/fundamental-fmp-validate.ts",
     "job:fundamental-backtest": "tsx scripts/fundamental-backtest.ts",
-    "job:fundamental-box-correlation": "tsx scripts/fundamental-box-correlation.ts"
+    "job:fundamental-box-correlation": "tsx scripts/fundamental-box-correlation.ts",
+    "job:institutional-seed": "tsx scripts/institutional-seed-funds.ts",
+    "job:institutional": "tsx scripts/institutional-quarterly.ts",
+    "job:institutional-validate": "tsx scripts/institutional-fmp-validate.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",
