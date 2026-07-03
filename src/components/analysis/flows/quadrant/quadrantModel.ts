@@ -46,22 +46,15 @@ export interface QuadrantModel {
   trackedFunds: number;
 }
 
-/** p in [0,1] over an ASCENDING-sorted array (nearest-rank, matches the old p96 clamp). */
+/** p in [0,1] over an ASCENDING-sorted array (nearest-rank). */
 export function percentile(sorted: number[], p: number): number {
   if (!sorted.length) return 0;
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))]!;
 }
 
-/** 1/2/5-mantissa "nice" ticks for a [0, max] linear domain. */
-function linearTicks(max: number, count = 5): number[] {
-  if (max <= 0) return [0];
-  const rawStep = max / count;
-  const mag = 10 ** Math.floor(Math.log10(rawStep));
-  const norm = rawStep / mag;
-  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
-  const ticks: number[] = [];
-  for (let v = 0; v <= max + 1e-9; v += step) ticks.push(Number(v.toFixed(4)));
-  return ticks;
+/** Config tick values that fall inside [lo, hi] — human values only, no auto-generation. */
+function ticksInDomain(ticks: readonly number[], lo: number, hi: number): number[] {
+  return ticks.filter((t) => t >= lo && t <= hi);
 }
 
 function isForeground(p: QuadrantPoint, convictionBar: number): boolean {
@@ -92,18 +85,23 @@ export function buildQuadrantModel(payload: QuadrantPayload): QuadrantModel {
     (fg ? foreground : background).push(plotted);
   }
 
-  // Linear domains with a p99.5 conviction cap (log axes replace this in Task 3).
-  const convSorted = pts.map((p) => p.conviction ?? 0).filter((v) => v > 0).sort((a, b) => a - b);
-  const yMax = Math.max(percentile(convSorted, cfg.axes.y.ceilPercentile), payload.convictionLine * 2, 0.5) * 1.05;
-  const xMax = Math.max(payload.breadthLine, ...pts.map((p) => p.breadth), 1) * 1.03;
+  // Log domains — no conviction cap, no pinned-outlier row. Conviction (y) floors
+  // at 0.3% and ceils at p99.5, so the highest-conviction names simply sit near
+  // the top rather than being clamped onto a cap line. Breadth (x) floors at the
+  // breadth of a single fund (100/N) so the discrete low-holder columns spread out.
+  const convPos = pts.map((p) => p.conviction ?? 0).filter((v) => v > 0).sort((a, b) => a - b);
+  const yFloor = cfg.axes.y.floor;
+  const yCeil = Math.max(percentile(convPos, cfg.axes.y.ceilPercentile), yFloor * 4);
+  const xFloor = 100 / Math.max(1, payload.trackedFunds);
+  const xCeil = Math.max(payload.breadthLine, ...pts.map((p) => p.breadth), xFloor * 2) * cfg.axes.x.ceilPad;
 
   return {
     foreground,
     background,
-    xDomain: [0, xMax],
-    yDomain: [0, yMax],
-    xTicks: linearTicks(xMax),
-    yTicks: linearTicks(yMax),
+    xDomain: [xFloor, xCeil],
+    yDomain: [yFloor, yCeil],
+    xTicks: ticksInDomain(cfg.axes.x.ticks, xFloor, xCeil),
+    yTicks: ticksInDomain(cfg.axes.y.ticks, yFloor, yCeil),
     breadthLine: payload.breadthLine,
     convictionLine: payload.convictionLine,
     trackedFunds: payload.trackedFunds,
@@ -123,13 +121,22 @@ export interface Scales {
   y: (conviction: number | null) => number;
 }
 
-/** Values outside the domain clamp to the plot edge — a point is never off-canvas. */
+/**
+ * Logarithmic pixel scales. Values outside the domain clamp to the plot edge —
+ * a point is never off-canvas, and a null/zero conviction lands on the y-floor
+ * (its true value still shows in the tooltip). Both domains are strictly
+ * positive, so log is always defined after clamping.
+ */
 export function makeScales(model: QuadrantModel, rect: PlotRect): Scales {
   const [x0, x1] = model.xDomain;
   const [y0, y1] = model.yDomain;
+  const lx0 = Math.log(x0);
+  const lxSpan = Math.log(x1) - lx0 || 1;
+  const ly0 = Math.log(y0);
+  const lySpan = Math.log(y1) - ly0 || 1;
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
   return {
-    x: (b) => rect.left + ((clamp(b, x0, x1) - x0) / (x1 - x0 || 1)) * rect.width,
-    y: (c) => rect.top + rect.height - ((clamp(c ?? 0, y0, y1) - y0) / (y1 - y0 || 1)) * rect.height,
+    x: (b) => rect.left + ((Math.log(clamp(b, x0, x1)) - lx0) / lxSpan) * rect.width,
+    y: (c) => rect.top + rect.height - ((Math.log(clamp(c ?? y0, y0, y1)) - ly0) / lySpan) * rect.height,
   };
 }
