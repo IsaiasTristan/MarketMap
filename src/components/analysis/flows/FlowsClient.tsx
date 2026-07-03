@@ -16,7 +16,7 @@ import type { OverviewPayload } from "@/server/services/institutional/institutio
 import { useFlows } from "./useFlows";
 import { AsOfBanner, quarterLabel } from "./flowsUi";
 import { OverviewPanel } from "./OverviewPanel";
-import { QuadrantPanel } from "./QuadrantPanel";
+import { QuadrantPanel } from "./quadrant/QuadrantPanel";
 import { TrajectoryGridPanel } from "./TrajectoryGridPanel";
 import { RotationPanel } from "./RotationPanel";
 import { SignalsPanel } from "./SignalsPanel";
