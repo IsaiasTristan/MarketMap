@@ -34,6 +34,7 @@ coverage
 
 # Scheduled job logs (scripts/daily-precompute.ps1)
 logs
+.server.log
 
 # TypeScript
 *.tsbuildinfo
