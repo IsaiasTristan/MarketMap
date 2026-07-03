@@ -405,35 +405,42 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
   ]);
   log(`[institutional-agg] name aggregates: ${nameRows.length} rows across ${periods.length} periods`);
 
-  // Sector rollup from the name aggregates.
+  // Sector + subsector rollups from the name aggregates.
   const sectorRows: Prisma.InstitutionalSectorAggregateCreateManyInput[] = [];
-  const sectorMap = new Map<string, { adding: number; trimming: number; count: number; net: number }>();
-  for (const nr of nameRows) {
-    if (!nr.sector) continue;
-    const key = `${nr.sector}|${iso(nr.filingPeriod as Date)}`;
-    const e = sectorMap.get(key) ?? { adding: 0, trimming: 0, count: 0, net: 0 };
-    e.adding += (nr.fundsBought ?? 0);
-    e.trimming += (nr.fundsSold ?? 0);
-    e.count += 1;
-    sectorMap.set(key, e);
-  }
-  for (const [key, e] of sectorMap) {
-    const [sector, period] = key.split("|");
-    sectorRows.push({
-      groupType: RevisionGroupType.SECTOR,
-      groupKey: sector!,
-      filingPeriod: new Date(`${period}T00:00:00.000Z`),
-      netFundsAdding: e.adding - e.trimming,
-      fundsAdding: e.adding,
-      fundsTrimming: e.trimming,
-      nameCount: e.count,
-    });
+  const groupings = [
+    { groupType: RevisionGroupType.SECTOR, field: "sector" as const },
+    { groupType: RevisionGroupType.SUBSECTOR, field: "subsector" as const },
+  ];
+  for (const { groupType, field } of groupings) {
+    const groupMap = new Map<string, { adding: number; trimming: number; count: number }>();
+    for (const nr of nameRows) {
+      const groupKey = nr[field];
+      if (!groupKey) continue;
+      const key = `${groupKey}|${iso(nr.filingPeriod as Date)}`;
+      const e = groupMap.get(key) ?? { adding: 0, trimming: 0, count: 0 };
+      e.adding += (nr.fundsBought ?? 0);
+      e.trimming += (nr.fundsSold ?? 0);
+      e.count += 1;
+      groupMap.set(key, e);
+    }
+    for (const [key, e] of groupMap) {
+      const [groupKey, period] = key.split("|");
+      sectorRows.push({
+        groupType,
+        groupKey: groupKey!,
+        filingPeriod: new Date(`${period}T00:00:00.000Z`),
+        netFundsAdding: e.adding - e.trimming,
+        fundsAdding: e.adding,
+        fundsTrimming: e.trimming,
+        nameCount: e.count,
+      });
+    }
   }
   await prisma.$transaction([
     prisma.institutionalSectorAggregate.deleteMany({}),
     ...chunk(sectorRows, 5000).map((c) => prisma.institutionalSectorAggregate.createMany({ data: c })),
   ]);
-  log(`[institutional-agg] sector aggregates: ${sectorRows.length} rows`);
+  log(`[institutional-agg] sector/subsector aggregates: ${sectorRows.length} rows`);
 
   return { periods };
 }
@@ -482,7 +489,7 @@ async function cacheQuarterPayload(period: string, periods: string[], log: (m: s
   const smallMid = surfaced.filter((r) => r.marketCapTier === "small" || r.marketCapTier === "mid").length;
   const smallMidShare = surfaced.length ? Math.round((smallMid / surfaced.length) * 100) : 0;
 
-  let priorCounts = { acc: 0, dist: 0 };
+  const priorCounts = { acc: 0, dist: 0 };
   if (priorPeriod) {
     const prior = await prisma.institutionalNameAggregate.findMany({ where: { filingPeriod: new Date(`${priorPeriod}T00:00:00.000Z`) } });
     priorCounts.acc = prior.filter((r) => r.deltaHolders >= MEANINGFUL_HOLDER_SWING && r.fundsBought > r.fundsSold).length;

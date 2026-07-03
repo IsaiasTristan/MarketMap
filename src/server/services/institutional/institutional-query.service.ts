@@ -253,34 +253,66 @@ export async function getTrajectory(ticker: string): Promise<SingleTrajectoryPay
   };
 }
 
-// ── 5.4 sector rotation ─────────────────────────────────────────────────────
+// ── 5.4 sector / subsector / stock rotation ─────────────────────────────────
+export type RotationGroupBy = "sector" | "subsector" | "stock";
+const SUBSECTOR_LIMIT = 15; // top/bottom N subsectors by net flow
+
 export interface RotationPayload {
   filingPeriod: string;
-  sectors: Array<{
-    sector: string;
+  groupBy: RotationGroupBy;
+  groups: Array<{
+    groupKey: string; // sector name, subsector name, or ticker
     netFundsAdding: number;
     fundsAdding: number;
     fundsTrimming: number;
-    nameCount: number;
+    nameCount: number; // stock view: fundsHolding (holder count)
+    companyName?: string | null; // stock view only
+    sector?: string | null; // stock view only
   }>;
 }
-export async function getRotation(period?: string): Promise<RotationPayload | null> {
+export async function getRotation(period?: string, groupBy: RotationGroupBy = "sector"): Promise<RotationPayload | null> {
   const p = await resolvePeriod(period);
   if (!p) return null;
+  const periodDate = new Date(`${p}T00:00:00.000Z`);
+
+  if (groupBy === "stock") {
+    // No precompute needed — the name aggregates already carry per-ticker flow.
+    // Net flow is a computed column, so rank in JS (a few thousand slim rows).
+    const rows = await prisma.institutionalNameAggregate.findMany({
+      where: { filingPeriod: periodDate },
+      select: { ticker: true, companyName: true, sector: true, fundsBought: true, fundsSold: true, fundsHolding: true },
+    });
+    const groups = rows
+      .map((r) => ({
+        groupKey: r.ticker,
+        netFundsAdding: r.fundsBought - r.fundsSold,
+        fundsAdding: r.fundsBought,
+        fundsTrimming: r.fundsSold,
+        nameCount: r.fundsHolding,
+        companyName: r.companyName,
+        sector: r.sector,
+      }))
+      .filter((r) => r.netFundsAdding !== 0)
+      .sort((a, b) => b.netFundsAdding - a.netFundsAdding);
+    return { filingPeriod: p, groupBy, groups };
+  }
+
   const rows = await prisma.institutionalSectorAggregate.findMany({
-    where: { filingPeriod: new Date(`${p}T00:00:00.000Z`), groupType: "SECTOR" },
+    where: { filingPeriod: periodDate, groupType: groupBy === "subsector" ? "SUBSECTOR" : "SECTOR" },
     orderBy: { netFundsAdding: "desc" },
   });
-  return {
-    filingPeriod: p,
-    sectors: rows.map((r) => ({
-      sector: r.groupKey,
-      netFundsAdding: r.netFundsAdding,
-      fundsAdding: r.fundsAdding,
-      fundsTrimming: r.fundsTrimming,
-      nameCount: r.nameCount,
-    })),
-  };
+  const mapped = rows.map((r) => ({
+    groupKey: r.groupKey,
+    netFundsAdding: r.netFundsAdding,
+    fundsAdding: r.fundsAdding,
+    fundsTrimming: r.fundsTrimming,
+    nameCount: r.nameCount,
+  }));
+  const groups =
+    groupBy === "subsector" && mapped.length > SUBSECTOR_LIMIT * 2
+      ? [...mapped.slice(0, SUBSECTOR_LIMIT), ...mapped.slice(-SUBSECTOR_LIMIT)]
+      : mapped;
+  return { filingPeriod: p, groupBy, groups };
 }
 
 // ── 5.5 single-name fund ledger ─────────────────────────────────────────────

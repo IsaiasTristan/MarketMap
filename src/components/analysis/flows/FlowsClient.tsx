@@ -28,7 +28,7 @@ const TABS: BloombergTabItem[] = [
   { key: "overview", label: "Overview" },
   { key: "quadrant", label: "Crowding × Conviction" },
   { key: "trajectories", label: "Trajectories" },
-  { key: "rotation", label: "Sector Rotation" },
+  { key: "rotation", label: "Rotation" },
   { key: "signals", label: "First-Mover / Exits" },
   { key: "watchlist", label: "Watchlist" },
 ];

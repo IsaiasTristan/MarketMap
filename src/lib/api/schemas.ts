@@ -324,7 +324,10 @@ export const flowsTrajectoryQuery = z.object({
   ticker: z.string().min(1).max(12).transform((s) => s.trim().toUpperCase()),
 });
 
-export const flowsRotationQuery = z.object({ period: periodParam });
+export const flowsRotationQuery = z.object({
+  period: periodParam,
+  groupBy: z.enum(["sector", "subsector", "stock"]).optional().default("sector"),
+});
 
 export const flowsLedgerQuery = z.object({
   ticker: z.string().min(1).max(12).transform((s) => s.trim().toUpperCase()),
