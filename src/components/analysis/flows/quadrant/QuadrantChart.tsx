@@ -5,9 +5,9 @@
  * FOREGROUND marks (tooltips, click-through). Hit-testing is a nearest-point
  * scan over the foreground array only.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import { makeScales, type PlottedPoint, type QuadrantModel } from "./quadrantModel";
+import { flowColor, flowRadius, makeScales, type PlottedPoint, type QuadrantModel } from "./quadrantModel";
 import { QUADRANT_CONFIG } from "./quadrantConfig";
 import { placeLabels, placeOptsFromConfig, type LabelInput } from "./labelPlacement";
 
@@ -32,13 +32,19 @@ export function QuadrantChart({
   model,
   width,
   height,
+  search,
   onHover,
+  onPinnedChange,
   onClickTicker,
 }: {
   model: QuadrantModel;
   width: number;
   height: number;
+  /** Active search query — matches (ticker + name) are highlighted, others dimmed. */
+  search: string;
   onHover: (h: HoverState | null) => void;
+  /** Reports the single searched match (with position) for a persistent tooltip. */
+  onPinnedChange: (h: HoverState | null) => void;
   onClickTicker: (ticker: string) => void;
 }) {
   const [hovered, setHovered] = useState<string | null>(null);
@@ -81,13 +87,45 @@ export function QuadrantChart({
 
   const labeledIds = useMemo(() => new Set(labels.map((l) => l.id)), [labels]);
 
+  // Search: match ticker + company name (case-insensitive substring), across
+  // BOTH layers, so a name filtered out of the foreground can still be found.
+  const matchSet = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return null;
+    const set = new Set<string>();
+    const hit = (p: PlottedPoint) => p.ticker.toLowerCase().includes(q) || (p.companyName ?? "").toLowerCase().includes(q);
+    for (const pos of fgPos) if (hit(pos.p)) set.add(pos.p.ticker);
+    for (const pos of bgPos) if (hit(pos.p)) set.add(pos.p.ticker);
+    return set;
+  }, [search, fgPos, bgPos]);
+  const searching = matchSet !== null;
+
+  // Matched background names are promoted to full foreground rendering.
+  const promotedBg = useMemo(
+    () => (matchSet ? bgPos.filter((pos) => matchSet.has(pos.p.ticker)) : []),
+    [matchSet, bgPos],
+  );
+
+  // A lone match gets a persistent tooltip; report it (with position) to the panel.
+  useEffect(() => {
+    if (matchSet && matchSet.size === 1) {
+      const t = [...matchSet][0];
+      const pos = fgPos.find((f) => f.p.ticker === t) ?? bgPos.find((b) => b.p.ticker === t);
+      onPinnedChange(pos ? { point: pos.p, x: pos.x, y: pos.y } : null);
+    } else {
+      onPinnedChange(null);
+    }
+  }, [matchSet, fgPos, bgPos, onPinnedChange]);
+
   function hitTest(evt: React.MouseEvent<SVGSVGElement>): Positioned | null {
     const bounds = evt.currentTarget.getBoundingClientRect();
     const mx = evt.clientX - bounds.left;
     const my = evt.clientY - bounds.top;
+    // Promoted background matches become hoverable while searching.
+    const targets = searching ? [...fgPos, ...promotedBg] : fgPos;
     let best: Positioned | null = null;
     let bestD = Infinity;
-    for (const pos of fgPos) {
+    for (const pos of targets) {
       const d = Math.hypot(pos.x - mx, pos.y - my);
       if (d < bestD && d <= Math.max(pos.p.r + HIT_SLOP, MIN_HIT_RADIUS)) {
         best = pos;
@@ -181,25 +219,56 @@ export function QuadrantChart({
         median conviction
       </text>
 
-      {/* BACKGROUND layer — context only, never intercepts hover/click. */}
-      <g style={{ pointerEvents: "none" }} opacity={cfg.colors.backgroundOpacity}>
-        {bgPos.map(({ p, x, y }) => (
-          <circle key={p.ticker} cx={x} cy={y} r={p.r} fill={p.fill} />
-        ))}
+      {/* BACKGROUND layer — context only, never intercepts hover/click. Matched
+          names are pulled out and re-drawn in the promoted layer below. */}
+      <g style={{ pointerEvents: "none" }}>
+        {bgPos.map(({ p, x, y }) =>
+          matchSet?.has(p.ticker) ? null : (
+            <circle
+              key={p.ticker}
+              cx={x}
+              cy={y}
+              r={p.r}
+              fill={p.fill}
+              fillOpacity={searching ? cfg.search.dimOpacity : cfg.colors.backgroundOpacity}
+            />
+          ),
+        )}
       </g>
 
       {/* FOREGROUND layer */}
       <g>
-        {fgPos.map(({ p, x, y }) => (
+        {fgPos.map(({ p, x, y }) => {
+          const matched = matchSet?.has(p.ticker) ?? false;
+          const op = !searching ? 0.75 : matched ? 1 : cfg.search.dimOpacity;
+          const outlined = hovered === p.ticker || matched;
+          return (
+            <circle
+              key={p.ticker}
+              cx={x}
+              cy={y}
+              r={p.r}
+              fill={p.fill}
+              fillOpacity={op}
+              stroke={outlined ? "var(--text-primary)" : "none"}
+              strokeWidth={outlined ? 1 : 0}
+            />
+          );
+        })}
+      </g>
+
+      {/* PROMOTED layer — matched background names rendered at full fidelity. */}
+      <g style={{ pointerEvents: "none" }}>
+        {promotedBg.map(({ p, x, y }) => (
           <circle
             key={p.ticker}
             cx={x}
             cy={y}
-            r={p.r}
-            fill={p.fill}
-            fillOpacity={0.75}
-            stroke={hovered === p.ticker ? "var(--text-primary)" : "none"}
-            strokeWidth={hovered === p.ticker ? 1 : 0}
+            r={flowRadius(p.deltaHolders)}
+            fill={flowColor(p.deltaHolders)}
+            fillOpacity={1}
+            stroke="var(--text-primary)"
+            strokeWidth={1}
           />
         ))}
       </g>
@@ -207,12 +276,28 @@ export function QuadrantChart({
       {/* Selective labels (deterministic placement) */}
       <g style={{ pointerEvents: "none" }}>
         {labels.map((l) => (
-          <text key={l.id} x={l.x} y={l.y} textAnchor={l.anchor} style={labelTextStyle}>
+          <text
+            key={l.id}
+            x={l.x}
+            y={l.y}
+            textAnchor={l.anchor}
+            style={labelTextStyle}
+            opacity={searching && !matchSet!.has(l.id) ? cfg.search.dimOpacity : 1}
+          >
             {l.text}
           </text>
         ))}
-        {/* Hover label for an unlabeled foreground mark. */}
-        {hoverLabel && (
+        {/* Pinned labels for matches that aren't already in the placed set. */}
+        {searching &&
+          [...fgPos, ...promotedBg]
+            .filter((pos) => matchSet!.has(pos.p.ticker) && !labeledIds.has(pos.p.ticker))
+            .map(({ p, x, y }) => (
+              <text key={`m${p.ticker}`} x={x + flowRadius(p.deltaHolders) + 4} y={y + 3} textAnchor="start" style={hoverLabelStyle}>
+                {p.ticker}
+              </text>
+            ))}
+        {/* Hover label for an unlabeled foreground mark (suppressed while searching). */}
+        {!searching && hoverLabel && (
           <text x={hoverLabel.x} y={hoverLabel.y} textAnchor={hoverLabel.anchor} style={hoverLabelStyle}>
             {hoverLabel.text}
           </text>

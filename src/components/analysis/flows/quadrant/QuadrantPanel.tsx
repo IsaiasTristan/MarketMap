@@ -66,9 +66,14 @@ function QuadTooltip({ hover, containerWidth }: { hover: HoverState; containerWi
 export function QuadrantPanel({ period, onSelectTicker }: { period: string | null; onSelectTicker: (t: string) => void }) {
   const { data, state, error } = useFlows<QuadrantPayload>(["flows-quadrant", period], `/api/analysis/flows/quadrant?minFunds=2${period ? `&period=${period}` : ""}`);
   const [hover, setHover] = useState<HoverState | null>(null);
+  const [pinned, setPinned] = useState<HoverState | null>(null);
+  const [search, setSearch] = useState("");
   const [containerRef, width] = useMeasure<HTMLDivElement>();
 
   const model = useMemo(() => (data ? buildQuadrantModel(data) : null), [data]);
+
+  // Hovering shows the hovered tooltip; otherwise the pinned search match (if any).
+  const tip = hover ?? pinned;
 
   return (
     <PanelState state={state} error={error}>
@@ -79,15 +84,33 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
             {model.foreground.length} names in focus, {model.background.length} in the gray context layer.
             This view kills crowded late trades as visibly as it surfaces early ones.
           </div>
-          <FlowLegend />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <FlowLegend />
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Escape") setSearch(""); }}
+                placeholder="Find ticker or name…"
+                aria-label="Highlight a name on the chart"
+                style={{ height: 22, width: 180, padding: "0 8px", background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", color: "var(--text-primary)", fontSize: 11, borderRadius: 0 }}
+              />
+              {search && (
+                <button type="button" onClick={() => setSearch("")} title="Clear (Esc)" style={{ height: 22, padding: "0 8px", border: "1px solid var(--bg-border)", background: "var(--bg-base)", color: "var(--text-secondary)", fontSize: 11, cursor: "pointer", borderRadius: 0 }}>
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
           <div
             ref={containerRef}
             style={{ position: "relative", width: "100%", height: CHART_HEIGHT, background: "var(--bg-surface)", border: "1px solid var(--bg-border)" }}
           >
             {width > 0 && (
-              <QuadrantChart model={model} width={width} height={CHART_HEIGHT} onHover={setHover} onClickTicker={onSelectTicker} />
+              <QuadrantChart model={model} width={width} height={CHART_HEIGHT} search={search} onHover={setHover} onPinnedChange={setPinned} onClickTicker={onSelectTicker} />
             )}
-            {hover && <QuadTooltip hover={hover} containerWidth={width} />}
+            {tip && <QuadTooltip hover={tip} containerWidth={width} />}
           </div>
           <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
             Upper-left = early conviction (edge lives here) · upper-right = crowded / late-trade risk. Click any bubble for its fund ledger.
