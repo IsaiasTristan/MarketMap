@@ -5,7 +5,7 @@
  * swings or established above-median-conviction names) and a context
  * BACKGROUND (everything else, small and gray, never hit-tested).
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { QuadrantPayload } from "@/server/services/institutional/institutional-query.service";
 import { useFlows } from "../useFlows";
 import { PanelState, QUADRANT_LABEL, fmtDelta } from "../flowsUi";
@@ -75,6 +75,18 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
   const [search, setSearch] = useState("");
   const [showTrails, setShowTrails] = useState(false);
   const [streakOnly, setStreakOnly] = useState(false);
+  // Zone overlay defaults ON for first-time viewers; the choice persists.
+  const [showZones, setShowZones] = useState(true);
+  useEffect(() => {
+    const saved = window.localStorage.getItem(QUADRANT_CONFIG.zones.storageKey);
+    if (saved !== null) setShowZones(saved === "1");
+  }, []);
+  const toggleZones = () =>
+    setShowZones((v) => {
+      const next = !v;
+      window.localStorage.setItem(QUADRANT_CONFIG.zones.storageKey, next ? "1" : "0");
+      return next;
+    });
   const [containerRef, width] = useMeasure<HTMLDivElement>();
 
   const model = useMemo(() => (data ? buildQuadrantModel(data, { streakOnly }) : null), [data, streakOnly]);
@@ -103,6 +115,10 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
                 streak ≥ 2 only
               </button>
               <label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10, color: "var(--text-secondary)", cursor: "pointer" }}>
+                <input type="checkbox" checked={showZones} onChange={toggleZones} style={{ accentColor: "var(--color-accent)" }} />
+                zones
+              </label>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10, color: "var(--text-secondary)", cursor: "pointer" }}>
                 <input type="checkbox" checked={showTrails} onChange={(e) => setShowTrails(e.target.checked)} style={{ accentColor: "var(--color-accent)" }} />
                 show trails
               </label>
@@ -127,7 +143,7 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
             style={{ position: "relative", width: "100%", height: CHART_HEIGHT, background: "var(--bg-surface)", border: "1px solid var(--bg-border)" }}
           >
             {width > 0 && (
-              <QuadrantChart model={model} width={width} height={CHART_HEIGHT} search={search} showTrails={showTrails} onHover={setHover} onPinnedChange={setPinned} onClickTicker={onSelectTicker} />
+              <QuadrantChart model={model} width={width} height={CHART_HEIGHT} search={search} showTrails={showTrails} showZones={showZones} onHover={setHover} onPinnedChange={setPinned} onClickTicker={onSelectTicker} />
             )}
             {tip && <QuadTooltip hover={tip} containerWidth={width} />}
           </div>

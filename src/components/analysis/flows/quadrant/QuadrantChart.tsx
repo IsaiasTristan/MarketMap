@@ -34,6 +34,7 @@ export function QuadrantChart({
   height,
   search,
   showTrails,
+  showZones,
   onHover,
   onPinnedChange,
   onClickTicker,
@@ -45,6 +46,8 @@ export function QuadrantChart({
   search: string;
   /** When on, draw QoQ trails for every labeled mark (not just the hovered one). */
   showTrails: boolean;
+  /** When on, draw the interpretation-zone overlay (p75 boundaries + labels). */
+  showZones: boolean;
   onHover: (h: HoverState | null) => void;
   /** Reports the single searched match (with position) for a persistent tooltip. */
   onPinnedChange: (h: HoverState | null) => void;
@@ -214,6 +217,27 @@ export function QuadrantChart({
       {model.yTicks.map((t) => (
         <line key={`gy${t}`} x1={rect.left} x2={rect.left + rect.width} y1={scales.y(t)} y2={scales.y(t)} stroke="var(--bg-border)" strokeDasharray="2 4" />
       ))}
+
+      {/* ZONE OVERLAY — p75 interpretation regions (toggleable, drawn behind marks). */}
+      {showZones && (() => {
+        const px = scales.x(model.p75Breadth);
+        const py = scales.y(model.p75Conviction);
+        const left = rect.left;
+        const right = rect.left + rect.width;
+        const top = rect.top;
+        const bottom = rect.top + rect.height;
+        const zoneStyle: CSSProperties = { fontSize: cfg.zones.fontSize, fill: "var(--text-muted)", opacity: 0.55, fontStyle: "italic" };
+        return (
+          <g style={{ pointerEvents: "none" }}>
+            <line x1={px} x2={px} y1={top} y2={bottom} stroke="var(--text-muted)" strokeDasharray="1 5" strokeOpacity={0.3} />
+            <line x1={left} x2={right} y1={py} y2={py} stroke="var(--text-muted)" strokeDasharray="1 5" strokeOpacity={0.3} />
+            <text x={left + (px - left) / 2} y={top + 14} textAnchor="middle" style={zoneStyle}>emerging conviction</text>
+            <text x={px + (right - px) / 2} y={top + 14} textAnchor="middle" style={zoneStyle}>crowded — unwind risk</text>
+            <text x={left + (px - left) / 2} y={py + 16} textAnchor="middle" style={zoneStyle}>toe-dipping</text>
+            <text x={left + rect.width / 2} y={bottom - 6} textAnchor="middle" style={zoneStyle}>below median conviction</text>
+          </g>
+        );
+      })()}
 
       {/* Axis tick labels */}
       {model.xTicks.map((t) => (
