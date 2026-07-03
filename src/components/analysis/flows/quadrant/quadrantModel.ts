@@ -5,9 +5,26 @@
  */
 import type { QuadrantPayload, QuadrantPoint } from "@/server/services/institutional/institutional-query.service";
 import { QUADRANT_CONFIG } from "./quadrantConfig";
-import { QUADRANT_COLOR } from "../flowsUi";
 
 export type Layer = "foreground" | "background";
+
+/**
+ * Flow-direction color — accumulating (Δ>0) blue, distributing (Δ<0) red,
+ * no material change (Δ==0) neutral gray. Δholders is the price-adjusted
+ * signal (holding is binary on shares>0, so appreciation cannot create a delta).
+ */
+export function flowColor(deltaHolders: number): string {
+  const c = QUADRANT_CONFIG.colors;
+  if (deltaHolders > 0) return c.accumulating;
+  if (deltaHolders < 0) return c.distributing;
+  return c.neutral;
+}
+
+/** Foreground radius grows with the magnitude of the holder swing, clamped. */
+export function flowRadius(deltaHolders: number): number {
+  const r = QUADRANT_CONFIG.radius;
+  return Math.min(r.max, r.base + r.perDelta * Math.abs(deltaHolders));
+}
 
 export interface PlottedPoint extends QuadrantPoint {
   layer: Layer;
@@ -68,8 +85,8 @@ export function buildQuadrantModel(payload: QuadrantPayload): QuadrantModel {
     const plotted: PlottedPoint = {
       ...p,
       layer: fg ? "foreground" : "background",
-      r: fg ? cfg.radius.base : cfg.colors.backgroundRadius,
-      fill: fg ? (QUADRANT_COLOR[p.quadrant ?? "ignored"] ?? "#555") : cfg.colors.background,
+      r: fg ? flowRadius(p.deltaHolders) : cfg.colors.backgroundRadius,
+      fill: fg ? flowColor(p.deltaHolders) : cfg.colors.background,
       score: Math.abs(p.deltaHolders) * (p.conviction ?? 0),
     };
     (fg ? foreground : background).push(plotted);

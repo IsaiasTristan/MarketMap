@@ -13,8 +13,28 @@ import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import { buildQuadrantModel } from "./quadrantModel";
 import { QuadrantChart, type HoverState } from "./QuadrantChart";
 import { useMeasure } from "./useMeasure";
+import { QUADRANT_CONFIG } from "./quadrantConfig";
 
 const CHART_HEIGHT = 460;
+
+/** Color = flow direction; marker area = |Δ holders|. */
+function FlowLegend() {
+  const c = QUADRANT_CONFIG.colors;
+  const item = (color: string, label: string) => (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+      <span style={{ width: 9, height: 9, borderRadius: "50%", background: color, display: "inline-block" }} />
+      <span>{label}</span>
+    </span>
+  );
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", fontSize: 10, color: "var(--text-secondary)" }}>
+      {item(c.accumulating, "Accumulating")}
+      {item(c.distributing, "Distributing")}
+      {item(c.neutral, "No material change")}
+      <span style={{ color: "var(--text-muted)" }}>marker size = |Δ holders|</span>
+    </div>
+  );
+}
 
 function QuadTooltip({ hover, containerWidth }: { hover: HoverState; containerWidth: number }) {
   const p = hover.point;
@@ -59,6 +79,7 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
             {model.foreground.length} names in focus, {model.background.length} in the gray context layer.
             This view kills crowded late trades as visibly as it surfaces early ones.
           </div>
+          <FlowLegend />
           <div
             ref={containerRef}
             style={{ position: "relative", width: "100%", height: CHART_HEIGHT, background: "var(--bg-surface)", border: "1px solid var(--bg-border)" }}
