@@ -202,7 +202,7 @@ export function QuadrantChart({
     <svg
       width={width}
       height={height}
-      style={{ display: "block" }}
+      style={{ display: "block", cursor: hovered ? "pointer" : "default" }}
       onMouseMove={handleMove}
       onMouseLeave={handleLeave}
       onClick={handleClick}
