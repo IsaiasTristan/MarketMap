@@ -7,7 +7,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import { flowColor, flowRadius, makeScales, type PlottedPoint, type QuadrantModel } from "./quadrantModel";
+import { breadthJitter, flowColor, flowRadius, makeScales, type PlottedPoint, type QuadrantModel } from "./quadrantModel";
 import { QUADRANT_CONFIG } from "./quadrantConfig";
 import { placeLabels, placeOptsFromConfig, type LabelInput } from "./labelPlacement";
 
@@ -64,7 +64,7 @@ export function QuadrantChart({
 
   const { scales, bgPos, fgPos, labels, badges } = useMemo(() => {
     const s = makeScales(model, rect);
-    const place = (p: PlottedPoint): Positioned => ({ p, x: s.x(p.breadth), y: s.y(p.conviction) });
+    const place = (p: PlottedPoint): Positioned => ({ p, x: s.x(p.breadth + breadthJitter(p.ticker, p.fundsHolding)), y: s.y(p.conviction) });
     const fg = model.foreground.map(place);
 
     // Label candidates: the top-N foreground by score, unioned with every
@@ -289,7 +289,8 @@ export function QuadrantChart({
       {/* TRAILS — QoQ movement from last quarter's position to this one. */}
       <g style={{ pointerEvents: "none" }}>
         {trailPositions.map(({ p, x, y }) => {
-          const px = scales.x(p.prev!.breadth);
+          // Same jitter offset as the current mark so the trail shifts as a unit.
+          const px = scales.x(p.prev!.breadth + breadthJitter(p.ticker, p.fundsHolding));
           const py = scales.y(p.prev!.conviction);
           const color = flowColor(p.deltaHolders);
           return (

@@ -43,8 +43,9 @@ export const QUADRANT_CONFIG = {
   },
   /** Danger zone: breadth > p75 AND conviction > p75 AND Δ < 0 — always labeled. */
   dangerZone: { breadthPercentile: 0.75, convictionPercentile: 0.75 },
-  /** Deterministic hash(ticker) x-jitter for discrete low-holder columns. Off unless banding persists after log-x. */
-  jitter: { enabled: false, maxBreadthOffsetPct: 0.25, belowHolders: 6 },
+  /** Deterministic hash(ticker) x-jitter for discrete low-holder columns. Enabled
+   *  because banding stayed visible below 6 holders after the log-x change. */
+  jitter: { enabled: true, maxBreadthOffsetPct: 0.25, belowHolders: 6 },
   trails: { strokeWidth: 2, hollowRadius: 3 },
   zones: { percentile: 0.75, defaultOn: true, storageKey: "flows-quadrant-zones", fontSize: 11 },
   streak: { badgeMin: 2 },

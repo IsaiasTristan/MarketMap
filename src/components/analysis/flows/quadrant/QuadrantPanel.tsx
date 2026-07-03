@@ -151,7 +151,7 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
             Upper-left = early conviction (edge lives here) · upper-right = crowded / late-trade risk. Click any highlighted name (cursor turns to a pointer) to open its fund ledger; gray context marks aren't clickable.
             {" "}Highlighted names had a meaningful holder swing this quarter or are established top-decile-conviction positions; the rest render as context only.
             {" "}Hover a name (or toggle <em>show trails</em>) to trace its move from last quarter — travel into the crowded upper-right is the risk signal.
-            {" "}Breadth is discrete — each column is one more of the {model.trackedFunds} tracked funds (quant/index-like books excluded).
+            {" "}Breadth is discrete — each column is one more of the {model.trackedFunds} tracked funds (quant/index-like books excluded); low-holder columns are nudged apart slightly for legibility.
           </div>
         </div>
       )}

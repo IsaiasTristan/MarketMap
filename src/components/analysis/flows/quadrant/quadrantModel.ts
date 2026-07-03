@@ -26,6 +26,29 @@ export function flowRadius(deltaHolders: number): number {
   return Math.min(r.max, r.base + r.perDelta * Math.abs(deltaHolders));
 }
 
+/** Deterministic FNV-1a hash of a ticker → unit float in [0, 1). */
+function hashUnit(s: string): number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h / 4294967296;
+}
+
+/**
+ * Deterministic breadth jitter for the discrete low-holder columns. Breadth is
+ * k/N, so names sharing a holder count stack into a hard vertical stripe; below
+ * `belowHolders` this nudges each name by hash(ticker) → ±maxBreadthOffsetPct so
+ * the column reads as a soft band. Same ticker → same offset every render (so a
+ * name and its trail shift together); never applied to conviction (y).
+ */
+export function breadthJitter(ticker: string, fundsHolding: number): number {
+  const j = QUADRANT_CONFIG.jitter;
+  if (!j.enabled || fundsHolding >= j.belowHolders) return 0;
+  return (hashUnit(ticker) * 2 - 1) * j.maxBreadthOffsetPct;
+}
+
 export interface PlottedPoint extends QuadrantPoint {
   layer: Layer;
   r: number;
