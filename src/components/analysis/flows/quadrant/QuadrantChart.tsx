@@ -9,6 +9,7 @@ import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { makeScales, type PlottedPoint, type QuadrantModel } from "./quadrantModel";
 import { QUADRANT_CONFIG } from "./quadrantConfig";
+import { placeLabels, placeOptsFromConfig, type LabelInput } from "./labelPlacement";
 
 export interface HoverState {
   point: PlottedPoint;
@@ -49,12 +50,36 @@ export function QuadrantChart({
     height: Math.max(10, height - MARGIN.top - MARGIN.bottom),
   };
 
-  const { scales, bgPos, fgPos } = useMemo(() => {
+  const { scales, bgPos, fgPos, labels } = useMemo(() => {
     const s = makeScales(model, rect);
     const place = (p: PlottedPoint): Positioned => ({ p, x: s.x(p.breadth), y: s.y(p.conviction) });
-    return { scales: s, bgPos: model.background.map(place), fgPos: model.foreground.map(place) };
+    const fg = model.foreground.map(place);
+
+    // Label candidates: the top-N foreground by score, unioned with every
+    // danger-zone name (crowded high-conviction distribution — always called out).
+    const cfg = QUADRANT_CONFIG.labels;
+    const byScore = [...fg].sort((a, b) => b.p.score - a.p.score);
+    const chosen = new Map<string, Positioned>();
+    for (const pos of byScore.slice(0, cfg.maxByScore)) chosen.set(pos.p.ticker, pos);
+    for (const pos of fg) if (pos.p.danger) chosen.set(pos.p.ticker, pos);
+
+    const inputs: LabelInput[] = [...chosen.values()].map((pos) => ({
+      id: pos.p.ticker,
+      x: pos.x,
+      y: pos.y,
+      r: pos.p.r,
+      text: pos.p.ticker,
+      score: pos.p.score,
+      forced: pos.p.danger,
+    }));
+    const bounds = { x0: rect.left, y0: rect.top, x1: rect.left + rect.width, y1: rect.top + rect.height };
+    const placed = placeLabels(inputs, bounds, placeOptsFromConfig(QUADRANT_CONFIG));
+
+    return { scales: s, bgPos: model.background.map(place), fgPos: fg, labels: placed };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model, rect.left, rect.top, rect.width, rect.height]);
+
+  const labeledIds = useMemo(() => new Set(labels.map((l) => l.id)), [labels]);
 
   function hitTest(evt: React.MouseEvent<SVGSVGElement>): Positioned | null {
     const bounds = evt.currentTarget.getBoundingClientRect();
@@ -96,7 +121,18 @@ export function QuadrantChart({
   const tickStyle: CSSProperties = { fontSize: 10, fill: "var(--text-secondary)" };
   const labelStyle: CSSProperties = { fontSize: 10, fill: "var(--text-secondary)" };
   const refLabelStyle: CSSProperties = { fontSize: 10, fill: "var(--text-muted)" };
+  const labelTextStyle: CSSProperties = { fontSize: QUADRANT_CONFIG.labels.fontSize, fill: "var(--text-primary)", fontWeight: 600 };
+  const hoverLabelStyle: CSSProperties = { ...labelTextStyle, fill: "var(--bb-highlight-text)" };
   const cfg = QUADRANT_CONFIG;
+
+  // On hover of an already-labeled mark, no extra label; otherwise a transient
+  // one placed to the right (fixed offset — no collision pass needed for one).
+  const hoverLabel = (() => {
+    if (!hovered || labeledIds.has(hovered)) return null;
+    const pos = fgPos.find((f) => f.p.ticker === hovered);
+    if (!pos) return null;
+    return { text: pos.p.ticker, x: pos.x + pos.p.r + 4, y: pos.y + 3, anchor: "start" as const };
+  })();
 
   return (
     <svg
@@ -166,6 +202,21 @@ export function QuadrantChart({
             strokeWidth={hovered === p.ticker ? 1 : 0}
           />
         ))}
+      </g>
+
+      {/* Selective labels (deterministic placement) */}
+      <g style={{ pointerEvents: "none" }}>
+        {labels.map((l) => (
+          <text key={l.id} x={l.x} y={l.y} textAnchor={l.anchor} style={labelTextStyle}>
+            {l.text}
+          </text>
+        ))}
+        {/* Hover label for an unlabeled foreground mark. */}
+        {hoverLabel && (
+          <text x={hoverLabel.x} y={hoverLabel.y} textAnchor={hoverLabel.anchor} style={hoverLabelStyle}>
+            {hoverLabel.text}
+          </text>
+        )}
       </g>
     </svg>
   );

@@ -32,11 +32,16 @@ export interface PlottedPoint extends QuadrantPoint {
   fill: string;
   /** |Δholders| * conviction — label/interestingness priority. */
   score: number;
+  /** Top-right unwind risk: breadth > p75 AND conviction > p75 AND distributing. */
+  danger: boolean;
 }
 
 export interface QuadrantModel {
   foreground: PlottedPoint[];
   background: PlottedPoint[];
+  /** Rolling p75 boundaries (breadth %, conviction %) — danger zone + zone overlay. */
+  p75Breadth: number;
+  p75Conviction: number;
   xDomain: [number, number];
   yDomain: [number, number];
   xTicks: number[];
@@ -71,16 +76,26 @@ export function buildQuadrantModel(payload: QuadrantPayload): QuadrantModel {
   const allConvSorted = pts.map((p) => p.conviction ?? 0).sort((a, b) => a - b);
   const convictionBar = percentile(allConvSorted, cfg.foreground.convictionPercentile);
 
+  // Rolling p75 boundaries over the plotted universe — used for the danger zone
+  // (this commit) and the zone-annotation overlay (Task 8). Conviction p75 is
+  // taken over positive convictions so null/zero names don't drag it down.
+  const breadthSorted = pts.map((p) => p.breadth).sort((a, b) => a - b);
+  const convPosSorted = pts.map((p) => p.conviction ?? 0).filter((v) => v > 0).sort((a, b) => a - b);
+  const p75Breadth = percentile(breadthSorted, cfg.dangerZone.breadthPercentile);
+  const p75Conviction = percentile(convPosSorted, cfg.dangerZone.convictionPercentile);
+
   const foreground: PlottedPoint[] = [];
   const background: PlottedPoint[] = [];
   for (const p of pts) {
     const fg = isForeground(p, convictionBar);
+    const danger = p.breadth > p75Breadth && (p.conviction ?? 0) > p75Conviction && p.deltaHolders < 0;
     const plotted: PlottedPoint = {
       ...p,
       layer: fg ? "foreground" : "background",
       r: fg ? flowRadius(p.deltaHolders) : cfg.colors.backgroundRadius,
       fill: fg ? flowColor(p.deltaHolders) : cfg.colors.background,
       score: Math.abs(p.deltaHolders) * (p.conviction ?? 0),
+      danger,
     };
     (fg ? foreground : background).push(plotted);
   }
@@ -89,15 +104,16 @@ export function buildQuadrantModel(payload: QuadrantPayload): QuadrantModel {
   // at 0.3% and ceils at p99.5, so the highest-conviction names simply sit near
   // the top rather than being clamped onto a cap line. Breadth (x) floors at the
   // breadth of a single fund (100/N) so the discrete low-holder columns spread out.
-  const convPos = pts.map((p) => p.conviction ?? 0).filter((v) => v > 0).sort((a, b) => a - b);
   const yFloor = cfg.axes.y.floor;
-  const yCeil = Math.max(percentile(convPos, cfg.axes.y.ceilPercentile), yFloor * 4);
+  const yCeil = Math.max(percentile(convPosSorted, cfg.axes.y.ceilPercentile), yFloor * 4);
   const xFloor = 100 / Math.max(1, payload.trackedFunds);
   const xCeil = Math.max(payload.breadthLine, ...pts.map((p) => p.breadth), xFloor * 2) * cfg.axes.x.ceilPad;
 
   return {
     foreground,
     background,
+    p75Breadth,
+    p75Conviction,
     xDomain: [xFloor, xCeil],
     yDomain: [yFloor, yCeil],
     xTicks: ticksInDomain(cfg.axes.x.ticks, xFloor, xCeil),
