@@ -60,6 +60,20 @@ export function fmtPct(v: number | null | undefined, dp = 1): string {
 export function fmtDelta(n: number): string {
   return n > 0 ? `+${n}` : `${n}`;
 }
+/** Signed compact dollars for flow annotations: "+$1.2B" / "−$340M" / "+$50k". */
+export function fmtFlowDollars(n: number | null | undefined): string {
+  if (n === null || n === undefined) return "—";
+  const sign = n >= 0 ? "+" : "−";
+  const abs = Math.abs(n);
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(1)}B`;
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(0)}M`;
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(0)}k`;
+  return `${sign}$${abs.toFixed(0)}`;
+}
+/** Signed basis points: "+12.3 bps" / "−5.0 bps" / "—". */
+export function fmtBps(n: number | null | undefined): string {
+  return n === null || n === undefined ? "—" : `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(1)} bps`;
+}
 
 // ── components ───────────────────────────────────────────────────────────────
 export function CapTag({ tier }: { tier: string | null | undefined }) {

@@ -1,16 +1,31 @@
 "use client";
 /** 5.1 Dashboard overview — change-detector tiles + top new accumulation. */
-import type { OverviewPayload } from "@/server/services/institutional/institutional-query.service";
+import type { OverviewPayload, RotationTile } from "@/server/services/institutional/institutional-query.service";
 import { useFlows } from "./useFlows";
-import { AsOfBanner, CapTag, PanelState, SplitBar, fmtDelta } from "./flowsUi";
+import { AsOfBanner, CapTag, PanelState, SplitBar, fmtBps, fmtDelta, fmtFlowDollars } from "./flowsUi";
 
-function Tile({ label, value, sub, subTone }: { label: string; value: string; sub?: string; subTone?: string }) {
+function Tile({ label, value, sub, subTone, valueSize = 26 }: { label: string; value: string; sub?: string; subTone?: string; valueSize?: number }) {
   return (
     <div style={{ flex: 1, minWidth: 150, background: "var(--bg-surface)", border: "1px solid var(--bg-border)", padding: "10px 12px" }}>
       <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
-      <div style={{ fontSize: 26, fontWeight: 700, color: "var(--text-primary)", lineHeight: 1.2 }}>{value}</div>
+      <div style={{ fontSize: valueSize, fontWeight: 700, color: "var(--text-primary)", lineHeight: 1.2 }}>{value}</div>
       {sub ? <div style={{ fontSize: 10, color: subTone ?? "var(--text-muted)" }}>{sub}</div> : null}
     </div>
+  );
+}
+
+/** Rotation diffusion tile — broadest sector inflow/outflow this quarter. */
+function RotationDiffusionTile({ label, tile, direction }: { label: string; tile: RotationTile; direction: "in" | "out" }) {
+  const pct = Math.abs(Math.round(tile.netDiffusionPct));
+  const tone = direction === "in" ? "var(--color-positive)" : "var(--color-negative)";
+  return (
+    <Tile
+      label={label}
+      value={tile.groupKey}
+      valueSize={16}
+      sub={`${pct}% net funds ${direction === "in" ? "in" : "out"} · ${fmtBps(tile.activeBpsAvg)} · ${fmtFlowDollars(tile.dollarNetFlow)}`}
+      subTone={tone}
+    />
   );
 }
 
@@ -38,6 +53,17 @@ export function OverviewPanel({ period, onSelectTicker }: { period: string | nul
               <Tile label="Crowding alerts" value={String(data.tiles.crowdingAlerts)} sub="late-trade risk" subTone="var(--color-accent)" />
               <Tile label="Small/mid-cap share" value={`${data.tiles.smallMidShare}%`} sub="of surfaced names" />
             </div>
+
+            {data.rotation && (data.rotation.broadestInflow || data.rotation.broadestOutflow) ? (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {data.rotation.broadestInflow ? (
+                  <RotationDiffusionTile label="Broadest rotation in" tile={data.rotation.broadestInflow} direction="in" />
+                ) : null}
+                {data.rotation.broadestOutflow ? (
+                  <RotationDiffusionTile label="Broadest rotation out" tile={data.rotation.broadestOutflow} direction="out" />
+                ) : null}
+              </div>
+            ) : null}
 
             <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)", textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 4 }}>
               Top new accumulation this quarter

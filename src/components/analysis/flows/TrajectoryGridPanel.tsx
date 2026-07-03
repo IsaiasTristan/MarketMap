@@ -2,7 +2,7 @@
 /** 5.3 Accumulation-trajectory small multiples — durable staircase vs one-Q spike. */
 import type { TrajectoryGridPayload } from "@/server/services/institutional/institutional-query.service";
 import { useFlows } from "./useFlows";
-import { AsOfLabelNote, CapTag, PanelState, Sparkline, trajectoryColor } from "./flowsUi";
+import { AsOfLabelNote, CapTag, PanelState, Sparkline, fmtBps, trajectoryColor } from "./flowsUi";
 
 const LABEL_TEXT: Record<string, string> = {
   durable: "durable build",
@@ -19,7 +19,7 @@ export function TrajectoryGridPanel({ period, onSelectTicker }: { period: string
       {data && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-            Holder count over the last 8 quarters. A rising staircase is durable accumulation (follow); a lone jump is a spike (discount). Top new-accumulation names shown.
+            Cumulative price-adjusted rotation (bps of the average involved fund&rsquo;s book) over the last 8 quarters — a rising staircase is deliberate position-building (follow), not price drift; a lone jump is a spike (discount). Ranked by this quarter&rsquo;s active move.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
             {data.cards.map((c) => (
@@ -34,10 +34,12 @@ export function TrajectoryGridPanel({ period, onSelectTicker }: { period: string
                     <span style={{ fontWeight: 700, color: "var(--color-info)", fontSize: 13 }}>{c.ticker}</span>
                     <CapTag tier={c.marketCapTier} />
                   </div>
-                  <span style={{ fontSize: 11, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" }}>{c.latestHolders} funds</span>
+                  <span style={{ fontSize: 11, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" }}>
+                    {fmtBps(c.latestActiveBps)} · {c.latestHolders} funds
+                  </span>
                 </div>
                 <div style={{ margin: "6px 0 2px" }}>
-                  <Sparkline values={c.series.map((s) => s.holders)} label={c.trajectoryLabel} width={200} height={44} />
+                  <Sparkline values={c.series.map((s) => s.cumActiveBps)} label={c.trajectoryLabel} width={200} height={44} />
                 </div>
                 <div style={{ fontSize: 10, color: trajectoryColor(c.trajectoryLabel), fontWeight: 700 }}>
                   {c.trajectoryLabel ? LABEL_TEXT[c.trajectoryLabel] ?? c.trajectoryLabel : "—"}

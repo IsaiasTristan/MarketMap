@@ -16,6 +16,7 @@
 import { prisma } from "@/infrastructure/db/client";
 import { fetchMarketCapsBatch } from "@/infrastructure/providers/fmp/institutional";
 import { Prisma, RevisionGroupType } from "@prisma/client";
+import { buildActiveFlowMetrics, netDiffusionPct } from "./institutional-active-flow.service";
 
 const iso = (d: Date | string): string =>
   (typeof d === "string" ? d : d.toISOString()).slice(0, 10);
@@ -179,31 +180,45 @@ type NameStat = {
   totalValue: number | null;
 };
 
-/** Trajectory classification over the holder-count series (transparent rules). */
+/** Below this per-quarter |active move| (bps) the series is rebalancing dust with
+ *  no meaningful accumulation — classified "choppy" regardless of shape. */
+const NOISE_FLOOR_BPS = 2;
+
+/**
+ * Trajectory classification over the cumulative active-flow (bps) series — a
+ * position-building curve where each step is that quarter's deliberate, price-
+ * adjusted weight move. Rules are SCALE-FREE (ratios + an absolute bps noise
+ * floor), so a mega-cap moving 30 bps and a micro-cap moving 30 bps that build
+ * the same shape get the same label. Input is the cumsum levels; the per-quarter
+ * flows are its first differences.
+ */
 export function classifyTrajectory(series: number[]): string | null {
   const s = series.filter((n) => Number.isFinite(n));
   if (s.length < 3) return null;
-  const first = s[0]!;
-  const last = s[s.length - 1]!;
   const deltas: number[] = [];
   for (let i = 1; i < s.length; i++) deltas.push(s[i]! - s[i - 1]!);
-  const up = deltas.filter((d) => d > 0).length;
-  const net = last - first;
-  const maxD = Math.max(...deltas);
-  const lastD = deltas[deltas.length - 1]!;
-  const priorDeltas = deltas.slice(0, -1);
-  const priorAvg = priorDeltas.length ? priorDeltas.reduce((a, b) => a + b, 0) / priorDeltas.length : 0;
+  const n = deltas.length;
 
-  // Spike: the final quarter jumps well above an otherwise flat/declining trend.
-  if (lastD === maxD && lastD >= 3 && lastD >= (Math.abs(priorAvg) + 1) * 3 && net > 0) {
+  const maxAbs = Math.max(...deltas.map((d) => Math.abs(d)));
+  if (maxAbs < NOISE_FLOOR_BPS) return "choppy"; // no meaningful activity
+
+  const net = s[s.length - 1]! - s[0]!;
+  const up = deltas.filter((d) => d > 0).length;
+  const maxD = Math.max(...deltas);
+  const lastD = deltas[n - 1]!;
+  const posSum = deltas.reduce((a, d) => a + Math.max(d, 0), 0);
+  const meanAbs = deltas.reduce((a, d) => a + Math.abs(d), 0) / n;
+
+  // Spike: the final quarter carries most of the build and dwarfs the typical move.
+  if (net > 0 && lastD === maxD && lastD >= 0.6 * posSum && lastD >= 2 * meanAbs) {
     return "spike";
   }
   // Durable: net rising and mostly-monotonic across the window.
-  if (net > 0 && up >= Math.ceil((s.length - 1) * 0.6)) {
+  if (net > 0 && up >= Math.ceil(n * 0.6)) {
     // Accelerating: recent half rises faster than the earlier half.
-    const mid = Math.floor(deltas.length / 2);
+    const mid = Math.floor(n / 2);
     const earlyAvg = deltas.slice(0, mid).reduce((a, b) => a + b, 0) / Math.max(1, mid);
-    const lateAvg = deltas.slice(mid).reduce((a, b) => a + b, 0) / Math.max(1, deltas.length - mid);
+    const lateAvg = deltas.slice(mid).reduce((a, b) => a + b, 0) / Math.max(1, n - mid);
     if (lateAvg > earlyAvg * 1.5 && lateAvg > 0) return "accelerating";
     return "durable";
   }
@@ -344,6 +359,10 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
   }
   const periods = Array.from(allPeriods).sort();
 
+  // Price-adjusted, equal-weighted active-rotation metric per (name|period) and
+  // (groupType|groupKey|period). Reuses the sector/subsector taxonomy in `meta`.
+  const activeFlow = await buildActiveFlowMetrics(periods, meta, log);
+
   // Market-cap tiers for the held universe (current cap; tags are stable enough).
   const tickers = Array.from(meta.keys());
   let capMap = new Map<string, number>();
@@ -405,8 +424,15 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
     // quarter-over-quarter change is unknowable — report 0 rather than inflating
     // it to the full holder count (which would fake "new accumulation").
     const deltaHolders = idx > 0 ? ns.fundsHolding - priorHolders : 0;
-    // Trajectory over the trailing 8 quarters up to this period.
-    const window = periods.slice(Math.max(0, idx - 7), idx + 1).map((p) => series.get(p) ?? 0);
+    // Trajectory over the trailing 8 quarters up to this period — the CUMULATIVE
+    // sum of each quarter's deliberate active move (bps), i.e. a position-building
+    // curve (price drift removed), not the raw holder count.
+    let cum = 0;
+    const window = periods.slice(Math.max(0, idx - 7), idx + 1).map((p) => {
+      cum += activeFlow.byNamePeriod.get(`${ns.ticker}|${p}`)?.activeBpsAvg ?? 0;
+      return cum;
+    });
+    const af = activeFlow.byNamePeriod.get(`${ns.ticker}|${ns.period}`) ?? null;
     const m = meta.get(ns.ticker)!;
     const mc = capMap.get(ns.ticker) ?? null;
     nameRows.push({
@@ -434,6 +460,11 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
       newArrival: idx > 0 && priorHolders === 0 && ns.fundsHolding > 0,
       breadthDecile: decileOf(breadthSorted.get(ns.period)!, breadth),
       convictionDecile: ns.medianPctBook !== null ? decileOf(convSorted.get(ns.period)!, ns.medianPctBook) : null,
+      activeBpsAvg: af?.activeBpsAvg ?? null,
+      dollarNetFlow: af ? af.dollarNetFlow.toFixed(2) : null,
+      fundsRotatedIn: af?.fundsIn ?? null,
+      fundsRotatedOut: af?.fundsOut ?? null,
+      fundsParticipating: af?.fundsParticipating ?? null,
     });
   }
 
@@ -463,6 +494,9 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
     }
     for (const [key, e] of groupMap) {
       const [groupKey, period] = key.split("|");
+      // Active-flow metrics come from the fund-level math (not a re-sum of the
+      // name rows — per-fund sector weights don't decompose into per-name means).
+      const af = activeFlow.byGroupPeriod.get(`${groupType}|${groupKey}|${period}`);
       sectorRows.push({
         groupType,
         groupKey: groupKey!,
@@ -471,6 +505,19 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
         fundsAdding: e.adding,
         fundsTrimming: e.trimming,
         nameCount: e.count,
+        netValueFlow: af ? af.dollarNetFlow.toFixed(2) : null,
+        aggregatesJson: af
+          ? {
+              activeFlow: {
+                activeBpsAvg: af.activeBpsAvg,
+                netDiffusionPct: netDiffusionPct(af),
+                fundsIn: af.fundsIn,
+                fundsOut: af.fundsOut,
+                fundsParticipating: af.fundsParticipating,
+                fundsEvaluated: af.fundsEvaluated,
+              },
+            }
+          : Prisma.JsonNull,
       });
     }
   }
@@ -502,9 +549,11 @@ export async function runInstitutionalAggregate(opts: {
   const { periods } = await buildNameAndSectorAggregates(log);
   const latestPeriod = periods.length ? periods[periods.length - 1]! : null;
 
-  // Cache the landing payload for the latest quarter.
-  if (latestPeriod) {
-    await cacheQuarterPayload(latestPeriod, periods, log);
+  // Cache the landing payload for every quarter (not just the latest) so a
+  // historical period selection also gets the rotation tiles + QoQ deltas. Slice
+  // keeps `priorPeriod` correct for each (cacheQuarterPayload reads periods[-2]).
+  for (let i = 0; i < periods.length; i++) {
+    await cacheQuarterPayload(periods[i]!, periods.slice(0, i + 1), log);
   }
   return { fundsDiffed: funds.length, periods, latestPeriod };
 }
@@ -549,6 +598,31 @@ async function cacheQuarterPayload(period: string, periods: string[], log: (m: s
       deltaHolders: r.deltaHolders,
     }));
 
+  // Rotation diffusion tiles — the sectors the broadest set of funds deliberately
+  // rotated into / out of this quarter (price-adjusted). Null before any prior Q.
+  type AF = { activeBpsAvg: number; netDiffusionPct: number; fundsIn: number; fundsOut: number; fundsParticipating: number; fundsEvaluated: number };
+  const sectorRows = await prisma.institutionalSectorAggregate.findMany({
+    where: { filingPeriod: periodDate, groupType: "SECTOR" },
+  });
+  const withAf = sectorRows
+    .map((r) => {
+      const af = (r.aggregatesJson as unknown as { activeFlow?: AF } | null)?.activeFlow;
+      return af ? { groupKey: r.groupKey, af, dollar: r.netValueFlow !== null ? Number(r.netValueFlow) : 0 } : null;
+    })
+    .filter((x): x is { groupKey: string; af: AF; dollar: number } => x !== null);
+  const toTile = (x: { groupKey: string; af: AF; dollar: number }) => ({
+    groupKey: x.groupKey,
+    netDiffusionPct: x.af.netDiffusionPct,
+    activeBpsAvg: x.af.activeBpsAvg,
+    dollarNetFlow: x.dollar,
+  });
+  const inflow = withAf.filter((x) => x.af.netDiffusionPct > 0).sort((a, b) => b.af.netDiffusionPct - a.af.netDiffusionPct)[0];
+  const outflow = withAf.filter((x) => x.af.netDiffusionPct < 0).sort((a, b) => a.af.netDiffusionPct - b.af.netDiffusionPct)[0];
+  const rotation = {
+    broadestInflow: inflow ? toTile(inflow) : null,
+    broadestOutflow: outflow ? toTile(outflow) : null,
+  };
+
   const payload = {
     filingPeriod: period,
     generatedAt: new Date().toISOString(),
@@ -561,6 +635,7 @@ async function cacheQuarterPayload(period: string, periods: string[], log: (m: s
       smallMidShare,
     },
     topNew,
+    rotation,
   };
   await prisma.institutionalQuarterSnapshot.upsert({
     where: { filingPeriod: periodDate },

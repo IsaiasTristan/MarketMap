@@ -1027,6 +1027,13 @@ model InstitutionalNameAggregate {
   newArrival             Boolean  @default(false) // change detector
   breadthDecile          Int?
   convictionDecile       Int?
+  // Price-adjusted active-rotation metric (equal-weighted across funds that held
+  // this name at t-1 or t). Null at the earliest quarter (no prior to diff).
+  activeBpsAvg           Float? // avg deliberate weight move in bps (price effect removed)
+  dollarNetFlow          Decimal? @db.Decimal(24, 2) // Σ (curValue − prevShares·priceₜ)
+  fundsRotatedIn         Int? // funds whose active move > +ε
+  fundsRotatedOut        Int? // funds whose active move < −ε
+  fundsParticipating     Int? // funds with exposure at t-1 or t (diffusion denominator)
   createdAt              DateTime @default(now())
 
   @@unique([ticker, filingPeriod])

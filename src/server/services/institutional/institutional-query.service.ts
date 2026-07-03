@@ -82,6 +82,18 @@ export interface OverviewPayload {
     pctOfFunds: number;
     deltaHolders: number;
   }>;
+  // Rotation diffusion tiles — broadest sector inflow/outflow this quarter.
+  // Optional: absent on snapshots cached before the active-flow redesign.
+  rotation?: {
+    broadestInflow: RotationTile | null;
+    broadestOutflow: RotationTile | null;
+  };
+}
+export interface RotationTile {
+  groupKey: string;
+  netDiffusionPct: number;
+  activeBpsAvg: number;
+  dollarNetFlow: number;
 }
 
 export async function getOverview(period?: string): Promise<OverviewPayload | null> {
@@ -195,31 +207,49 @@ export interface TrajectoryCard {
   marketCapTier: string | null;
   latestHolders: number;
   deltaHolders: number;
+  latestActiveBps: number | null; // this quarter's deliberate move (bps of book)
   trajectoryLabel: string | null;
-  series: Array<{ period: string; holders: number }>;
+  series: Array<{ period: string; holders: number; cumActiveBps: number }>;
 }
 export interface TrajectoryGridPayload {
   filingPeriod: string;
   cards: TrajectoryCard[];
 }
 
+const TRAJECTORY_MIN_FUNDS = 3; // ignore names touched by < 3 funds (noise)
+
 export async function getTrajectoryGrid(
   period?: string,
   limit = 12,
-  sort: "delta" | "holders" = "delta",
+  sort: "active" | "delta" | "holders" = "active",
 ): Promise<TrajectoryGridPayload | null> {
   const p = await resolvePeriod(period);
   if (!p) return null;
   const periods = await listPeriods();
   const periodDate = new Date(`${p}T00:00:00.000Z`);
-  const top = await prisma.institutionalNameAggregate.findMany({
-    where: { filingPeriod: periodDate, fundsBought: { gt: 0 } },
-    orderBy:
-      sort === "holders"
-        ? [{ fundsHolding: "desc" }]
-        : [{ deltaHolders: "desc" }, { fundsBought: "desc" }],
+  const orderBy =
+    sort === "holders"
+      ? [{ fundsHolding: "desc" as const }]
+      : sort === "delta"
+        ? [{ deltaHolders: "desc" as const }, { fundsBought: "desc" as const }]
+        : [{ activeBpsAvg: "desc" as const }];
+  let top = await prisma.institutionalNameAggregate.findMany({
+    where:
+      sort === "active"
+        ? { filingPeriod: periodDate, activeBpsAvg: { not: null }, fundsParticipating: { gte: TRAJECTORY_MIN_FUNDS } }
+        : { filingPeriod: periodDate, fundsBought: { gt: 0 } },
+    orderBy,
     take: limit,
   });
+  // Earliest quarter has no active-flow rows — fall back to holder-flow ranking so
+  // the grid isn't blank.
+  if (sort === "active" && top.length === 0) {
+    top = await prisma.institutionalNameAggregate.findMany({
+      where: { filingPeriod: periodDate, fundsBought: { gt: 0 } },
+      orderBy: [{ deltaHolders: "desc" }, { fundsBought: "desc" }],
+      take: limit,
+    });
+  }
   const tickers = top.map((t) => t.ticker);
   // 8-quarter window ENDING at the selected period (periods is desc), not the
   // globally-latest 8 — otherwise a historical selection plots later quarters.
@@ -228,25 +258,34 @@ export async function getTrajectoryGrid(
   const windowDates = window.map((w) => new Date(`${w}T00:00:00.000Z`));
   const series = await prisma.institutionalNameAggregate.findMany({
     where: { ticker: { in: tickers }, filingPeriod: { in: windowDates } },
-    select: { ticker: true, filingPeriod: true, fundsHolding: true },
+    select: { ticker: true, filingPeriod: true, fundsHolding: true, activeBpsAvg: true },
   });
-  const byTicker = new Map<string, Map<string, number>>();
+  const byTicker = new Map<string, Map<string, { holders: number; bps: number }>>();
   for (const s of series) {
     if (!byTicker.has(s.ticker)) byTicker.set(s.ticker, new Map());
-    byTicker.get(s.ticker)!.set(iso(s.filingPeriod), s.fundsHolding);
+    byTicker.get(s.ticker)!.set(iso(s.filingPeriod), { holders: s.fundsHolding, bps: s.activeBpsAvg ?? 0 });
   }
   return {
     filingPeriod: p,
-    cards: top.map((t) => ({
-      ticker: t.ticker,
-      companyName: t.companyName,
-      sector: t.sector,
-      marketCapTier: t.marketCapTier,
-      latestHolders: t.fundsHolding,
-      deltaHolders: t.deltaHolders,
-      trajectoryLabel: t.trajectoryLabel,
-      series: window.map((w) => ({ period: w, holders: byTicker.get(t.ticker)?.get(w) ?? 0 })),
-    })),
+    cards: top.map((t) => {
+      let cum = 0;
+      const seriesPts = window.map((w) => {
+        const e = byTicker.get(t.ticker)?.get(w);
+        cum += e?.bps ?? 0;
+        return { period: w, holders: e?.holders ?? 0, cumActiveBps: Math.round(cum * 100) / 100 };
+      });
+      return {
+        ticker: t.ticker,
+        companyName: t.companyName,
+        sector: t.sector,
+        marketCapTier: t.marketCapTier,
+        latestHolders: t.fundsHolding,
+        deltaHolders: t.deltaHolders,
+        latestActiveBps: t.activeBpsAvg,
+        trajectoryLabel: t.trajectoryLabel,
+        series: seriesPts,
+      };
+    }),
   };
 }
 
@@ -285,64 +324,114 @@ export async function getTrajectory(ticker: string): Promise<SingleTrajectoryPay
 
 // ── 5.4 sector / subsector / stock rotation ─────────────────────────────────
 export type RotationGroupBy = "sector" | "subsector" | "stock";
-const SUBSECTOR_LIMIT = 15; // top/bottom N subsectors by net flow
+const SUBSECTOR_LIMIT = 15; // top/bottom N subsectors by net diffusion
+const STOCK_MIN_FUNDS = 3; // stock view: min participating funds (a 1-fund 100% bar is noise)
 
+export interface RotationGroup {
+  groupKey: string; // sector name, subsector name, or ticker
+  // Legacy holder-count flow (kept for the tooltip + pre-active-flow fallback).
+  netFundsAdding: number;
+  fundsAdding: number;
+  fundsTrimming: number;
+  nameCount: number; // stock view: fundsHolding (holder count)
+  companyName?: string | null; // stock view only
+  sector?: string | null; // stock view only
+  // Price-adjusted active-rotation metric (null before the first prior quarter).
+  netDiffusionPct: number | null; // bar length: (in−out)/participating × 100
+  activeBpsAvg: number | null; // avg deliberate move in bps of book
+  dollarNetFlow: number | null; // $ net capital moved (annotation)
+  fundsIn: number | null;
+  fundsOut: number | null;
+  fundsParticipating: number | null;
+}
 export interface RotationPayload {
   filingPeriod: string;
   groupBy: RotationGroupBy;
-  groups: Array<{
-    groupKey: string; // sector name, subsector name, or ticker
-    netFundsAdding: number;
-    fundsAdding: number;
-    fundsTrimming: number;
-    nameCount: number; // stock view: fundsHolding (holder count)
-    companyName?: string | null; // stock view only
-    sector?: string | null; // stock view only
-  }>;
+  hasActiveFlow: boolean; // false only when the period has no prior quarter → UI falls back
+  groups: RotationGroup[];
 }
+
+type StoredActiveFlow = {
+  activeBpsAvg: number;
+  netDiffusionPct: number;
+  fundsIn: number;
+  fundsOut: number;
+  fundsParticipating: number;
+  fundsEvaluated: number;
+};
+
+/** (in−out)/participating × 100, signed −100..+100; null if no participants. */
+function diffusionOf(inN: number | null, outN: number | null, part: number | null): number | null {
+  if (part === null || part <= 0) return null;
+  return Math.round((((inN ?? 0) - (outN ?? 0)) / part) * 10000) / 100;
+}
+
 export async function getRotation(period?: string, groupBy: RotationGroupBy = "sector"): Promise<RotationPayload | null> {
   const p = await resolvePeriod(period);
   if (!p) return null;
   const periodDate = new Date(`${p}T00:00:00.000Z`);
 
   if (groupBy === "stock") {
-    // No precompute needed — the name aggregates already carry per-ticker flow.
-    // Net flow is a computed column, so rank in JS (a few thousand slim rows).
+    // Per-ticker flow lives on the name aggregates (no sector precompute needed).
     const rows = await prisma.institutionalNameAggregate.findMany({
       where: { filingPeriod: periodDate },
-      select: { ticker: true, companyName: true, sector: true, fundsBought: true, fundsSold: true, fundsHolding: true },
+      select: {
+        ticker: true, companyName: true, sector: true, fundsBought: true, fundsSold: true, fundsHolding: true,
+        activeBpsAvg: true, dollarNetFlow: true, fundsRotatedIn: true, fundsRotatedOut: true, fundsParticipating: true,
+      },
     });
-    const groups = rows
-      .map((r) => ({
-        groupKey: r.ticker,
-        netFundsAdding: r.fundsBought - r.fundsSold,
-        fundsAdding: r.fundsBought,
-        fundsTrimming: r.fundsSold,
-        nameCount: r.fundsHolding,
-        companyName: r.companyName,
-        sector: r.sector,
-      }))
-      .filter((r) => r.netFundsAdding !== 0)
-      .sort((a, b) => b.netFundsAdding - a.netFundsAdding);
-    return { filingPeriod: p, groupBy, groups };
+    const hasActiveFlow = rows.some((r) => r.activeBpsAvg !== null);
+    const mapped: RotationGroup[] = rows.map((r) => ({
+      groupKey: r.ticker,
+      netFundsAdding: r.fundsBought - r.fundsSold,
+      fundsAdding: r.fundsBought,
+      fundsTrimming: r.fundsSold,
+      nameCount: r.fundsHolding,
+      companyName: r.companyName,
+      sector: r.sector,
+      netDiffusionPct: diffusionOf(r.fundsRotatedIn, r.fundsRotatedOut, r.fundsParticipating),
+      activeBpsAvg: r.activeBpsAvg,
+      dollarNetFlow: r.dollarNetFlow !== null ? Number(r.dollarNetFlow) : null,
+      fundsIn: r.fundsRotatedIn,
+      fundsOut: r.fundsRotatedOut,
+      fundsParticipating: r.fundsParticipating,
+    }));
+    const groups = hasActiveFlow
+      ? mapped
+          .filter((r) => (r.fundsParticipating ?? 0) >= STOCK_MIN_FUNDS && r.netDiffusionPct !== null && r.netDiffusionPct !== 0)
+          .sort((a, b) => (b.netDiffusionPct ?? 0) - (a.netDiffusionPct ?? 0))
+      : mapped.filter((r) => r.netFundsAdding !== 0).sort((a, b) => b.netFundsAdding - a.netFundsAdding);
+    return { filingPeriod: p, groupBy, hasActiveFlow, groups };
   }
 
   const rows = await prisma.institutionalSectorAggregate.findMany({
     where: { filingPeriod: periodDate, groupType: groupBy === "subsector" ? "SUBSECTOR" : "SECTOR" },
-    orderBy: { netFundsAdding: "desc" },
   });
-  const mapped = rows.map((r) => ({
-    groupKey: r.groupKey,
-    netFundsAdding: r.netFundsAdding,
-    fundsAdding: r.fundsAdding,
-    fundsTrimming: r.fundsTrimming,
-    nameCount: r.nameCount,
-  }));
+  const mapped: RotationGroup[] = rows.map((r) => {
+    const af = (r.aggregatesJson as unknown as { activeFlow?: StoredActiveFlow } | null)?.activeFlow ?? null;
+    return {
+      groupKey: r.groupKey,
+      netFundsAdding: r.netFundsAdding,
+      fundsAdding: r.fundsAdding,
+      fundsTrimming: r.fundsTrimming,
+      nameCount: r.nameCount,
+      netDiffusionPct: af?.netDiffusionPct ?? null,
+      activeBpsAvg: af?.activeBpsAvg ?? null,
+      dollarNetFlow: r.netValueFlow !== null ? Number(r.netValueFlow) : null,
+      fundsIn: af?.fundsIn ?? null,
+      fundsOut: af?.fundsOut ?? null,
+      fundsParticipating: af?.fundsParticipating ?? null,
+    };
+  });
+  const hasActiveFlow = mapped.some((m) => m.netDiffusionPct !== null);
+  const sorted = hasActiveFlow
+    ? mapped.slice().sort((a, b) => (b.netDiffusionPct ?? 0) - (a.netDiffusionPct ?? 0))
+    : mapped.slice().sort((a, b) => b.netFundsAdding - a.netFundsAdding);
   const groups =
-    groupBy === "subsector" && mapped.length > SUBSECTOR_LIMIT * 2
-      ? [...mapped.slice(0, SUBSECTOR_LIMIT), ...mapped.slice(-SUBSECTOR_LIMIT)]
-      : mapped;
-  return { filingPeriod: p, groupBy, groups };
+    groupBy === "subsector" && sorted.length > SUBSECTOR_LIMIT * 2
+      ? [...sorted.slice(0, SUBSECTOR_LIMIT), ...sorted.slice(-SUBSECTOR_LIMIT)]
+      : sorted;
+  return { filingPeriod: p, groupBy, hasActiveFlow, groups };
 }
 
 // ── 5.5 single-name fund ledger ─────────────────────────────────────────────
