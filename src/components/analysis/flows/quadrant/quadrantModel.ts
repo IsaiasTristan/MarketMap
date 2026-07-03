@@ -62,16 +62,19 @@ function ticksInDomain(ticks: readonly number[], lo: number, hi: number): number
   return ticks.filter((t) => t >= lo && t <= hi);
 }
 
-function isForeground(p: QuadrantPoint, convictionBar: number): boolean {
+function isForeground(p: QuadrantPoint, convictionBar: number, streakOnly: boolean): boolean {
   const cfg = QUADRANT_CONFIG.foreground;
+  // Persistence filter: only multi-quarter same-signed runs stay in focus.
+  if (streakOnly && Math.abs(p.holderStreak) < QUADRANT_CONFIG.streak.badgeMin) return false;
   if (cfg.demoteZeroDelta && p.deltaHolders === 0) return false;
   if (Math.abs(p.deltaHolders) >= cfg.minAbsDelta) return true;
   return p.fundsHolding >= cfg.minHolders && (p.conviction ?? 0) >= convictionBar;
 }
 
-export function buildQuadrantModel(payload: QuadrantPayload): QuadrantModel {
+export function buildQuadrantModel(payload: QuadrantPayload, opts: { streakOnly?: boolean } = {}): QuadrantModel {
   const cfg = QUADRANT_CONFIG;
   const pts = payload.points;
+  const streakOnly = opts.streakOnly ?? false;
 
   const allConvSorted = pts.map((p) => p.conviction ?? 0).sort((a, b) => a - b);
   const convictionBar = percentile(allConvSorted, cfg.foreground.convictionPercentile);
@@ -87,7 +90,7 @@ export function buildQuadrantModel(payload: QuadrantPayload): QuadrantModel {
   const foreground: PlottedPoint[] = [];
   const background: PlottedPoint[] = [];
   for (const p of pts) {
-    const fg = isForeground(p, convictionBar);
+    const fg = isForeground(p, convictionBar, streakOnly);
     const danger = p.breadth > p75Breadth && (p.conviction ?? 0) > p75Conviction && p.deltaHolders < 0;
     const plotted: PlottedPoint = {
       ...p,

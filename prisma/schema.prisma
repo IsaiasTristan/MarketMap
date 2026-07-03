@@ -1017,6 +1017,7 @@ model InstitutionalNameAggregate {
   fundsBought            Int      @default(0) // new + added
   fundsSold              Int      @default(0) // trimmed + exited
   deltaHolders           Int      @default(0) // vs prior quarter (bubble size)
+  holderStreak           Int      @default(0) // signed consecutive quarters of same-signed deltaHolders (+accum / -distrib)
   pctOfFunds             Float    @default(0) // breadth axis (% of tracked funds)
   medianPctOfBook        Float? // conviction axis
   totalValue             Decimal? @db.Decimal(24, 2)

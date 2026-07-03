@@ -59,6 +59,11 @@ function QuadTooltip({ hover, containerWidth }: { hover: HoverState; containerWi
       <div>breadth {p.breadth.toFixed(1)}% of funds · {p.fundsHolding} hold</div>
       <div>conviction {p.conviction === null ? "—" : `${p.conviction.toFixed(2)}% of book`}</div>
       <div>Δ holders {fmtDelta(p.deltaHolders)} · {p.quadrant ? QUADRANT_LABEL[p.quadrant] : ""}</div>
+      {Math.abs(p.holderStreak) >= QUADRANT_CONFIG.streak.badgeMin && (
+        <div style={{ color: "var(--color-accent)" }}>
+          streak: {Math.abs(p.holderStreak)} quarters {p.holderStreak > 0 ? "accumulating" : "distributing"}
+        </div>
+      )}
     </div>
   );
 }
@@ -69,9 +74,10 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
   const [pinned, setPinned] = useState<HoverState | null>(null);
   const [search, setSearch] = useState("");
   const [showTrails, setShowTrails] = useState(false);
+  const [streakOnly, setStreakOnly] = useState(false);
   const [containerRef, width] = useMeasure<HTMLDivElement>();
 
-  const model = useMemo(() => (data ? buildQuadrantModel(data) : null), [data]);
+  const model = useMemo(() => (data ? buildQuadrantModel(data, { streakOnly }) : null), [data, streakOnly]);
 
   // Hovering shows the hovered tooltip; otherwise the pinned search match (if any).
   const tip = hover ?? pinned;
@@ -88,6 +94,14 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
             <FlowLegend />
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                type="button"
+                onClick={() => setStreakOnly((v) => !v)}
+                title="Show only names on a ≥2-quarter same-direction streak"
+                style={{ height: 22, padding: "0 8px", fontSize: 10, borderRadius: 0, cursor: "pointer", border: `1px solid ${streakOnly ? "var(--color-accent)" : "var(--bg-border)"}`, background: streakOnly ? "var(--color-accent)" : "var(--bg-base)", color: streakOnly ? "#000" : "var(--text-secondary)", fontWeight: streakOnly ? 700 : 400 }}
+              >
+                streak ≥ 2 only
+              </button>
               <label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10, color: "var(--text-secondary)", cursor: "pointer" }}>
                 <input type="checkbox" checked={showTrails} onChange={(e) => setShowTrails(e.target.checked)} style={{ accentColor: "var(--color-accent)" }} />
                 show trails

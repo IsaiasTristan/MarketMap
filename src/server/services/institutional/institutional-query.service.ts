@@ -109,6 +109,7 @@ export interface QuadrantPoint {
   breadth: number; // % of tracked funds (x)
   conviction: number | null; // median % of book (y)
   deltaHolders: number; // bubble size
+  holderStreak: number; // signed consecutive quarters of same-signed delta (+accum / −distrib)
   fundsHolding: number;
   fundsBought: number;
   fundsSold: number;
@@ -175,6 +176,7 @@ export async function getQuadrant(period?: string, minFunds = 2): Promise<Quadra
       breadth: Number(r.pctOfFunds.toFixed(2)),
       conviction: r.medianPctOfBook !== null ? Number(r.medianPctOfBook.toFixed(3)) : null,
       deltaHolders: r.deltaHolders,
+      holderStreak: r.holderStreak,
       fundsHolding: r.fundsHolding,
       fundsBought: r.fundsBought,
       fundsSold: r.fundsSold,

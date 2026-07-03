@@ -210,6 +210,33 @@ export function classifyTrajectory(series: number[]): string | null {
   return "choppy";
 }
 
+/**
+ * Signed accumulation/distribution streak per period from a holder-count series.
+ * `holders[i]` is the fund count at period i, or null if the name was not in the
+ * universe that quarter. Returns, per index, the number of consecutive quarters
+ * (ending at that period) with the same-signed holder delta: +N accumulating,
+ * −N distributing, 0 for a flat delta or the earliest quarter.
+ *
+ * Sign always matches sign(deltaHolders) (both use `holders[i] - (holders[i-1] ?? 0)`),
+ * so a streak badge never contradicts a mark's flow color. A gap (null) resets the
+ * run: a name that leaves and re-enters the universe restarts at ±1 rather than
+ * continuing its old streak or erroring.
+ */
+export function streakSeries(holders: Array<number | null>): number[] {
+  const out = new Array<number>(holders.length).fill(0);
+  for (let i = 0; i < holders.length; i++) {
+    const cur = holders[i];
+    if (cur == null || i === 0) continue; // absent, or earliest quarter (delta unknowable)
+    const prev = holders[i - 1];
+    const d = cur - (prev ?? 0);
+    if (d === 0) continue;
+    const s = Math.sign(d);
+    // Extend only across a present prior quarter whose streak carries the same sign.
+    out[i] = prev != null && out[i - 1] !== 0 && Math.sign(out[i - 1]!) === s ? out[i - 1]! + s : s;
+  }
+  return out;
+}
+
 /** Quadrant from raw axes vs within-period median thresholds. */
 function classifyQuadrant(
   breadth: number,
@@ -356,6 +383,16 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
   const breadthSorted = new Map(periods.map((p) => [p, [...perPeriodBreadth.get(p)!].sort((a, b) => a - b)]));
   const convSorted = new Map(periods.map((p) => [p, [...perPeriodConv.get(p)!].sort((a, b) => a - b)]));
 
+  // Precompute each ticker's signed holder-streak across the full period list
+  // once (O(tickers × periods)), keyed period → streak, so the per-row loop stays
+  // O(1) rather than recomputing the whole series per row.
+  const streakByTicker = new Map<string, Map<string, number>>();
+  for (const [ticker, series] of seriesByTicker) {
+    const holders = periods.map((p) => series.get(p) ?? null);
+    const streaks = streakSeries(holders);
+    streakByTicker.set(ticker, new Map(periods.map((p, i) => [p, streaks[i]!])));
+  }
+
   // Assemble + write name aggregates.
   const nameRows: Prisma.InstitutionalNameAggregateCreateManyInput[] = [];
   for (const ns of byKey.values()) {
@@ -388,6 +425,7 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
       fundsBought: ns.fundsNew + ns.fundsAdded,
       fundsSold: ns.fundsTrimmed + ns.fundsExited,
       deltaHolders,
+      holderStreak: streakByTicker.get(ns.ticker)!.get(ns.period) ?? 0,
       pctOfFunds: breadth,
       medianPctOfBook: ns.medianPctBook,
       totalValue: ns.totalValue !== null ? ns.totalValue.toFixed(2) : null,

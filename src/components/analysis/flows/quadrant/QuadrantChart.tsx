@@ -59,7 +59,7 @@ export function QuadrantChart({
     height: Math.max(10, height - MARGIN.top - MARGIN.bottom),
   };
 
-  const { scales, bgPos, fgPos, labels } = useMemo(() => {
+  const { scales, bgPos, fgPos, labels, badges } = useMemo(() => {
     const s = makeScales(model, rect);
     const place = (p: PlottedPoint): Positioned => ({ p, x: s.x(p.breadth), y: s.y(p.conviction) });
     const fg = model.foreground.map(place);
@@ -72,19 +72,26 @@ export function QuadrantChart({
     for (const pos of byScore.slice(0, cfg.maxByScore)) chosen.set(pos.p.ticker, pos);
     for (const pos of fg) if (pos.p.danger) chosen.set(pos.p.ticker, pos);
 
-    const inputs: LabelInput[] = [...chosen.values()].map((pos) => ({
-      id: pos.p.ticker,
-      x: pos.x,
-      y: pos.y,
-      r: pos.p.r,
-      text: pos.p.ticker,
-      score: pos.p.score,
-      forced: pos.p.danger,
-    }));
+    // A persistence badge (×N) is appended to the label text so its width is
+    // accounted for during collision placement; it's rendered in accent below.
+    const badgeOf = (p: PlottedPoint) => (Math.abs(p.holderStreak) >= QUADRANT_CONFIG.streak.badgeMin ? `×${Math.abs(p.holderStreak)}` : "");
+    const inputs: LabelInput[] = [...chosen.values()].map((pos) => {
+      const badge = badgeOf(pos.p);
+      return {
+        id: pos.p.ticker,
+        x: pos.x,
+        y: pos.y,
+        r: pos.p.r,
+        text: badge ? `${pos.p.ticker} ${badge}` : pos.p.ticker,
+        score: pos.p.score,
+        forced: pos.p.danger,
+      };
+    });
     const bounds = { x0: rect.left, y0: rect.top, x1: rect.left + rect.width, y1: rect.top + rect.height };
     const placed = placeLabels(inputs, bounds, placeOptsFromConfig(QUADRANT_CONFIG));
+    const badges = new Map(fg.map((pos) => [pos.p.ticker, badgeOf(pos.p)] as const).filter(([, b]) => b));
 
-    return { scales: s, bgPos: model.background.map(place), fgPos: fg, labels: placed };
+    return { scales: s, bgPos: model.background.map(place), fgPos: fg, labels: placed, badges };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model, rect.left, rect.top, rect.width, rect.height]);
 
@@ -309,18 +316,22 @@ export function QuadrantChart({
 
       {/* Selective labels (deterministic placement) */}
       <g style={{ pointerEvents: "none" }}>
-        {labels.map((l) => (
-          <text
-            key={l.id}
-            x={l.x}
-            y={l.y}
-            textAnchor={l.anchor}
-            style={labelTextStyle}
-            opacity={searching && !matchSet!.has(l.id) ? cfg.search.dimOpacity : 1}
-          >
-            {l.text}
-          </text>
-        ))}
+        {labels.map((l) => {
+          const badge = badges.get(l.id);
+          return (
+            <text
+              key={l.id}
+              x={l.x}
+              y={l.y}
+              textAnchor={l.anchor}
+              style={labelTextStyle}
+              opacity={searching && !matchSet!.has(l.id) ? cfg.search.dimOpacity : 1}
+            >
+              {l.id}
+              {badge && <tspan fill="var(--color-accent)"> {badge}</tspan>}
+            </text>
+          );
+        })}
         {/* Pinned labels for matches that aren't already in the placed set. */}
         {searching &&
           [...fgPos, ...promotedBg]
