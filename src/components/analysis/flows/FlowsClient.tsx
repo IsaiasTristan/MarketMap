@@ -12,6 +12,7 @@ import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { BloombergTabStrip, type BloombergTabItem } from "@/components/analysis/BloombergTabStrip";
 import { useIsAdmin } from "@/lib/api/useMe";
+import type { OverviewPayload } from "@/server/services/institutional/institutional-query.service";
 import { useFlows } from "./useFlows";
 import { AsOfBanner, quarterLabel } from "./flowsUi";
 import { OverviewPanel } from "./OverviewPanel";
@@ -44,6 +45,14 @@ export function FlowsClient() {
   const { data: periodsData } = useFlows<{ periods: string[] }>(["flows-periods"], "/api/analysis/flows/periods");
   const periods = periodsData?.periods ?? [];
   const activePeriod = period ?? periods[0] ?? null;
+
+  // Same query key/url as OverviewPanel, so react-query dedupes the fetch.
+  const { data: overview } = useFlows<OverviewPayload>(
+    ["flows-overview", activePeriod],
+    `/api/analysis/flows/overview${activePeriod ? `?period=${activePeriod}` : ""}`,
+    activePeriod != null,
+  );
+  const trackedFunds = overview?.trackedFunds ?? null;
 
   const select = (t: string) => setTicker(t.toUpperCase());
 
@@ -87,6 +96,15 @@ export function FlowsClient() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {trackedFunds != null && (
+            <div
+              title="Active watchlist funds with a 13F filing in the selected quarter (broadly-diversified quant books excluded — matches the breadth denominator)"
+              style={{ display: "flex", alignItems: "center", gap: 6, height: 22, padding: "0 8px", background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", cursor: "default" }}
+            >
+              <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)", fontVariantNumeric: "tabular-nums" }}>{trackedFunds}</span>
+              <span style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Tracked Funds</span>
+            </div>
+          )}
           {periods.length > 0 && (
             <select value={activePeriod ?? ""} onChange={(e) => setPeriod(e.target.value)} style={{ height: 22, padding: "0 6px", background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", color: "var(--text-primary)", fontSize: 11, borderRadius: 0 }}>
               {periods.map((p) => <option key={p} value={p}>{quarterLabel(p)} · {p}</option>)}
