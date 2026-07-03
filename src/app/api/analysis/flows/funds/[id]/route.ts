@@ -14,7 +14,7 @@ function fail(action: string, e: unknown): NextResponse {
   return NextResponse.json({ error: `${action}_FAILED`, reason: e instanceof Error ? e.message : String(e) }, { status: 500 });
 }
 
-/** Edit a watchlist fund (tier, name, isActive, isMostRespected, notes). Admin. */
+/** Edit a watchlist fund (category, name, isActive, isMostRespected, notes). Admin. */
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const guard = await requireAdminGuard(req);
   if (guard) return guard;

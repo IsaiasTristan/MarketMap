@@ -1,41 +1,69 @@
 /**
  * Engine 3 — seed / refresh the fund watchlist from WATCHLIST_SEED.
  *
- * Upserts by CIK: creates new funds, updates name/edgarName/tier/isMostRespected
- * on existing ones, and NEVER deletes user-added funds. `isActive` and `notes`
- * are preserved on existing rows (user-controlled).
+ * Upserts by CIK: creates new funds, updates name/edgarName/category/tier/
+ * isMostRespected on existing ones. `isActive` and `notes` are preserved on
+ * existing rows (user-controlled) unless --replace is passed.
  *
- *   npx tsx scripts/institutional-seed-funds.ts
+ * --replace  Treat WATCHLIST_SEED as the complete curated universe: funds in
+ *            the DB but not in the seed are deactivated (or deleted outright
+ *            when they have no ingested snapshots), and seed notes overwrite
+ *            DB notes. Use when swapping in a new universe file.
+ *
+ *   npx tsx scripts/institutional-seed-funds.ts [--replace]
  */
 import { prisma } from "../src/infrastructure/db/client";
-import { WATCHLIST_SEED } from "../src/server/services/institutional/watchlist";
+import { CATEGORY_TIER, WATCHLIST_SEED } from "../src/server/services/institutional/watchlist";
 
 async function main() {
+  const replace = process.argv.includes("--replace");
   let created = 0;
   let updated = 0;
   for (const f of WATCHLIST_SEED) {
     const existing = await prisma.institutionalFund.findUnique({ where: { cik: f.cik } });
+    const common = {
+      name: f.name,
+      edgarName: f.edgarName,
+      category: f.category,
+      tier: CATEGORY_TIER[f.category],
+      isMostRespected: f.isMostRespected ?? false,
+    };
     await prisma.institutionalFund.upsert({
       where: { cik: f.cik },
-      create: {
-        cik: f.cik,
-        name: f.name,
-        edgarName: f.edgarName,
-        tier: f.tier,
-        isMostRespected: f.isMostRespected ?? false,
-      },
-      update: {
-        name: f.name,
-        edgarName: f.edgarName,
-        tier: f.tier,
-        isMostRespected: f.isMostRespected ?? false,
-      },
+      create: { cik: f.cik, ...common, notes: f.notes ?? null },
+      update: replace ? { ...common, notes: f.notes ?? null, isActive: true } : common,
     });
     if (existing) updated++;
     else created++;
   }
+
+  let deactivated = 0;
+  let deleted = 0;
+  if (replace) {
+    const seedCiks = new Set(WATCHLIST_SEED.map((f) => f.cik));
+    const stale = await prisma.institutionalFund.findMany({
+      where: { cik: { notIn: [...seedCiks] } },
+      include: { _count: { select: { holdings: true, books: true } } },
+    });
+    for (const f of stale) {
+      if (f._count.holdings === 0 && f._count.books === 0) {
+        await prisma.institutionalFund.delete({ where: { id: f.id } });
+        deleted++;
+        console.log(`[institutional-seed] deleted ${f.name} (${f.cik}) — not in seed, no ingested data`);
+      } else if (f.isActive) {
+        await prisma.institutionalFund.update({
+          where: { id: f.id },
+          data: { isActive: false, notes: `${f.notes ? `${f.notes} ` : ""}Deactivated ${new Date().toISOString().slice(0, 10)}: removed from curated universe.` },
+        });
+        deactivated++;
+        console.log(`[institutional-seed] deactivated ${f.name} (${f.cik}) — not in seed, history retained`);
+      }
+    }
+  }
+
   const total = await prisma.institutionalFund.count();
-  console.log(`[institutional-seed] created=${created} updated=${updated} total=${total}`);
+  const active = await prisma.institutionalFund.count({ where: { isActive: true } });
+  console.log(`[institutional-seed] created=${created} updated=${updated} deactivated=${deactivated} deleted=${deleted} total=${total} active=${active}`);
 }
 
 main()

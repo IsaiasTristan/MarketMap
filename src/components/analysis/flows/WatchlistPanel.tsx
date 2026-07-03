@@ -3,16 +3,15 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { FundRow } from "@/server/services/institutional/institutional-query.service";
+import { FUND_CATEGORIES, type FundCategory } from "@/server/services/institutional/watchlist";
 import { useFlows } from "./useFlows";
 import { PanelState } from "./flowsUi";
-
-const TIER_LABEL: Record<number, string> = { 1: "Growth/Quality", 2: "Value", 3: "Activist" };
 
 export function WatchlistPanel({ isAdmin }: { isAdmin: boolean }) {
   const qc = useQueryClient();
   const { data, state, error } = useFlows<{ funds: FundRow[] }>(["flows-funds"], "/api/analysis/flows/funds");
   const [busy, setBusy] = useState<string | null>(null);
-  const [form, setForm] = useState({ cik: "", name: "", edgarName: "", tier: 1 });
+  const [form, setForm] = useState({ cik: "", name: "", edgarName: "", category: "Growth/Quality" as FundCategory });
   const [msg, setMsg] = useState<string | null>(null);
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["flows-funds"] });
@@ -50,7 +49,7 @@ export function WatchlistPanel({ isAdmin }: { isAdmin: boolean }) {
         const b = await r.json().catch(() => ({}));
         throw new Error(b.error === "DUPLICATE_CIK" ? "That CIK is already on the watchlist." : b.reason ?? "Create failed");
       }
-      setForm({ cik: "", name: "", edgarName: "", tier: 1 });
+      setForm({ cik: "", name: "", edgarName: "", category: "Growth/Quality" });
       refresh();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -60,7 +59,7 @@ export function WatchlistPanel({ isAdmin }: { isAdmin: boolean }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-        The curated 13F watchlist — editable configuration, not hardcoded. {isAdmin ? "Toggle active/most-respected, edit tier, add or remove funds by CIK." : "Read-only (admin edits)."} Re-run the ingest job after changes.
+        The curated 13F watchlist — editable configuration, not hardcoded. {isAdmin ? "Toggle active/most-respected, edit category, add or remove funds by CIK." : "Read-only (admin edits)."} Re-run the ingest job after changes.
       </div>
       {msg && <div style={{ fontSize: 11, color: "var(--color-negative)" }}>{msg}</div>}
 
@@ -69,8 +68,8 @@ export function WatchlistPanel({ isAdmin }: { isAdmin: boolean }) {
           <input placeholder="CIK (10-digit)" value={form.cik} onChange={(e) => setForm({ ...form, cik: e.target.value })} style={inp(120)} />
           <input placeholder="Display name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={inp(160)} />
           <input placeholder="EDGAR filer name" value={form.edgarName} onChange={(e) => setForm({ ...form, edgarName: e.target.value })} style={inp(200)} />
-          <select value={form.tier} onChange={(e) => setForm({ ...form, tier: Number(e.target.value) })} style={inp(120)}>
-            <option value={1}>Growth/Quality</option><option value={2}>Value</option><option value={3}>Activist</option>
+          <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value as FundCategory })} style={inp(150)}>
+            {FUND_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
           <button type="button" onClick={add} disabled={!form.cik || !form.name} style={btn()}>+ Add fund</button>
         </div>
@@ -79,16 +78,16 @@ export function WatchlistPanel({ isAdmin }: { isAdmin: boolean }) {
       <PanelState state={state} error={error}>
         {data && (
           <div style={{ border: "1px solid var(--bg-border)", overflowX: "auto" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 90px 110px 90px 80px", gap: 6, padding: "6px 10px", fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", background: "var(--bg-surface)", borderBottom: "1px solid var(--bg-border)" }}>
-              <div>Fund · CIK</div><div>Tier</div><div style={{ textAlign: "right" }}>Holdings</div><div style={{ textAlign: "center" }}>Most-respected</div><div style={{ textAlign: "center" }}>Active</div><div />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 130px 90px 110px 90px 80px", gap: 6, padding: "6px 10px", fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", background: "var(--bg-surface)", borderBottom: "1px solid var(--bg-border)" }}>
+              <div>Fund · CIK</div><div>Category</div><div style={{ textAlign: "right" }}>Holdings</div><div style={{ textAlign: "center" }}>Most-respected</div><div style={{ textAlign: "center" }}>Active</div><div />
             </div>
             {data.funds.map((f) => (
-              <div key={f.id} style={{ display: "grid", gridTemplateColumns: "1fr 110px 90px 110px 90px 80px", gap: 6, padding: "6px 10px", alignItems: "center", borderBottom: "1px solid var(--bg-border)", fontSize: 11, opacity: f.isActive ? 1 : 0.5 }}>
+              <div key={f.id} style={{ display: "grid", gridTemplateColumns: "1fr 130px 90px 110px 90px 80px", gap: 6, padding: "6px 10px", alignItems: "center", borderBottom: "1px solid var(--bg-border)", fontSize: 11, opacity: f.isActive ? 1 : 0.5 }}>
                 <div>
-                  <span style={{ fontWeight: 700, color: "var(--text-primary)" }}>{f.name}</span>
+                  <span style={{ fontWeight: 700, color: "var(--text-primary)" }} title={f.notes ?? undefined}>{f.name}</span>
                   <span style={{ color: "var(--text-muted)", marginLeft: 6, fontSize: 10 }}>{f.cik}</span>
                 </div>
-                <div style={{ color: "var(--text-secondary)" }}>{TIER_LABEL[f.tier] ?? f.tier}</div>
+                <div style={{ color: "var(--text-secondary)" }}>{f.category}</div>
                 <div style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color: f.latestHoldings ? "#fff" : "var(--text-muted)" }}>{f.latestHoldings ?? "—"}</div>
                 <div style={{ textAlign: "center" }}>
                   <button type="button" disabled={!isAdmin || busy === f.id} onClick={() => patch(f.id, { isMostRespected: !f.isMostRespected })} style={toggle(f.isMostRespected, "var(--color-accent)")}>{f.isMostRespected ? "★ yes" : "no"}</button>

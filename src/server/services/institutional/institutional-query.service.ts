@@ -7,6 +7,7 @@
 import { prisma } from "@/infrastructure/db/client";
 import { Prisma } from "@prisma/client";
 import { CROWDED_BREADTH_PCT, notDiversifiedFilter } from "./institutional-aggregate.service";
+import { CATEGORY_TIER, type FundCategory } from "./watchlist";
 
 const iso = (d: Date): string => d.toISOString().slice(0, 10);
 const HIGH_CONVICTION_PCT = 1; // % of book that marks a "real" position
@@ -285,7 +286,7 @@ export async function getRotation(period?: string): Promise<RotationPayload | nu
 // ── 5.5 single-name fund ledger ─────────────────────────────────────────────
 export interface LedgerRow {
   fundName: string;
-  tier: number;
+  category: string;
   isMostRespected: boolean;
   action: string;
   positionM: number; // $M
@@ -313,13 +314,13 @@ export async function getLedger(ticker: string, period?: string): Promise<Ledger
     prisma.institutionalNameAggregate.findUnique({ where: { ticker_filingPeriod: { ticker: t, filingPeriod: periodDate } } }),
     prisma.fundHoldingSnapshot.findMany({
       where: { ticker: t, filingPeriod: periodDate },
-      include: { fund: { select: { name: true, tier: true, isMostRespected: true } } },
+      include: { fund: { select: { name: true, category: true, isMostRespected: true } } },
     }),
     trackedFundsInPeriod(p),
   ]);
   const rows: LedgerRow[] = holdings.map((h) => ({
     fundName: h.fund.name,
-    tier: h.fund.tier,
+    category: h.fund.category,
     isMostRespected: h.fund.isMostRespected,
     action: h.action,
     positionM: Number((Number(h.value) / 1e6).toFixed(1)),
@@ -557,14 +558,14 @@ export interface FundRow {
   cik: string;
   name: string;
   edgarName: string | null;
-  tier: number;
+  category: string;
   isMostRespected: boolean;
   isActive: boolean;
   notes: string | null;
   latestHoldings: number | null;
 }
 export async function listFunds(): Promise<FundRow[]> {
-  const funds = await prisma.institutionalFund.findMany({ orderBy: [{ tier: "asc" }, { name: "asc" }] });
+  const funds = await prisma.institutionalFund.findMany({ orderBy: [{ tier: "asc" }, { category: "asc" }, { name: "asc" }] });
   // latest holdings count per fund
   const latest = await prisma.institutionalNameAggregate.findFirst({ orderBy: { filingPeriod: "desc" }, select: { filingPeriod: true } });
   const counts = latest
@@ -580,7 +581,7 @@ export async function listFunds(): Promise<FundRow[]> {
     cik: f.cik,
     name: f.name,
     edgarName: f.edgarName,
-    tier: f.tier,
+    category: f.category,
     isMostRespected: f.isMostRespected,
     isActive: f.isActive,
     notes: f.notes,
@@ -592,16 +593,18 @@ export async function createFund(input: {
   cik: string;
   name: string;
   edgarName?: string;
-  tier?: number;
+  category?: FundCategory;
   isMostRespected?: boolean;
 }): Promise<{ id: string }> {
   const cik = input.cik.replace(/\D/g, "").padStart(10, "0");
+  const category = input.category ?? "Growth/Quality";
   const f = await prisma.institutionalFund.create({
     data: {
       cik,
       name: input.name,
       edgarName: input.edgarName ?? null,
-      tier: input.tier ?? 1,
+      category,
+      tier: CATEGORY_TIER[category],
       isMostRespected: input.isMostRespected ?? false,
     },
   });
@@ -610,9 +613,11 @@ export async function createFund(input: {
 
 export async function updateFund(
   id: string,
-  patch: Partial<{ name: string; edgarName: string | null; tier: number; isMostRespected: boolean; isActive: boolean; notes: string | null }>,
+  patch: Partial<{ name: string; edgarName: string | null; category: FundCategory; isMostRespected: boolean; isActive: boolean; notes: string | null }>,
 ): Promise<void> {
-  await prisma.institutionalFund.update({ where: { id }, data: patch as Prisma.InstitutionalFundUpdateInput });
+  const data: Prisma.InstitutionalFundUpdateInput = { ...patch };
+  if (patch.category) data.tier = CATEGORY_TIER[patch.category]; // tier stays a derived sort key
+  await prisma.institutionalFund.update({ where: { id }, data });
 }
 
 export async function deleteFund(id: string): Promise<void> {

@@ -16,7 +16,7 @@ export function LedgerPanel({ ticker, period, onClose }: { ticker: string; perio
       <span>
         {r.fundName}
         {r.isMostRespected ? <span title="most-respected subset" style={{ color: "var(--color-accent)", marginLeft: 4 }}>★</span> : null}
-        <span style={{ color: "var(--text-muted)", fontSize: 10, marginLeft: 6 }}>T{r.tier}</span>
+        <span style={{ color: "var(--text-muted)", fontSize: 10, marginLeft: 6 }}>{r.category}</span>
       </span>
     ), sortValue: (r) => r.fundName },
     { key: "action", label: "Action", align: "center", render: (r) => <ActionPill action={r.action} />, sortValue: (r) => r.action },

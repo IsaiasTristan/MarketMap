@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FUND_CATEGORIES } from "@/server/services/institutional/watchlist";
 
 // ---------------------------------------------------------------------------
 // Factor analysis query params
@@ -357,14 +358,14 @@ export const flowsFundCreateBody = z.object({
   cik: z.string().min(1).max(20),
   name: z.string().min(1).max(120),
   edgarName: z.string().max(160).optional(),
-  tier: z.number().int().min(1).max(3).optional(),
+  category: z.enum(FUND_CATEGORIES).optional(),
   isMostRespected: z.boolean().optional(),
 });
 
 export const flowsFundPatchBody = z.object({
   name: z.string().min(1).max(120).optional(),
   edgarName: z.string().max(160).nullable().optional(),
-  tier: z.number().int().min(1).max(3).optional(),
+  category: z.enum(FUND_CATEGORIES).optional(),
   isMostRespected: z.boolean().optional(),
   isActive: z.boolean().optional(),
   notes: z.string().max(500).nullable().optional(),
