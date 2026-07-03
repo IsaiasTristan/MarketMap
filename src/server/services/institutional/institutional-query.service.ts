@@ -114,9 +114,13 @@ export interface QuadrantPoint {
   fundsSold: number;
   quadrant: string | null;
   trajectoryLabel: string | null;
+  /** Prior-quarter position for the QoQ trajectory trail; null if the name was
+   *  not in the universe last quarter (entered this quarter → no trail). */
+  prev: { breadth: number; conviction: number | null } | null;
 }
 export interface QuadrantPayload {
   filingPeriod: string;
+  priorPeriod: string | null;
   breadthLine: number;
   convictionLine: number;
   trackedFunds: number;
@@ -127,6 +131,11 @@ export async function getQuadrant(period?: string, minFunds = 2): Promise<Quadra
   const p = await resolvePeriod(period);
   if (!p) return null;
   const periodDate = new Date(`${p}T00:00:00.000Z`);
+  // Prior quarter (index+1 in the desc period list) for trajectory trails.
+  const periods = await listPeriods();
+  const idx = periods.indexOf(p);
+  const priorPeriod = idx >= 0 && idx + 1 < periods.length ? periods[idx + 1]! : null;
+
   const [rows, convictionLine, trackedFunds] = await Promise.all([
     prisma.institutionalNameAggregate.findMany({
       where: { filingPeriod: periodDate, fundsHolding: { gte: minFunds } },
@@ -135,8 +144,26 @@ export async function getQuadrant(period?: string, minFunds = 2): Promise<Quadra
     convictionLineForPeriod(periodDate),
     trackedFundsInPeriod(p),
   ]);
+
+  // One batched lookup of the prior quarter's breadth/conviction for these
+  // tickers (not N+1). A ticker with no prior-quarter row gets prev = null.
+  const prevByTicker = new Map<string, { breadth: number; conviction: number | null }>();
+  if (priorPeriod) {
+    const priorRows = await prisma.institutionalNameAggregate.findMany({
+      where: { filingPeriod: new Date(`${priorPeriod}T00:00:00.000Z`), ticker: { in: rows.map((r) => r.ticker) } },
+      select: { ticker: true, pctOfFunds: true, medianPctOfBook: true },
+    });
+    for (const pr of priorRows) {
+      prevByTicker.set(pr.ticker, {
+        breadth: Number(pr.pctOfFunds.toFixed(2)),
+        conviction: pr.medianPctOfBook !== null ? Number(pr.medianPctOfBook.toFixed(3)) : null,
+      });
+    }
+  }
+
   return {
     filingPeriod: p,
+    priorPeriod,
     breadthLine: CROWDED_BREADTH_PCT,
     convictionLine,
     trackedFunds,
@@ -153,6 +180,7 @@ export async function getQuadrant(period?: string, minFunds = 2): Promise<Quadra
       fundsSold: r.fundsSold,
       quadrant: r.quadrant,
       trajectoryLabel: r.trajectoryLabel,
+      prev: prevByTicker.get(r.ticker) ?? null,
     })),
   };
 }

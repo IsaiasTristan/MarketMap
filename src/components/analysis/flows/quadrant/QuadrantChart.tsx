@@ -33,6 +33,7 @@ export function QuadrantChart({
   width,
   height,
   search,
+  showTrails,
   onHover,
   onPinnedChange,
   onClickTicker,
@@ -42,6 +43,8 @@ export function QuadrantChart({
   height: number;
   /** Active search query — matches (ticker + name) are highlighted, others dimmed. */
   search: string;
+  /** When on, draw QoQ trails for every labeled mark (not just the hovered one). */
+  showTrails: boolean;
   onHover: (h: HoverState | null) => void;
   /** Reports the single searched match (with position) for a persistent tooltip. */
   onPinnedChange: (h: HoverState | null) => void;
@@ -172,6 +175,22 @@ export function QuadrantChart({
     return { text: pos.p.ticker, x: pos.x + pos.p.r + 4, y: pos.y + 3, anchor: "start" as const };
   })();
 
+  // Trails: every labeled mark when the toggle is on, plus the hovered mark
+  // always. Only names with a prior-quarter position (prev != null) get one.
+  const trailPositions = useMemo(() => {
+    const out: Positioned[] = [];
+    const seen = new Set<string>();
+    const add = (pos: Positioned | undefined) => {
+      if (pos?.p.prev && !seen.has(pos.p.ticker)) {
+        seen.add(pos.p.ticker);
+        out.push(pos);
+      }
+    };
+    if (showTrails) for (const pos of fgPos) if (labeledIds.has(pos.p.ticker)) add(pos);
+    if (hovered) add(fgPos.find((f) => f.p.ticker === hovered) ?? promotedBg.find((b) => b.p.ticker === hovered));
+    return out;
+  }, [fgPos, promotedBg, showTrails, labeledIds, hovered]);
+
   return (
     <svg
       width={width}
@@ -234,6 +253,21 @@ export function QuadrantChart({
             />
           ),
         )}
+      </g>
+
+      {/* TRAILS — QoQ movement from last quarter's position to this one. */}
+      <g style={{ pointerEvents: "none" }}>
+        {trailPositions.map(({ p, x, y }) => {
+          const px = scales.x(p.prev!.breadth);
+          const py = scales.y(p.prev!.conviction);
+          const color = flowColor(p.deltaHolders);
+          return (
+            <g key={`trail-${p.ticker}`}>
+              <line x1={px} y1={py} x2={x} y2={y} stroke={color} strokeWidth={cfg.trails.strokeWidth} strokeOpacity={0.75} />
+              <circle cx={px} cy={py} r={cfg.trails.hollowRadius} fill="none" stroke={color} strokeWidth={1.5} strokeOpacity={0.9} />
+            </g>
+          );
+        })}
       </g>
 
       {/* FOREGROUND layer */}

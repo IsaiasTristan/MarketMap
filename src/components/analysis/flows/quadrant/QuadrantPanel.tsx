@@ -68,6 +68,7 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
   const [hover, setHover] = useState<HoverState | null>(null);
   const [pinned, setPinned] = useState<HoverState | null>(null);
   const [search, setSearch] = useState("");
+  const [showTrails, setShowTrails] = useState(false);
   const [containerRef, width] = useMeasure<HTMLDivElement>();
 
   const model = useMemo(() => (data ? buildQuadrantModel(data) : null), [data]);
@@ -86,7 +87,11 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
             <FlowLegend />
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10, color: "var(--text-secondary)", cursor: "pointer" }}>
+                <input type="checkbox" checked={showTrails} onChange={(e) => setShowTrails(e.target.checked)} style={{ accentColor: "var(--color-accent)" }} />
+                show trails
+              </label>
               <input
                 type="text"
                 value={search}
@@ -108,13 +113,14 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
             style={{ position: "relative", width: "100%", height: CHART_HEIGHT, background: "var(--bg-surface)", border: "1px solid var(--bg-border)" }}
           >
             {width > 0 && (
-              <QuadrantChart model={model} width={width} height={CHART_HEIGHT} search={search} onHover={setHover} onPinnedChange={setPinned} onClickTicker={onSelectTicker} />
+              <QuadrantChart model={model} width={width} height={CHART_HEIGHT} search={search} showTrails={showTrails} onHover={setHover} onPinnedChange={setPinned} onClickTicker={onSelectTicker} />
             )}
             {tip && <QuadTooltip hover={tip} containerWidth={width} />}
           </div>
           <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
             Upper-left = early conviction (edge lives here) · upper-right = crowded / late-trade risk. Click any bubble for its fund ledger.
             {" "}Highlighted names had a meaningful holder swing this quarter or are established top-decile-conviction positions; the rest render as context only.
+            {" "}Hover a name (or toggle <em>show trails</em>) to trace its move from last quarter — travel into the crowded upper-right is the risk signal.
             {" "}Breadth is discrete — each column is one more of the {model.trackedFunds} tracked funds (quant/index-like books excluded).
           </div>
         </div>
