@@ -207,22 +207,26 @@ export function QuadrantChart({
 
   const badgeOf = (p: PlottedPoint) => (Math.abs(p.holderStreak) >= QUADRANT_CONFIG.streak.badgeMin ? `×${Math.abs(p.holderStreak)}` : "");
 
-  // Isolation (Part 4a / Part 5 / Part 6): the foreground names to spotlight —
-  // either an active census zone OR the watchlist. When set, those go
+  // Isolation (Part 4a / Part 5 / Part 6 / Part 7): the names to spotlight —
+  // either an active census zone OR the watchlist. Spotlit names go
   // full-opacity + labeled + trailed + hoverable and everything else dims and
   // goes inert. An EMPTY set collapses to null (no isolation) so isolating an
   // empty zone/watchlist can never blank the chart.
+  //
+  // Zone isolation is foreground-only (zones are a foreground concept). WATCHLIST
+  // isolation spans ALL layers (fg ∪ bg ∪ gutter) — holdings are mostly context
+  // marks, so a foreground-only set would be empty and no-op.
   const isolatedSet = useMemo(() => {
     let members: Set<string> | null = null;
     if (watchlistIsolate) {
       members = new Set<string>();
-      for (const pos of fgPos) if (watchlist.has(pos.p.ticker)) members.add(pos.p.ticker);
+      for (const pos of [...fgPos, ...bgPos, ...gutterPos]) if (watchlist.has(pos.p.ticker)) members.add(pos.p.ticker);
     } else if (zoneFilter) {
       members = new Set<string>();
       for (const pos of fgPos) if (classifyZone(pos.p.breadth, pos.p.conviction, model.p75Breadth, model.p75Conviction) === zoneFilter) members.add(pos.p.ticker);
     }
     return members && members.size > 0 ? members : null;
-  }, [watchlistIsolate, zoneFilter, watchlist, fgPos, model.p75Breadth, model.p75Conviction]);
+  }, [watchlistIsolate, zoneFilter, watchlist, fgPos, bgPos, gutterPos, model.p75Breadth, model.p75Conviction]);
 
   // Labels. When a census zone is isolated, label EVERY name in that zone (top
   // priority). Otherwise: default view keeps the historical top-maxByScore +
@@ -236,13 +240,14 @@ export function QuadrantChart({
     const bounds = { x0: rect.left, y0: rect.top, x1: rect.left + rect.width, y1: rect.top + rect.height };
     let inputs: LabelInput[];
     if (isolatedSet) {
-      // Isolated zone: label the whole subset (collision-placed, capped).
-      inputs = fgPos
+      // Isolated subset: label the whole set across all layers (collision-placed,
+      // capped). Watchlist names in bg/gutter are labeled here too.
+      inputs = [...fgPos, ...bgPos, ...gutterPos]
         .filter((pos) => isolatedSet.has(pos.p.ticker))
         .slice(0, QUADRANT_CONFIG.density.maxLabels)
         .map((pos) => {
           const badge = badgeOf(pos.p);
-          return { id: pos.p.ticker, x: pos.x, y: pos.y, r: pos.p.r, text: badge ? `${pos.p.ticker} ${badge}` : pos.p.ticker, score: pos.p.score, forced: true, priority: 3 };
+          return { id: pos.p.ticker, x: pos.x, y: pos.y, r: Math.max(pos.p.r, QUADRANT_CONFIG.radius.base), text: badge ? `${pos.p.ticker} ${badge}` : pos.p.ticker, score: pos.p.score, forced: true, priority: 3 };
         });
     } else if (viewDomain) {
       const toVP = (pos: Positioned): ViewPoint => ({ ticker: pos.p.ticker, x: pos.x, y: pos.y, r: pos.p.r, score: pos.p.score, conviction: pos.p.conviction ?? 0, danger: pos.p.danger });
@@ -263,7 +268,7 @@ export function QuadrantChart({
     const placed = placeLabels(inputs, bounds, placeOptsFromConfig(QUADRANT_CONFIG));
     return { labels: placed, badges };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fgPos, bgPos, viewDomain, promotedByDensity, promoted, animating, isolatedSet, rect.left, rect.top, rect.width, rect.height]);
+  }, [fgPos, bgPos, gutterPos, viewDomain, promotedByDensity, promoted, animating, isolatedSet, rect.left, rect.top, rect.width, rect.height]);
 
   const labeledIds = useMemo(() => new Set(labels.map((l) => l.id)), [labels]);
 
@@ -373,8 +378,9 @@ export function QuadrantChart({
     const altR = QUADRANT_CONFIG.altHover.radiusPx;
     const searchRadius = Math.max(QUADRANT_CONFIG.radius.max + sp.hitSlop, sp.minHitRadius, altR);
     const accept = (p: IndexedPoint, d: number): boolean => {
-      // Zone isolation: only the isolated zone's marks respond; the rest go inert.
-      if (isolatedSet && !isolatedSet.has(p.ticker)) return false;
+      // Isolation: only the spotlit set responds; the rest go inert. Spotlit marks
+      // are hoverable on ANY layer (watchlist isolation includes bg/gutter names).
+      if (isolatedSet) return isolatedSet.has(p.ticker) && d <= Math.max(p.r + sp.hitSlop, sp.minHitRadius);
       if (fgSet.has(p.ticker)) return d <= Math.max(p.r + sp.hitSlop, sp.minHitRadius);
       // Density-promoted context marks (under zoom) hover like foreground.
       if (promotedByDensity.has(p.ticker)) return d <= Math.max(p.r + sp.hitSlop, sp.minHitRadius);
@@ -430,8 +436,9 @@ export function QuadrantChart({
     const hit = hitTest(evt);
     if (hit) {
       if (hit.p.ticker !== hovered) setHovered(hit.p.ticker);
-      // Context (background) marks picked up via Alt get the minimal tooltip.
-      const minimal = altHeld && !searching && !promotedByDensity.has(hit.p.ticker) && bgSet.has(hit.p.ticker);
+      // Context (background) marks picked up via Alt get the minimal tooltip —
+      // but a spotlit (isolated) mark always gets the full tooltip.
+      const minimal = altHeld && !searching && !isolatedSet?.has(hit.p.ticker) && !promotedByDensity.has(hit.p.ticker) && bgSet.has(hit.p.ticker);
       onHover({ point: hit.p, x: hit.x, y: hit.y, minimal });
     } else if (hovered !== null) {
       setHovered(null);
@@ -500,14 +507,15 @@ export function QuadrantChart({
       }
     };
     if (showTrails) {
-      // When a zone is isolated, trail exactly that subset; otherwise every labeled mark.
-      if (isolatedSet) for (const pos of fgPos) { if (isolatedSet.has(pos.p.ticker)) add(pos); }
+      // When isolating, trail exactly the spotlit subset — foreground + background
+      // (skip gutter: its plotted y is the synthetic strip row, not a real value).
+      if (isolatedSet) for (const pos of [...fgPos, ...bgPos]) { if (isolatedSet.has(pos.p.ticker)) add(pos); }
       else for (const pos of fgPos) if (labeledIds.has(pos.p.ticker)) add(pos);
     }
     // Any hovered mark (foreground, search-promoted, density-promoted, alt-bg) trails.
     if (hovered) add(posByTicker.get(hovered));
     return out;
-  }, [fgPos, posByTicker, showTrails, labeledIds, hovered, isolatedSet]);
+  }, [fgPos, bgPos, posByTicker, showTrails, labeledIds, hovered, isolatedSet]);
 
   const cursor = hovered ? "pointer" : panning ? "grabbing" : altHeld ? "crosshair" : viewDomain ? "grab" : "default";
   return (
@@ -592,6 +600,7 @@ export function QuadrantChart({
             {QUADRANT_CONFIG.gutter.caption}
           </text>
           {gutterPos.map(({ p, x, y }) => {
+            if (isolatedSet?.has(p.ticker)) return null; // spotlit below
             const matched = matchSet?.has(p.ticker) ?? false;
             return (
               <circle
@@ -613,7 +622,7 @@ export function QuadrantChart({
           (search) and density-promoted names are pulled out and re-drawn below. */}
       <g style={{ pointerEvents: "none" }}>
         {bgPos.map(({ p, x, y }) =>
-          matchSet?.has(p.ticker) || promotedByDensity.has(p.ticker) ? null : (
+          matchSet?.has(p.ticker) || promotedByDensity.has(p.ticker) || isolatedSet?.has(p.ticker) ? null : (
             <circle
               key={p.ticker}
               cx={x}
@@ -686,6 +695,33 @@ export function QuadrantChart({
           );
         })}
       </g>
+
+      {/* SPOTLIT — isolation promotes background/gutter members (e.g. watchlist
+          holdings that are context marks) to foreground fidelity: flow color +
+          size + outline, so they read like signal names. Foreground members
+          already pop in the layer above. */}
+      {isolatedSet && (
+        <g style={{ pointerEvents: "none" }}>
+          {[...isolatedSet].map((t) => {
+            if (fgSet.has(t)) return null;
+            const pos = posByTicker.get(t);
+            if (!pos) return null;
+            const r = Math.max(flowRadius(pos.p.deltaHolders), cfg.radius.base);
+            return (
+              <circle
+                key={`sp-${t}`}
+                cx={pos.x}
+                cy={pos.y}
+                r={r}
+                fill={flowColor(pos.p.deltaHolders)}
+                fillOpacity={1}
+                stroke={hovered === t ? "var(--text-primary)" : "var(--text-secondary)"}
+                strokeWidth={hovered === t ? 1.5 : 0.75}
+              />
+            );
+          })}
+        </g>
+      )}
 
       {/* PROMOTED layer — matched background names rendered at full fidelity. */}
       <g style={{ pointerEvents: "none" }}>
