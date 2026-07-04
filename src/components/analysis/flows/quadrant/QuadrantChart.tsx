@@ -45,6 +45,7 @@ export function QuadrantChart({
   viewDomain,
   watchlist,
   zoneFilter,
+  watchlistIsolate,
   highlight,
   onHover,
   onPinnedChange,
@@ -71,6 +72,8 @@ export function QuadrantChart({
   watchlist: Set<string>;
   /** Census zone filter: when set, foreground names outside the zone dim. */
   zoneFilter: Zone | null;
+  /** When true, isolate the watchlist names (mutually exclusive with zoneFilter). */
+  watchlistIsolate: boolean;
   /** A name to emphasize (from a danger-vector / census row click). */
   highlight: string | null;
   onHover: (h: HoverState | null) => void;
@@ -204,15 +207,22 @@ export function QuadrantChart({
 
   const badgeOf = (p: PlottedPoint) => (Math.abs(p.holderStreak) >= QUADRANT_CONFIG.streak.badgeMin ? `×${Math.abs(p.holderStreak)}` : "");
 
-  // Census zone isolation (Part 4a / Part 5): the foreground names IN the active
-  // zone. When set, those go full-opacity + labeled + trailed + hoverable and
-  // everything else dims and goes inert.
-  const zoneActiveSet = useMemo(() => {
-    if (!zoneFilter) return null;
-    const s = new Set<string>();
-    for (const pos of fgPos) if (classifyZone(pos.p.breadth, pos.p.conviction, model.p75Breadth, model.p75Conviction) === zoneFilter) s.add(pos.p.ticker);
-    return s;
-  }, [zoneFilter, fgPos, model.p75Breadth, model.p75Conviction]);
+  // Isolation (Part 4a / Part 5 / Part 6): the foreground names to spotlight —
+  // either an active census zone OR the watchlist. When set, those go
+  // full-opacity + labeled + trailed + hoverable and everything else dims and
+  // goes inert. An EMPTY set collapses to null (no isolation) so isolating an
+  // empty zone/watchlist can never blank the chart.
+  const isolatedSet = useMemo(() => {
+    let members: Set<string> | null = null;
+    if (watchlistIsolate) {
+      members = new Set<string>();
+      for (const pos of fgPos) if (watchlist.has(pos.p.ticker)) members.add(pos.p.ticker);
+    } else if (zoneFilter) {
+      members = new Set<string>();
+      for (const pos of fgPos) if (classifyZone(pos.p.breadth, pos.p.conviction, model.p75Breadth, model.p75Conviction) === zoneFilter) members.add(pos.p.ticker);
+    }
+    return members && members.size > 0 ? members : null;
+  }, [watchlistIsolate, zoneFilter, watchlist, fgPos, model.p75Breadth, model.p75Conviction]);
 
   // Labels. When a census zone is isolated, label EVERY name in that zone (top
   // priority). Otherwise: default view keeps the historical top-maxByScore +
@@ -225,10 +235,10 @@ export function QuadrantChart({
 
     const bounds = { x0: rect.left, y0: rect.top, x1: rect.left + rect.width, y1: rect.top + rect.height };
     let inputs: LabelInput[];
-    if (zoneActiveSet) {
+    if (isolatedSet) {
       // Isolated zone: label the whole subset (collision-placed, capped).
       inputs = fgPos
-        .filter((pos) => zoneActiveSet.has(pos.p.ticker))
+        .filter((pos) => isolatedSet.has(pos.p.ticker))
         .slice(0, QUADRANT_CONFIG.density.maxLabels)
         .map((pos) => {
           const badge = badgeOf(pos.p);
@@ -253,7 +263,7 @@ export function QuadrantChart({
     const placed = placeLabels(inputs, bounds, placeOptsFromConfig(QUADRANT_CONFIG));
     return { labels: placed, badges };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fgPos, bgPos, viewDomain, promotedByDensity, promoted, animating, zoneActiveSet, rect.left, rect.top, rect.width, rect.height]);
+  }, [fgPos, bgPos, viewDomain, promotedByDensity, promoted, animating, isolatedSet, rect.left, rect.top, rect.width, rect.height]);
 
   const labeledIds = useMemo(() => new Set(labels.map((l) => l.id)), [labels]);
 
@@ -364,7 +374,7 @@ export function QuadrantChart({
     const searchRadius = Math.max(QUADRANT_CONFIG.radius.max + sp.hitSlop, sp.minHitRadius, altR);
     const accept = (p: IndexedPoint, d: number): boolean => {
       // Zone isolation: only the isolated zone's marks respond; the rest go inert.
-      if (zoneActiveSet && !zoneActiveSet.has(p.ticker)) return false;
+      if (isolatedSet && !isolatedSet.has(p.ticker)) return false;
       if (fgSet.has(p.ticker)) return d <= Math.max(p.r + sp.hitSlop, sp.minHitRadius);
       // Density-promoted context marks (under zoom) hover like foreground.
       if (promotedByDensity.has(p.ticker)) return d <= Math.max(p.r + sp.hitSlop, sp.minHitRadius);
@@ -491,13 +501,13 @@ export function QuadrantChart({
     };
     if (showTrails) {
       // When a zone is isolated, trail exactly that subset; otherwise every labeled mark.
-      if (zoneActiveSet) for (const pos of fgPos) { if (zoneActiveSet.has(pos.p.ticker)) add(pos); }
+      if (isolatedSet) for (const pos of fgPos) { if (isolatedSet.has(pos.p.ticker)) add(pos); }
       else for (const pos of fgPos) if (labeledIds.has(pos.p.ticker)) add(pos);
     }
     // Any hovered mark (foreground, search-promoted, density-promoted, alt-bg) trails.
     if (hovered) add(posByTicker.get(hovered));
     return out;
-  }, [fgPos, posByTicker, showTrails, labeledIds, hovered, zoneActiveSet]);
+  }, [fgPos, posByTicker, showTrails, labeledIds, hovered, isolatedSet]);
 
   const cursor = hovered ? "pointer" : panning ? "grabbing" : altHeld ? "crosshair" : viewDomain ? "grab" : "default";
   return (
@@ -590,7 +600,7 @@ export function QuadrantChart({
                 cy={y}
                 r={cfg.colors.backgroundRadius}
                 fill={cfg.colors.background}
-                fillOpacity={searching ? (matched ? 0.9 : cfg.search.dimOpacity) : zoneActiveSet ? cfg.gutter.opacity * 0.4 : cfg.gutter.opacity}
+                fillOpacity={searching ? (matched ? 0.9 : cfg.search.dimOpacity) : isolatedSet ? cfg.gutter.opacity * 0.4 : cfg.gutter.opacity}
                 stroke={matched ? "var(--text-primary)" : "none"}
                 strokeWidth={matched ? 1 : 0}
               />
@@ -610,7 +620,7 @@ export function QuadrantChart({
               cy={y}
               r={p.r}
               fill={p.fill}
-              fillOpacity={searching ? cfg.search.dimOpacity : zoneActiveSet ? cfg.colors.backgroundOpacity * 0.35 : altHeld ? cfg.colors.backgroundOpacity * 1.8 : cfg.colors.backgroundOpacity}
+              fillOpacity={searching ? cfg.search.dimOpacity : isolatedSet ? cfg.colors.backgroundOpacity * 0.35 : altHeld ? cfg.colors.backgroundOpacity * 1.8 : cfg.colors.backgroundOpacity}
             />
           ),
         )}
@@ -660,8 +670,8 @@ export function QuadrantChart({
           const matched = matchSet?.has(p.ticker) ?? false;
           let op = !searching ? 0.75 : matched ? 1 : cfg.search.dimOpacity;
           // Zone isolation: the isolated zone pops to full opacity; the rest fade.
-          if (zoneActiveSet) op = zoneActiveSet.has(p.ticker) ? 1 : 0.12;
-          const outlined = hovered === p.ticker || matched || (zoneActiveSet?.has(p.ticker) ?? false);
+          if (isolatedSet) op = isolatedSet.has(p.ticker) ? 1 : 0.12;
+          const outlined = hovered === p.ticker || matched || (isolatedSet?.has(p.ticker) ?? false);
           return (
             <circle
               key={p.ticker}

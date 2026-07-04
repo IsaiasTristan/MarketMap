@@ -18,14 +18,20 @@ export function CensusStrip({
   census,
   regime,
   watchlist,
-  hasWatchlist,
+  watchlistTotal,
+  watchlistActive,
+  onToggleWatchlist,
   zoneFilter,
   onToggleZone,
 }: {
   census: ZoneCensus[];
   regime: RegimeVector;
   watchlist: WatchlistCensus;
-  hasWatchlist: boolean;
+  /** Total watchlist names on the chart (headline count); 0 disables the chip. */
+  watchlistTotal: number;
+  /** Whether watchlist isolation is currently active. */
+  watchlistActive: boolean;
+  onToggleWatchlist: () => void;
   zoneFilter: Zone | null;
   onToggleZone: (z: Zone) => void;
 }) {
@@ -38,12 +44,14 @@ export function CensusStrip({
       {ZONE_ORDER.map((z) => {
         const c = byZone.get(z)!;
         const active = zoneFilter === z;
+        const empty = c.count === 0;
         return (
           <button
             key={z}
             type="button"
-            onClick={() => onToggleZone(z)}
-            title={`Click to isolate the ${ZONE_LABEL[z]} zone`}
+            disabled={empty}
+            onClick={() => { if (!empty) onToggleZone(z); }}
+            title={empty ? `No names in the ${ZONE_LABEL[z]} zone this quarter` : `Click to isolate the ${ZONE_LABEL[z]} zone`}
             style={{
               display: "flex",
               flexDirection: "column",
@@ -54,7 +62,8 @@ export function CensusStrip({
               border: `1px solid ${active ? "var(--color-accent)" : "var(--bg-border)"}`,
               background: active ? "var(--bg-elevated)" : "var(--bg-base)",
               color: "var(--text-secondary)",
-              cursor: "pointer",
+              cursor: empty ? "default" : "pointer",
+              opacity: empty ? 0.45 : 1,
               borderRadius: 0,
             }}
           >
@@ -74,14 +83,31 @@ export function CensusStrip({
         <span style={{ fontSize: 9, color: "var(--text-muted)" }}>mag {(regime.magnitude * 100).toFixed(1)}% (log)</span>
       </div>
 
-      {/* Watchlist chip */}
-      {hasWatchlist && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 110, padding: "3px 8px", border: `1px solid ${QUADRANT_CONFIG.colors.watchlistRing}`, background: "var(--bg-base)" }}>
+      {/* Watchlist chip — clickable isolation filter (like the zone chips). */}
+      {watchlistTotal > 0 && (
+        <button
+          type="button"
+          onClick={onToggleWatchlist}
+          title="Click to isolate your watchlist names"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 1,
+            minWidth: 110,
+            padding: "3px 8px",
+            textAlign: "left",
+            border: `1px solid ${watchlistActive ? "var(--color-accent)" : QUADRANT_CONFIG.colors.watchlistRing}`,
+            background: watchlistActive ? "var(--bg-elevated)" : "var(--bg-base)",
+            color: "var(--text-secondary)",
+            cursor: "pointer",
+            borderRadius: 0,
+          }}
+        >
           <span style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--text-muted)" }}>◍ watchlist</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)" }}>
-            {watchlist.crowdedNow} <span style={{ fontSize: 9, fontWeight: 400, color: "var(--text-muted)" }}>in crowded ({qoq(watchlist.crowdedQoqDelta)} qoq)</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)", fontVariantNumeric: "tabular-nums" }}>
+            {watchlistTotal} <span style={{ fontSize: 9, fontWeight: 400, color: "var(--text-muted)" }}>· {watchlist.crowdedNow} in crowded ({qoq(watchlist.crowdedQoqDelta)} qoq)</span>
           </span>
-        </div>
+        </button>
       )}
     </div>
   );

@@ -130,12 +130,14 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
   const [zoomStack, setZoomStack] = useState<ZoomFrame[]>([]);
   const viewDomain = zoomStack.length ? zoomStack[zoomStack.length - 1]! : null;
   const resetZoom = () => setZoomStack([]);
-  // Esc clears selection AND resets the zoom (search box handles its own Esc).
+  // Esc clears selection + isolation AND resets the zoom (search has its own Esc).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setSelection(new Set());
         setZoomStack([]);
+        setZoneFilter(null);
+        setWatchlistIsolate(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -159,13 +161,19 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
     });
   const [containerRef, width] = useMeasure<HTMLDivElement>();
 
-  // Part 4 state: census zone click-filter, highlighted name (from a takeaway
-  // row), and the danger-vector rail toggle.
+  // Part 4/6 isolation state: a census zone OR the watchlist can be isolated
+  // (mutually exclusive). Plus the highlighted name and danger-rail toggle.
   const [zoneFilter, setZoneFilter] = useState<Zone | null>(null);
+  const [watchlistIsolate, setWatchlistIsolate] = useState(false);
   const [highlight, setHighlight] = useState<string | null>(null);
   const [dangerOpen, setDangerOpen] = useState(true);
+  const toggleWatchlist = () => {
+    setWatchlistIsolate((v) => !v);
+    setZoneFilter(null);
+  };
   useEffect(() => {
     setZoneFilter(null);
+    setWatchlistIsolate(false);
     setHighlight(null);
   }, [period]);
 
@@ -195,7 +203,10 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
 
   // Hovering shows the hovered tooltip; otherwise the pinned search match (if any).
   const tip = hover ?? pinned;
-  const toggleZone = (z: Zone) => setZoneFilter((cur) => (cur === z ? null : z));
+  const toggleZone = (z: Zone) => {
+    setZoneFilter((cur) => (cur === z ? null : z));
+    setWatchlistIsolate(false);
+  };
 
   return (
     <PanelState state={state} error={error}>
@@ -233,6 +244,15 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
               >
                 danger vectors
               </button>
+              <button
+                type="button"
+                disabled={watchlist.size === 0}
+                onClick={toggleWatchlist}
+                title={watchlist.size === 0 ? "No active portfolio holdings to isolate" : "Isolate your watchlist (portfolio) names on the chart"}
+                style={{ height: 22, padding: "0 8px", fontSize: 10, borderRadius: 0, cursor: watchlist.size === 0 ? "default" : "pointer", opacity: watchlist.size === 0 ? 0.45 : 1, border: `1px solid ${watchlistIsolate ? "var(--color-accent)" : "var(--bg-border)"}`, background: watchlistIsolate ? "var(--color-accent)" : "var(--bg-base)", color: watchlistIsolate ? "#000" : "var(--text-secondary)", fontWeight: watchlistIsolate ? 700 : 400 }}
+              >
+                watchlist
+              </button>
               <input
                 type="text"
                 value={search}
@@ -254,7 +274,9 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
               census={takeaways.census}
               regime={takeaways.regime}
               watchlist={takeaways.watchlist}
-              hasWatchlist={watchlist.size > 0}
+              watchlistTotal={watchlist.size}
+              watchlistActive={watchlistIsolate}
+              onToggleWatchlist={toggleWatchlist}
               zoneFilter={zoneFilter}
               onToggleZone={toggleZone}
             />
@@ -292,6 +314,7 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
                   viewDomain={viewDomain}
                   watchlist={watchlist}
                   zoneFilter={zoneFilter}
+                  watchlistIsolate={watchlistIsolate}
                   highlight={highlight}
                   onHover={setHover}
                   onPinnedChange={setPinned}
@@ -335,7 +358,7 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
             {" "}Highlighted names had a meaningful holder swing this quarter or are established top-decile-conviction positions; the rest render as context only.
             {" "}Hover a name (or toggle <em>show trails</em>) to trace its move from last quarter — travel into the crowded upper-right is the risk signal.
             {" "}Breadth is discrete — each column is one more of the {model.trackedFunds} tracked funds (quant/index-like books excluded); low-holder columns are nudged apart slightly for legibility.
-            {" "}<span style={{ color: "var(--text-secondary)" }}>Scroll to zoom · left-drag to pan · right-drag to box-select · click a census chip to isolate a zone · hold <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Alt</kbd> to inspect context marks · double-click or <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Esc</kbd> resets.</span>
+            {" "}<span style={{ color: "var(--text-secondary)" }}>Scroll to zoom · left-drag to pan · right-drag to box-select · click a census chip (or the <em>watchlist</em> toggle) to isolate a set · hold <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Alt</kbd> to inspect context marks · double-click or <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Esc</kbd> resets.</span>
           </div>
         </div>
       )}
