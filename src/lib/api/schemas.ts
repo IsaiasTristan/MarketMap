@@ -317,7 +317,7 @@ export const flowsQuadrantQuery = z.object({
 export const flowsTrajectoriesQuery = z.object({
   period: periodParam,
   limit: boundedInt(12, 3, 60),
-  sort: z.enum(["active", "delta", "holders"]).optional().default("active"),
+  sort: z.enum(["pattern", "delta", "holders"]).optional().default("pattern"),
 });
 
 export const flowsTrajectoryQuery = z.object({

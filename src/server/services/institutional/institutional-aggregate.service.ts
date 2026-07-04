@@ -19,6 +19,7 @@ import { Prisma, RevisionGroupType } from "@prisma/client";
 import { buildActiveFlowMetrics, netDiffusionPct } from "./institutional-active-flow.service";
 import { runIngredientPrecompute } from "./institutional-ingredients.service";
 import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-config";
+import { cumulativeAccSeries } from "@/domain/calculations/flow-trajectory";
 import { classifySecurity, type SecurityClass } from "@/lib/institutional/security-class";
 
 const iso = (d: Date | string): string =>
@@ -456,13 +457,13 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
     // it to the full holder count (which would fake "new accumulation").
     const deltaHolders = idx > 0 ? ns.fundsHolding - priorHolders : 0;
     // Trajectory over the trailing 8 quarters up to this period — the CUMULATIVE
-    // sum of each quarter's deliberate active move (bps), i.e. a position-building
-    // curve (price drift removed), not the raw holder count.
-    let cum = 0;
-    const window = periods.slice(Math.max(0, idx - 7), idx + 1).map((p) => {
-      cum += activeFlow.byNamePeriod.get(`${ns.ticker}|${p}`)?.activeBpsAvg ?? 0;
-      return cum;
-    });
+    // accumulation series (Part 1a): running sum of each quarter's deliberate
+    // active move measured over ALL signal funds (netBpsAllFunds, non-holders =
+    // 0), NOT the participant-only activeBpsAvg. Single implementation via
+    // cumulativeAccSeries so leaderboard and trajectories read the same curve.
+    const window = cumulativeAccSeries(
+      periods.slice(Math.max(0, idx - 7), idx + 1).map((p) => activeFlow.byNamePeriod.get(`${ns.ticker}|${p}`)?.netBpsAllFunds ?? 0),
+    );
     const af = activeFlow.byNamePeriod.get(`${ns.ticker}|${ns.period}`) ?? null;
     const m = meta.get(ns.ticker)!;
     const mc = capMap.get(ns.ticker) ?? null;

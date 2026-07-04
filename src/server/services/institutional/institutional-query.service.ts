@@ -11,6 +11,7 @@ import { CATEGORY_TIER, type FundCategory } from "./watchlist";
 import { UNCLASSIFIED_SECTOR } from "@/lib/institutional/security-class";
 import { rankStockRotation, shrunkDiffusionPct, diffusionContext, type RankedStockRow, type StockRotationInput } from "@/lib/institutional/stock-rotation";
 import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-config";
+import { accumulationStreak, cumulativeAccSeries, trajectoryRankScore } from "@/domain/calculations/flow-trajectory";
 
 const iso = (d: Date): string => d.toISOString().slice(0, 10);
 const HIGH_CONVICTION_PCT = 1; // % of book that marks a "real" position
@@ -209,8 +210,12 @@ export interface TrajectoryCard {
   marketCapTier: string | null;
   latestHolders: number;
   deltaHolders: number;
-  latestActiveBps: number | null; // this quarter's deliberate move (bps of book)
+  latestActiveBps: number | null; // this quarter's all-funds net move (bps of book)
   trajectoryLabel: string | null;
+  /** Pattern rank score = streak × slope-consistency × breadth-growth (Part 1c). */
+  rankScore: number;
+  /** Signed accumulation streak ending at this quarter. */
+  streak: number;
   series: Array<{ period: string; holders: number; cumActiveBps: number }>;
 }
 export interface TrajectoryGridPayload {
@@ -223,71 +228,80 @@ const TRAJECTORY_MIN_FUNDS = 3; // ignore names touched by < 3 funds (noise)
 export async function getTrajectoryGrid(
   period?: string,
   limit = 12,
-  sort: "active" | "delta" | "holders" = "active",
+  sort: "pattern" | "delta" | "holders" = "pattern",
 ): Promise<TrajectoryGridPayload | null> {
   const p = await resolvePeriod(period);
   if (!p) return null;
   const periods = await listPeriods();
   const periodDate = new Date(`${p}T00:00:00.000Z`);
-  const orderBy =
-    sort === "holders"
-      ? [{ fundsHolding: "desc" as const }]
-      : sort === "delta"
-        ? [{ deltaHolders: "desc" as const }, { fundsBought: "desc" as const }]
-        : [{ activeBpsAvg: "desc" as const }];
-  let top = await prisma.institutionalNameAggregate.findMany({
-    where:
-      sort === "active"
-        ? { filingPeriod: periodDate, activeBpsAvg: { not: null }, fundsParticipating: { gte: TRAJECTORY_MIN_FUNDS } }
-        : { filingPeriod: periodDate, fundsBought: { gt: 0 } },
-    orderBy,
-    take: limit,
+
+  // Candidate pool: names touched by ≥ TRAJECTORY_MIN_FUNDS this quarter. We rank
+  // by trajectory SHAPE (Part 1c), not by the latest-quarter move, so we score the
+  // whole pool and slice — never `orderBy activeBpsAvg desc`.
+  const candidates = await prisma.institutionalNameAggregate.findMany({
+    where: { filingPeriod: periodDate, fundsHolding: { gte: TRAJECTORY_MIN_FUNDS } },
+    select: { ticker: true, companyName: true, sector: true, marketCapTier: true, fundsHolding: true, deltaHolders: true, netflowBps: true, trajectoryLabel: true },
   });
-  // Earliest quarter has no active-flow rows — fall back to holder-flow ranking so
-  // the grid isn't blank.
-  if (sort === "active" && top.length === 0) {
-    top = await prisma.institutionalNameAggregate.findMany({
-      where: { filingPeriod: periodDate, fundsBought: { gt: 0 } },
-      orderBy: [{ deltaHolders: "desc" }, { fundsBought: "desc" }],
-      take: limit,
-    });
-  }
-  const tickers = top.map((t) => t.ticker);
+  const tickers = candidates.map((t) => t.ticker);
+
   // 8-quarter window ENDING at the selected period (periods is desc), not the
   // globally-latest 8 — otherwise a historical selection plots later quarters.
   const pIdx = Math.max(0, periods.indexOf(p));
   const window = periods.slice(pIdx, pIdx + 8).reverse(); // oldest→newest, ending at p
   const windowDates = window.map((w) => new Date(`${w}T00:00:00.000Z`));
-  const series = await prisma.institutionalNameAggregate.findMany({
-    where: { ticker: { in: tickers }, filingPeriod: { in: windowDates } },
-    select: { ticker: true, filingPeriod: true, fundsHolding: true, activeBpsAvg: true },
-  });
+  const series = tickers.length
+    ? await prisma.institutionalNameAggregate.findMany({
+        where: { ticker: { in: tickers }, filingPeriod: { in: windowDates } },
+        select: { ticker: true, filingPeriod: true, fundsHolding: true, netflowBps: true },
+      })
+    : [];
   const byTicker = new Map<string, Map<string, { holders: number; bps: number }>>();
   for (const s of series) {
     if (!byTicker.has(s.ticker)) byTicker.set(s.ticker, new Map());
-    byTicker.get(s.ticker)!.set(iso(s.filingPeriod), { holders: s.fundsHolding, bps: s.activeBpsAvg ?? 0 });
+    byTicker.get(s.ticker)!.set(iso(s.filingPeriod), { holders: s.fundsHolding, bps: s.netflowBps ?? 0 });
   }
+
+  // Score every candidate by streak × slope-consistency × breadth-growth over the
+  // SINGLE all-funds accumulation series. Rank desc, then slice.
+  const scored = candidates.map((t) => {
+    const perQuarterBps = window.map((w) => byTicker.get(t.ticker)?.get(w)?.bps ?? 0);
+    const holdersByPeriod = window.map((w) => byTicker.get(t.ticker)?.get(w)?.holders ?? 0);
+    const accSeries = cumulativeAccSeries(perQuarterBps);
+    const streak = accumulationStreak(perQuarterBps);
+    const streakLen = Math.abs(streak);
+    const startIdx = Math.max(0, window.length - (streakLen + 1));
+    const rank = trajectoryRankScore({
+      accSeries,
+      streakLength: streak,
+      holdersStart: holdersByPeriod[startIdx] ?? holdersByPeriod[0] ?? 0,
+      holdersNow: t.fundsHolding,
+    });
+    return { t, accSeries, holdersByPeriod, streak, rank };
+  });
+
+  const sorted =
+    sort === "holders"
+      ? scored.sort((a, b) => b.t.fundsHolding - a.t.fundsHolding)
+      : sort === "delta"
+        ? scored.sort((a, b) => b.t.deltaHolders - a.t.deltaHolders || b.t.fundsHolding - a.t.fundsHolding)
+        : // pattern: durable builds first; break ties on positive-streak length then holders.
+          scored.sort((a, b) => b.rank - a.rank || Math.abs(b.streak) - Math.abs(a.streak) || b.t.fundsHolding - a.t.fundsHolding);
+
   return {
     filingPeriod: p,
-    cards: top.map((t) => {
-      let cum = 0;
-      const seriesPts = window.map((w) => {
-        const e = byTicker.get(t.ticker)?.get(w);
-        cum += e?.bps ?? 0;
-        return { period: w, holders: e?.holders ?? 0, cumActiveBps: Math.round(cum * 100) / 100 };
-      });
-      return {
-        ticker: t.ticker,
-        companyName: t.companyName,
-        sector: t.sector,
-        marketCapTier: t.marketCapTier,
-        latestHolders: t.fundsHolding,
-        deltaHolders: t.deltaHolders,
-        latestActiveBps: t.activeBpsAvg,
-        trajectoryLabel: t.trajectoryLabel,
-        series: seriesPts,
-      };
-    }),
+    cards: sorted.slice(0, limit).map(({ t, accSeries, holdersByPeriod, streak, rank }) => ({
+      ticker: t.ticker,
+      companyName: t.companyName,
+      sector: t.sector,
+      marketCapTier: t.marketCapTier,
+      latestHolders: t.fundsHolding,
+      deltaHolders: t.deltaHolders,
+      latestActiveBps: t.netflowBps,
+      trajectoryLabel: t.trajectoryLabel,
+      rankScore: rank,
+      streak,
+      series: window.map((w, i) => ({ period: w, holders: holdersByPeriod[i] ?? 0, cumActiveBps: accSeries[i] ?? 0 })),
+    })),
   };
 }
 

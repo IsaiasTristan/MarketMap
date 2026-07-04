@@ -33,6 +33,7 @@ import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-
 import { computePerFundActiveWeights, type FundHoldingsByPeriod } from "./institutional-active-flow.service";
 import { signalFundFilter } from "./institutional-aggregate.service";
 import { detectSplit, type ContinuingHolder } from "./split-detect.service";
+import { detectInitiations, type BookPosition } from "@/domain/calculations/initiation";
 
 const iso = (d: Date | string): string => (typeof d === "string" ? d : d.toISOString()).slice(0, 10);
 const dateOf = (p: string): Date => new Date(`${p}T00:00:00.000Z`);
@@ -164,9 +165,82 @@ export async function runIngredientPrecompute(log: (m: string) => void): Promise
       WHERE h."fundId" = v.fund_id AND h.ticker = v.ticker AND h."filingPeriod" = v.period::date`;
   }
 
+  // ── Initiation significance (Part 1b): per-fund qualified-entry strengths. ──
+  const initiations = await precomputeInitiations(log);
+
   await bumpIngredientsVersion();
-  log(`[institutional-agg] ingredients: ${updates.length} fund-rows, ${splitsDetected} derived splits, ${unresolved} unresolved holds`);
+  log(`[institutional-agg] ingredients: ${updates.length} fund-rows, ${splitsDetected} derived splits, ${unresolved} unresolved holds, ${initiations} qualified initiations`);
   return { periods: periods.length, splitsDetected, unresolved };
+}
+
+/** Canonical quarter index (year*4 + quarter-1) from a YYYY-MM-DD quarter-end. */
+function quarterIndex(period: string): number {
+  const [y, m] = period.split("-").map(Number);
+  return y! * 4 + (Math.ceil(m! / 3) - 1);
+}
+
+/**
+ * Precompute per-(fund,ticker,quarter) qualified-initiation strength (Part 1b)
+ * onto FundHoldingSnapshot.initiationStrength. A qualified initiation is a NEW
+ * position that clears min_entry_bps AND is at least min_sizing_mult × the
+ * fund's own median position weight that quarter; strength = min(sizing_mult, 4).
+ * Guards (emit none): the fund's first-ever filing, the first filing after a
+ * >2-quarter gap, and any filing with < min_positions holdings. Idempotent:
+ * resets prior strengths before writing.
+ */
+async function precomputeInitiations(log: (m: string) => void): Promise<number> {
+  const rows = await prisma.$queryRaw<Array<{ fundId: string; period: Date; ticker: string; pct: number | null; action: string }>>(Prisma.sql`
+    SELECT h."fundId" AS "fundId", h."filingPeriod" AS period, h.ticker, h."pctOfBook" AS pct, h.action::text AS action
+    FROM "FundHoldingSnapshot" h
+    WHERE h.shares > 0 AND ${signalFundFilter("h")}
+    ORDER BY h."fundId", h."filingPeriod"`);
+
+  // Group into fund → period → book positions.
+  const byFund = new Map<string, Map<string, BookPosition[]>>();
+  for (const r of rows) {
+    const p = iso(r.period);
+    let perPeriod = byFund.get(r.fundId);
+    if (!perPeriod) byFund.set(r.fundId, (perPeriod = new Map()));
+    let book = perPeriod.get(p);
+    if (!book) perPeriod.set(p, (book = []));
+    book.push({ ticker: r.ticker, pctOfBook: r.pct ?? 0, isNew: r.action === "NEW" });
+  }
+
+  const out: Array<{ fundId: string; ticker: string; period: string; strength: number }> = [];
+  for (const [fundId, perPeriod] of byFund) {
+    const periods = [...perPeriod.keys()].sort();
+    for (let i = 0; i < periods.length; i++) {
+      const p = periods[i]!;
+      const quartersSincePrevFiling = i === 0 ? null : quarterIndex(p) - quarterIndex(periods[i - 1]!);
+      const quals = detectInitiations({
+        positions: perPeriod.get(p)!,
+        isFirstFiling: i === 0,
+        quartersSincePrevFiling,
+      });
+      for (const q of quals) out.push({ fundId, ticker: q.ticker, period: p, strength: q.strength });
+    }
+  }
+
+  // Reset prior strengths (idempotent re-runs), then bulk-write the qualified set.
+  await prisma.$executeRaw`UPDATE "FundHoldingSnapshot" SET "initiationStrength" = NULL WHERE "initiationStrength" IS NOT NULL`;
+  const CHUNK = 5000;
+  for (let i = 0; i < out.length; i += CHUNK) {
+    const slice = out.slice(i, i + CHUNK);
+    await prisma.$executeRaw`
+      UPDATE "FundHoldingSnapshot" AS h
+      SET "initiationStrength" = v.strength
+      FROM (
+        SELECT * FROM unnest(
+          ${slice.map((u) => u.fundId)}::text[],
+          ${slice.map((u) => u.ticker)}::text[],
+          ${slice.map((u) => u.period)}::text[],
+          ${slice.map((u) => u.strength)}::double precision[]
+        ) AS t(fund_id, ticker, period, strength)
+      ) AS v
+      WHERE h."fundId" = v.fund_id AND h.ticker = v.ticker AND h."filingPeriod" = v.period::date`;
+  }
+  log(`[institutional-agg] initiations: ${out.length} qualified across ${byFund.size} funds`);
+  return out.length;
 }
 
 /** Monotonic ingredients version — consumed by the leaderboard route cache key. */

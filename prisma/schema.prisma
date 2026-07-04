@@ -994,6 +994,14 @@ model FundHoldingSnapshot {
   // Price-drift-only expected weight (prior shares revalued at this quarter's
   // implied price / counterfactual book), in bps. active − expected = net move.
   expectedWeightBps  Float?
+  // Qualified-initiation per-fund strength = min(sizing_mult, 4) (Part 1b); null
+  // when this row is not a qualified initiation this quarter.
+  initiationStrength Float?
+  // Consecutive quarters this (fund,ticker) has been held within the tenure
+  // deadzone (Part 3a). tenureCensored = the run reaches the earliest ingested
+  // quarter, so true tenure is longer (rendered "≥N").
+  tenureQuarters     Int?
+  tenureCensored     Boolean?
   createdAt    DateTime            @default(now())
 
   fund InstitutionalFund @relation(fields: [fundId], references: [id], onDelete: Cascade)
@@ -1053,6 +1061,11 @@ model InstitutionalNameAggregate {
   medianPctOfBook        Float? // conviction axis
   totalValue             Decimal? @db.Decimal(24, 2)
   trajectoryLabel        String? // durable | accelerating | spike | choppy
+  // Lifecycle stage (Part 2): SPIKE | FORMING | DURABLE | CORE | BROKEN.
+  lifecycleStage         String?
+  // Breadth crossed the cross-sectional p75 this quarter (CROWDED escalation flag;
+  // retains the underlying lifecycle stage).
+  crowded                Boolean @default(false)
   quadrant               String? // early | crowded | ignored | broad-low
   marketInvestorsHolding Int? // secondary market-wide crowding (context only)
   newArrival             Boolean  @default(false) // change detector
@@ -1150,4 +1163,64 @@ model InstitutionalMeta {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+/// Analytical event feed (distinct from the DataQualityEvent ops queue): lifecycle
+/// stage transitions (Part 2) and stasis-breaks (Part 3d). Surfaced on the overview
+/// feed, the trajectories transitions panel, and the core-holdings alert strip.
+/// Rewritten per (period) by the aggregate job, so it stays idempotent.
+model InstitutionalEvent {
+  id           String   @id @default(cuid())
+  kind         String // stage_transition | stasis_break
+  ticker       String
+  filingPeriod DateTime @db.Date
+  significance Float    @default(0) // higher = more notable (BROKEN, →CORE, →CROWDED, deep-tenure exits)
+  payload      Json? // { from, to, streak, departingTenure, rawQuarters, ... }
+  createdAt    DateTime @default(now())
+
+  @@index([filingPeriod])
+  @@index([kind, filingPeriod])
+  @@index([ticker])
+}
+
+/// Per-(ticker, quarter) Core Holdings endorsement (Part 3). Written by the
+/// aggregate job from the pure core-holdings scorer; wiped+rewritten each run.
+model InstitutionalCoreHolding {
+  id                 String   @id @default(cuid())
+  ticker             String
+  filingPeriod       DateTime @db.Date
+  companyName        String?
+  sector             String?
+  endorsementScore   Float    @default(0)
+  longHoldVoters     Int      @default(0)
+  distinctCategories Int      @default(0)
+  eliteVoters        Int      @default(0)
+  medianTenure       Float? // median tenure across the name's long-hold voters (quarters)
+  avgTenure          Float?
+  censoredPct        Float    @default(0) // fraction of contributing tenures left-censored
+  verifyData         Boolean  @default(false) // suspicious full-book reset among holders
+  valid              Boolean  @default(false) // passed ≥5 voters AND ≥2 distinct categories
+  payload            Json? // score decomposition (per-voter contributions) for the tooltip
+  createdAt          DateTime @default(now())
+
+  @@unique([ticker, filingPeriod])
+  @@index([filingPeriod])
+  @@index([filingPeriod, endorsementScore])
+}
+
+/// Forward-return base rates per pattern (Part 4) + the Part 3e calibration sweep.
+/// Entry timing is the FILING date (no lookahead); returns are split-adjusted vs a
+/// benchmark. `pattern` is a lifecycle stage, "stasis_break", or a calibration key
+/// like "calib:long_hold_mult=1.50". Upserted by the base-rate job.
+model InstitutionalBaseRate {
+  id           String   @id @default(cuid())
+  pattern      String
+  horizon      String // "1Q" | "2Q"
+  excessReturn Float? // mean forward excess return vs benchmark (fraction)
+  hitRate      Float? // fraction of the cohort with positive excess return
+  n            Int      @default(0)
+  benchmark    String   @default("SP500")
+  computedAt   DateTime @default(now())
+
+  @@unique([pattern, horizon, benchmark])
 }

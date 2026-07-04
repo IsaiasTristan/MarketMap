@@ -20,6 +20,7 @@ import {
   type ScoredRow,
 } from "@/domain/calculations/flow-leaderboard";
 import { FLOW_LEADERBOARD_CONFIG, type FlowLeaderboardConfig } from "@/domain/calculations/flow-leaderboard-config";
+import { cumulativeAccSeries } from "@/domain/calculations/flow-trajectory";
 import { signalFundFilter } from "./institutional-aggregate.service";
 import { getIngredientsVersion } from "./institutional-ingredients.service";
 
@@ -229,21 +230,16 @@ export async function getLeaderboard(period?: string, config: FlowLeaderboardCon
   const boardRows = [...board.accumulation, ...board.distribution];
   const boardTickers = boardRows.map((r) => r.ticker);
 
-  // 8-quarter cumulative active-accumulation trajectory (running sum of
-  // activeBpsAvg over the window, ascending) — the trajectory view's primary series.
+  // 8-quarter cumulative accumulation trajectory (Part 1a): the SINGLE
+  // cumulativeAccSeries over the all-signal-funds per-quarter net bps
+  // (netflowBps), ascending — the same series the trajectory views read, NOT
+  // the participant-only activeBpsAvg.
   const accSeriesByTicker = new Map<string, number[]>();
   for (const ticker of boardTickers) {
     const nameSeries = nameByTicker.get(ticker);
     if (!nameSeries) continue;
-    let cum = 0;
-    const series: number[] = [];
-    for (const p of windowPeriods) {
-      const n = nameSeries.get(p);
-      if (!n) continue;
-      cum += n.activeBpsAvg;
-      series.push(Math.round(cum * 100) / 100);
-    }
-    accSeriesByTicker.set(ticker, series);
+    const perQuarter = windowPeriods.map((p) => nameSeries.get(p)?.netflowBps ?? 0);
+    accSeriesByTicker.set(ticker, cumulativeAccSeries(perQuarter));
   }
 
   // Top adders (latest 2 quarters, by |netBps|) with fund names.

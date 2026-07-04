@@ -19,7 +19,7 @@ export function TrajectoryGridPanel({ period, onSelectTicker }: { period: string
       {data && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-            Cumulative price-adjusted rotation (bps of the average involved fund&rsquo;s book) over the last 8 quarters — a rising staircase is deliberate position-building (follow), not price drift; a lone jump is a spike (discount). Ranked by this quarter&rsquo;s active move.
+            Cumulative price-adjusted accumulation (bps, averaged over ALL signal funds) over the last 8 quarters — a rising staircase is deliberate position-building (follow), not price drift; a lone jump is a spike (discount). Ranked by pattern: streak &times; slope-consistency &times; breadth-growth, never the latest quarter&rsquo;s move.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
             {data.cards.map((c) => (
