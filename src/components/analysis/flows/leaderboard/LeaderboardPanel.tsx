@@ -10,7 +10,7 @@ import type { GatedOutRow, HeatCell, Leaderboard, ScoredRow } from "@/domain/cal
 import { pickTextColor } from "@/components/analysis/factors/shared/bloomberg-grid";
 import { useFlows } from "../useFlows";
 import { PanelState, quarterLabel } from "../flowsUi";
-import { flowHeatColor, FLOW_BLUE, FLOW_RED } from "./flowHeat";
+import { flowHeatColor, heatCellDisplay, FLOW_BLUE, FLOW_RED } from "./flowHeat";
 
 type LeaderboardResult = Leaderboard & { filingPeriod: string; ingredientsVersion: number };
 
@@ -216,26 +216,26 @@ function padCells(cells: HeatCell[]): Array<HeatCell | null> {
 }
 
 function HeatCellView({ cell }: { cell: HeatCell | null }) {
-  // Rendering contract: null / no coverage → em-dash (muted). A present cell whose
-  // netflow is not a finite number is treated as no-coverage too — never default a
-  // missing field to a computed "0". Only a real computed zero renders "0".
-  if (!cell || !Number.isFinite(cell.netflow)) {
+  // Rendering contract lives in heatCellDisplay(): null / no coverage / non-finite
+  // netflow → em-dash (muted); only a real computed zero renders "0".
+  const disp = heatCellDisplay(cell);
+  if (disp.mode === "empty") {
     return (
       <span
-        title="no filing coverage"
+        title={disp.title}
         style={{ height: 30, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-base)", border: "1px solid var(--bg-border)", color: "var(--text-muted)", fontSize: 11 }}
       >
-        —
+        {disp.label}
       </span>
     );
   }
-  const bg = flowHeatColor(cell.netflow, HEAT_SPAN);
+  const bg = flowHeatColor(cell!.netflow, HEAT_SPAN);
   const color = pickTextColor(bg);
-  const bps = Math.round(cell.netflowBps);
-  const title = `${quarterLabel(cell.period)} · ${cell.period}\n+${cell.adders} adders / −${cell.reducers} reducers (net ${cell.netflow >= 0 ? "+" : ""}${cell.netflow})\ncapital flow ${bps >= 0 ? "+" : ""}${bps} bps · ${cell.holders} holders`;
+  const bps = Math.round(cell!.netflowBps);
+  const title = `${quarterLabel(cell!.period)} · ${cell!.period}\n+${cell!.adders} adders / −${cell!.reducers} reducers (net ${disp.label})\ncapital flow ${bps >= 0 ? "+" : ""}${bps} bps · ${cell!.holders} holders`;
   return (
     <span title={title} style={{ height: 30, display: "flex", alignItems: "center", justifyContent: "center", background: bg, color, fontSize: 11, fontWeight: 700, fontVariantNumeric: "tabular-nums", border: "1px solid var(--bg-base)" }}>
-      {cell.netflow > 0 ? "+" : ""}{cell.netflow}
+      {disp.label}
     </span>
   );
 }

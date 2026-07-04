@@ -90,11 +90,12 @@ export async function getLeaderboard(period?: string, config: FlowLeaderboardCon
 
   // ── Per-fund positions over the window (signal-tier only). ──
   const posRows = await prisma.$queryRaw<
-    Array<{ ticker: string; period: Date; fundId: string; isElite: boolean; action: string; adj: number | null; active: number | null; expected: number | null; pct: number | null }>
+    Array<{ ticker: string; period: Date; fundId: string; isElite: boolean; action: string; adj: number | null; active: number | null; expected: number | null; pct: number | null; value: number | null; shares: number | null }>
   >(Prisma.sql`
     SELECT h.ticker, h."filingPeriod" AS period, h."fundId" AS "fundId", f."isMostRespected" AS "isElite",
            h.action::text AS action, h."adjShareDeltaPct" AS adj, h."activeWeightBps" AS active,
-           h."expectedWeightBps" AS expected, h."pctOfBook" AS pct
+           h."expectedWeightBps" AS expected, h."pctOfBook" AS pct,
+           h.value::float8 AS value, h.shares::float8 AS shares
     FROM "FundHoldingSnapshot" h
     JOIN "InstitutionalFund" f ON f.id = h."fundId" AND f."isActive" = true AND f."tier" = 'signal'
     WHERE h."filingPeriod" IN (${periodSql})`);
@@ -127,6 +128,8 @@ export async function getLeaderboard(period?: string, config: FlowLeaderboardCon
       adjShareDeltaPct: r.adj,
       netBps,
       pctOfBook: r.pct,
+      value: r.value,
+      shares: r.shares,
     };
     (posByTicker.get(r.ticker) ?? posByTicker.set(r.ticker, []).get(r.ticker)!).push(pos);
     if (status !== "exited") {
@@ -193,6 +196,12 @@ export async function getLeaderboard(period?: string, config: FlowLeaderboardCon
   }
 
   const board = computeLeaderboard(tickers, config);
+  if (board.countFlowUnavailable) {
+    // Incident: the count-flow z-score component has no cross-sectional variance,
+    // so the board is running on capital flow alone. Almost always an upstream
+    // data issue (e.g. unpopulated adjShareDeltaPct); the UI shows a banner.
+    console.warn(`[leaderboard] count-flow signal unavailable for ${target} — scoring on capital flow only (data issue)`);
+  }
   const result: LeaderboardResult = { ...board, filingPeriod: target, ingredientsVersion: version };
   cache.set(key, result);
   return result;

@@ -31,3 +31,19 @@ export function flowHeatColor(value: number, span = 25): string {
 /** Solid endpoint colors, e.g. for the score bar and legend. */
 export const FLOW_BLUE = `rgb(${BLUE.r}, ${BLUE.g}, ${BLUE.b})`;
 export const FLOW_RED = `rgb(${RED.r}, ${RED.g}, ${RED.b})`;
+
+/**
+ * Rendering contract for a heat cell (pure, so it is unit-tested without a DOM).
+ * Distinguishes three states and NEVER defaults a missing field to a computed 0:
+ *   - null / no coverage / non-finite netflow → em-dash, muted, "no filing coverage"
+ *   - a real computed zero                    → "0" in a neutral cell
+ *   - any other value                         → signed label ("+3", "-2")
+ */
+export type HeatCellDisplay =
+  | { mode: "empty"; label: "—"; title: string }
+  | { mode: "value"; label: string };
+
+export function heatCellDisplay(cell: { netflow: number } | null | undefined): HeatCellDisplay {
+  if (!cell || !Number.isFinite(cell.netflow)) return { mode: "empty", label: "—", title: "no filing coverage" };
+  return { mode: "value", label: `${cell.netflow > 0 ? "+" : ""}${cell.netflow}` };
+}

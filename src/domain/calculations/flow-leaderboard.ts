@@ -28,6 +28,10 @@ export interface FundPosition {
   netBps: number | null;
   /** Position weight (value / book) this quarter, %. */
   pctOfBook: number | null;
+  /** Reported 13F position value (USD). Optional — used only for the unit-error check. */
+  value?: number | null;
+  /** Reported 13F share count. Optional — used only for the unit-error check. */
+  shares?: number | null;
 }
 
 /** One quarter of a ticker's ingredients (ascending order; latest last). */
@@ -87,7 +91,16 @@ export interface ScoredRow {
   eliteAdders2: number;
   reason: string;
   partialData: boolean;
+  /** Data-quality flag: median holder weight implausibly high or a suspected
+   *  reported-value unit error. Conviction multiplier is clamped to 1.0. */
+  verifyData: boolean;
   marketCapUsd: number | null;
+  // ── Score decomposition (a 100 must be inspectable). ──
+  streakMult: number;
+  convictionMult: number;
+  eliteMult: number;
+  /** Small-N shrinkage factor applied to flowz_cap: holders/(holders+k_shrink). */
+  shrinkageFactor: number;
   cells: HeatCell[]; // trailing 5 quarters, ascending
 }
 
@@ -104,6 +117,10 @@ export interface Leaderboard {
   accumulation: ScoredRow[];
   distribution: ScoredRow[];
   gatedOut: GatedOutRow[];
+  /** True when the cross-sectional count-flow component is degenerate (no
+   *  variance) this quarter, so the score runs on capital flow alone. Surfaced
+   *  as a banner rather than silently reweighting. */
+  countFlowUnavailable: boolean;
 }
 
 const DISPLAY_QUARTERS = 5;
@@ -277,6 +294,37 @@ function mapRange(pct: number, [lo, hi]: readonly [number, number]): number {
   return lo + (hi - lo) * Math.min(1, Math.max(0, pct));
 }
 
+/** Sample standard deviation (n−1). 0 for n<2. */
+function stddev(xs: number[]): number {
+  const n = xs.length;
+  if (n < 2) return 0;
+  const mean = xs.reduce((a, b) => a + b, 0) / n;
+  const v = xs.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1);
+  return Math.sqrt(v);
+}
+
+/** Value at the p-th percentile (0-1) of an ascending-sorted array. */
+function quantile(sortedAsc: number[], p: number): number {
+  if (sortedAsc.length === 0) return 0;
+  const idx = Math.min(sortedAsc.length - 1, Math.max(0, Math.floor(p * (sortedAsc.length - 1))));
+  return sortedAsc[idx]!;
+}
+
+/** Suspected reported-value unit error: any holder's implied price (value/shares)
+ *  is more than `ratio`× off the cross-holder median implied price. A single fund
+ *  reporting value in units while others use thousands trips this. Returns false
+ *  when value/shares aren't supplied. */
+function unitErrorSuspected(funds: FundPosition[], ratio: number): boolean {
+  const ip: number[] = [];
+  for (const f of funds) {
+    if (f.value != null && f.shares != null && f.shares > 0 && f.value > 0) ip.push(f.value / f.shares);
+  }
+  if (ip.length < 2) return false;
+  const med = quantile([...ip].sort((a, b) => a - b), 0.5);
+  if (!(med > 0)) return false;
+  return ip.some((p) => p > med * ratio || p < med / ratio);
+}
+
 /** Cross-sectional percentile (0-1) of `value` within `sortedAsc`. */
 function percentileOf(sortedAsc: number[], value: number): number {
   if (sortedAsc.length <= 1) return 0.5;
@@ -358,23 +406,42 @@ export function computeLeaderboard(tickers: TickerIngredients[], config: FlowLea
   for (const c of calcs) {
     const reasons: string[] = [];
     if (c.holders < config.gates.min_holders) reasons.push(`only ${c.holders} holders`);
-    const passesFlow = Math.abs(c.wflow) >= config.gates.min_abs_wflow || Math.abs(c.wflowBps) >= config.gates.min_abs_wflow_bps;
+    // Count arm: |wflow| ≥ threshold. Capital arm: |wflow_bps| ≥ threshold, but only
+    // with enough holders that the move isn't a 1-2 fund blip amplified by shrinkage.
+    const passesFlow =
+      Math.abs(c.wflow) >= config.gates.min_abs_wflow ||
+      (Math.abs(c.wflowBps) >= config.gates.min_abs_wflow_bps && c.holders >= config.gates.min_holders_bps);
     if (!passesFlow) reasons.push("flow below threshold");
     if (megaCapExcluded.has(c.t.ticker)) reasons.push("mega-cap (flow is noise)");
     if (reasons.length === 0) gated.push(c);
     else gatedOut.push({ ticker: c.t.ticker, companyName: c.t.companyName ?? null, holders: c.holders, wflow: c.wflow, wflowBps: c.wflowBps, reason: reasons.join("; ") });
   }
 
-  if (gated.length === 0) return { accumulation: [], distribution: [], gatedOut };
+  if (gated.length === 0) return { accumulation: [], distribution: [], gatedOut, countFlowUnavailable: false };
 
   // ── Cross-sectional z-scores over the GATED set this quarter. ──
-  const wflowZ = zScore(gated.map((c) => c.wflow));
-  const relflowZ = zScore(gated.map((c) => c.relflow));
-  const wflowBpsZ = zScore(gated.map((c) => c.wflowBps));
+  // Degenerate-component guard: if a component has no cross-sectional variance,
+  // zScore returns 0 for every name (it carries no signal). When BOTH count
+  // sub-components are degenerate the count-flow signal is unavailable — surface
+  // it via a flag (banner) rather than silently letting capital flow take over.
+  const eps = config.degenerate_std_eps;
+  const wflowArr = gated.map((c) => c.wflow);
+  const relflowArr = gated.map((c) => c.relflow);
+  const wflowBpsArr = gated.map((c) => c.wflowBps);
+  const countFlowUnavailable = stddev(wflowArr) < eps && stddev(relflowArr) < eps;
+  const wflowZ = zScore(wflowArr);
+  const relflowZ = zScore(relflowArr);
+  const wflowBpsZ = zScore(wflowBpsArr);
 
-  // Conviction percentile (cross-sectional, latest and lookback-ago).
-  const medWeights = gated.map((c) => c.medianWeight).filter((v): v is number => v != null && Number.isFinite(v)).sort((a, b) => a - b);
-  const medWeightsLb = gated.map((c) => c.medianWeightLookbackAgo).filter((v): v is number => v != null && Number.isFinite(v)).sort((a, b) => a - b);
+  // Conviction percentile (cross-sectional, latest and lookback-ago). Per-position
+  // weights are winsorized at min(p99, weight_winsor_pct) so one mis-reported
+  // (e.g. unit-error) name can't compress everyone else's percentile ordering.
+  const rawMedW = gated.map((c) => c.medianWeight).filter((v): v is number => v != null && Number.isFinite(v)).sort((a, b) => a - b);
+  const rawMedWLb = gated.map((c) => c.medianWeightLookbackAgo).filter((v): v is number => v != null && Number.isFinite(v)).sort((a, b) => a - b);
+  const winsorCap = rawMedW.length ? Math.min(quantile(rawMedW, 0.99), config.weight_winsor_pct) : config.weight_winsor_pct;
+  const winsorCapLb = rawMedWLb.length ? Math.min(quantile(rawMedWLb, 0.99), config.weight_winsor_pct) : config.weight_winsor_pct;
+  const medWeights = rawMedW.map((v) => Math.min(v, winsorCap));
+  const medWeightsLb = rawMedWLb.map((v) => Math.min(v, winsorCapLb));
 
   const cb = config.count_vs_capital_blend;
   const rb = config.raw_vs_relative_blend;
@@ -385,25 +452,54 @@ export function computeLeaderboard(tickers: TickerIngredients[], config: FlowLea
     flowz: number;
     convictionPct: number;
     convictionPctLb: number;
+    verifyData: boolean;
+    streakMult: number;
+    convictionMult: number;
+    eliteMult: number;
+    shrinkageFactor: number;
     rawScore: number;
     reason: string;
   }
   const scored: Scored[] = gated.map((c, i) => {
     const flowzCounts = rb * (wflowZ[i] ?? 0) + (1 - rb) * (relflowZ[i] ?? 0);
-    const flowzCap = wflowBpsZ[i] ?? 0;
+    // Small-N shrinkage: a name backed by few holders keeps only part of its
+    // capital z, so breadth outranks a single deep position at equal per-holder bps.
+    const shrinkageFactor = c.holders / (c.holders + config.k_shrink);
+    const flowzCap = (wflowBpsZ[i] ?? 0) * shrinkageFactor;
     const flowz = cb * flowzCounts + (1 - cb) * flowzCap;
 
-    const convictionPct = c.medianWeight != null ? percentileOf(medWeights, c.medianWeight) : 0.5;
-    const convictionPctLb = c.medianWeightLookbackAgo != null ? percentileOf(medWeightsLb, c.medianWeightLookbackAgo) : convictionPct;
+    const convictionPct = c.medianWeight != null ? percentileOf(medWeights, Math.min(c.medianWeight, winsorCap)) : 0.5;
+    const convictionPctLb = c.medianWeightLookbackAgo != null ? percentileOf(medWeightsLb, Math.min(c.medianWeightLookbackAgo, winsorCapLb)) : convictionPct;
+
+    // Data-quality: an implausible median weight or a suspected reported-value unit
+    // error clamps the conviction multiplier to 1.0 pending review — never let a
+    // likely-erroneous position inflate the score.
+    const verifyData =
+      (c.medianWeight != null && c.medianWeight > config.verify_weight_median_pct) ||
+      unitErrorSuspected(c.latest.funds, config.unit_error_ratio);
 
     const streakMag = Math.abs(c.streak);
     const streakMult = streakMag >= 2 ? Math.min(1 + config.streak_bonus_per_qtr * (streakMag - 1), config.streak_bonus_cap) : 1;
-    const convict = mapRange(convictionPct, config.conviction_mult_range);
-    const elite = Math.min(1 + config.elite_bonus_per_fund * c.eliteAdders2, config.elite_bonus_cap);
-    const rawScore = flowz * streakMult * convict * elite;
+    const convictionMult = verifyData ? 1.0 : mapRange(convictionPct, config.conviction_mult_range);
+    const eliteMult = Math.min(1 + config.elite_bonus_per_fund * c.eliteAdders2, config.elite_bonus_cap);
+    const rawScore = flowz * streakMult * convictionMult * eliteMult;
 
     const reason = buildReason(c, flowzCounts, flowzCap, convictionPct, convictionPctLb);
-    return { ...c, flowzCounts: round(flowzCounts, 4), flowzCap: round(flowzCap, 4), flowz: round(flowz, 4), convictionPct: round(convictionPct, 4), convictionPctLb, rawScore, reason };
+    return {
+      ...c,
+      flowzCounts: round(flowzCounts, 4),
+      flowzCap: round(flowzCap, 4),
+      flowz: round(flowz, 4),
+      convictionPct: round(convictionPct, 4),
+      convictionPctLb,
+      verifyData,
+      streakMult: round(streakMult, 4),
+      convictionMult: round(convictionMult, 4),
+      eliteMult: round(eliteMult, 4),
+      shrinkageFactor: round(shrinkageFactor, 4),
+      rawScore,
+      reason,
+    };
   });
 
   const accRaw = scored.filter((s) => s.flowz > 0);
@@ -432,7 +528,12 @@ export function computeLeaderboard(tickers: TickerIngredients[], config: FlowLea
       eliteAdders2: r.eliteAdders2,
       reason: r.reason,
       partialData: r.partialData,
+      verifyData: r.verifyData,
       marketCapUsd: r.latest.marketCapUsd,
+      streakMult: r.streakMult,
+      convictionMult: r.convictionMult,
+      eliteMult: r.eliteMult,
+      shrinkageFactor: r.shrinkageFactor,
       cells: heatCells(r, config.adder_threshold_pct),
     }));
   };
@@ -441,5 +542,6 @@ export function computeLeaderboard(tickers: TickerIngredients[], config: FlowLea
     accumulation: finalize(accRaw, config.board_size.accumulation),
     distribution: finalize(disRaw, config.board_size.distribution),
     gatedOut,
+    countFlowUnavailable,
   };
 }

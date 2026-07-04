@@ -33,10 +33,22 @@ export interface FlowLeaderboardConfig {
   conviction_mult_range: readonly [number, number];
   elite_bonus_per_fund: number;
   elite_bonus_cap: number;
+  /** Small-N shrinkage for the capital component: flowz_cap ×= holders/(holders+k). */
+  k_shrink: number;
+  /** Winsorize per-position weights at min(p99, this % of book) before conviction. */
+  weight_winsor_pct: number;
+  /** A name whose median holder weight exceeds this % is flagged "verify data". */
+  verify_weight_median_pct: number;
+  /** Reported value vs shares×implied-price outside [1/r, r] ⇒ suspected unit error. */
+  unit_error_ratio: number;
+  /** A z-score component whose cross-sectional stddev is below this is degenerate. */
+  degenerate_std_eps: number;
   gates: {
     min_holders: number;
     min_abs_wflow: number;
     min_abs_wflow_bps: number;
+    /** A name may qualify via the bps arm only if it has at least this many holders. */
+    min_holders_bps: number;
     exclude_top_n_by_mcap: number;
     partial_data_pct: number;
   };
@@ -75,6 +87,22 @@ export const FLOW_LEADERBOARD_CONFIG: FlowLeaderboardConfig = {
   elite_bonus_per_fund: 0.1,
   elite_bonus_cap: 1.3,
 
+  /** Small-N shrinkage: a 3-holder name keeps 3/(3+8)=27% of its capital z, a
+   *  12-holder name keeps 60% — so breadth outranks a single deep position. */
+  k_shrink: 8,
+  /** Per-position weights are winsorized at min(cross-sectional p99, 25% of book)
+   *  before the conviction percentile, so one mis-reported position can't compress
+   *  everyone else's ranking. */
+  weight_winsor_pct: 25,
+  /** Median holder weight above 20% is implausible for a diversified 13F filer —
+   *  usually a reported-value unit error (thousands vs units). Flag, don't score. */
+  verify_weight_median_pct: 20,
+  /** Reported value vs shares×implied-price must land within 5× or the position is
+   *  a suspected unit error. */
+  unit_error_ratio: 5,
+  /** Below this cross-sectional stddev a z-score component carries no signal. */
+  degenerate_std_eps: 1e-9,
+
   gates: {
     /** Minimum signal-tier holders for a name to appear. */
     min_holders: 3,
@@ -82,6 +110,9 @@ export const FLOW_LEADERBOARD_CONFIG: FlowLeaderboardConfig = {
     min_abs_wflow: 4,
     /** ... OR |wflow_bps| ≥ min_abs_wflow_bps, so pure-deepening names reach the board. [amendment] */
     min_abs_wflow_bps: 6,
+    /** ... but the bps arm requires real breadth so a 1-2 holder capital blip can't
+     *  reach the board on capital alone. */
+    min_holders_bps: 5,
     /** Exclude the N largest names by point-in-time market cap (mega-cap flow is noise). */
     exclude_top_n_by_mcap: 15,
     /** If more than this fraction of a name's latest-quarter holders are missing

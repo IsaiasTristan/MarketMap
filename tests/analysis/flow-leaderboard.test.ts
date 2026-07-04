@@ -8,6 +8,7 @@ import {
 } from "@/domain/calculations/flow-leaderboard";
 import { FLOW_LEADERBOARD_CONFIG as CFG } from "@/domain/calculations/flow-leaderboard-config";
 import { computeActiveFlowPair, type FundHoldingsByPeriod } from "@/server/services/institutional/institutional-active-flow.service";
+import { heatCellDisplay } from "@/components/analysis/flows/leaderboard/flowHeat";
 
 const PERIODS = ["2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31"];
 
@@ -267,5 +268,135 @@ describe("flow-leaderboard scoring core", () => {
     // Every name rose 40% identically, so no fund shifted its RELATIVE weight.
     expect(Math.abs(byName.get("AAA")!.activeBpsAvg)).toBeLessThan(1);
     expect(Math.abs(byName.get("BBB")!.activeBpsAvg)).toBeLessThan(1);
+  });
+});
+
+// ── Part 1: score robustness ────────────────────────────────────────────────
+
+describe("flow-leaderboard robustness", () => {
+  it("degenerate count column ⇒ countFlowUnavailable, flowzCounts=0 for all, board still renders from capital", () => {
+    // Every name is pure held-only (netflow identically 0) but has distinct capital
+    // flow (bps). The count component has no variance → flag set, board runs on capital.
+    const names = [8, 10, 12, 14].map((bps, i) =>
+      mkTicker(`CAP${i}`, Array.from({ length: 4 }, () => ({ held: 6, bps, medianPctOfBook: 2, marketCapUsd: 5e9 }))),
+    );
+    const board = computeLeaderboard(names, TESTCFG);
+    expect(board.countFlowUnavailable).toBe(true);
+    expect(board.accumulation.length).toBeGreaterThan(0);
+    for (const r of board.accumulation) expect(r.flowzCounts).toBe(0);
+  });
+
+  it("small-N shrinkage: a 12-holder name outranks a 3-holder name at identical per-holder bps deepening", () => {
+    // Both are pure deepening (netflow 0) with the same recency-weighted bps, so they
+    // differ ONLY in holder count. Filler names give the z-score cross-section variance.
+    const cfg = { ...TESTCFG, gates: { ...TESTCFG.gates, min_holders_bps: 3 } };
+    const deepen = (holders: number) =>
+      mkTicker(`H${holders}`, Array.from({ length: 4 }, () => ({ held: holders, bps: 20, medianPctOfBook: 3, marketCapUsd: 5e9 })));
+    const filler = [4, 6, 8].map((bps, i) =>
+      mkTicker(`F${i}`, Array.from({ length: 4 }, () => ({ held: 6, bps, medianPctOfBook: 3, marketCapUsd: 5e9 }))),
+    );
+    const board = computeLeaderboard([deepen(3), deepen(12), ...filler], cfg);
+    const r3 = board.accumulation.find((r) => r.ticker === "H3");
+    const r12 = board.accumulation.find((r) => r.ticker === "H12");
+    expect(r3).toBeDefined();
+    expect(r12).toBeDefined();
+    expect(r12!.shrinkageFactor).toBeGreaterThan(r3!.shrinkageFactor);
+    expect(r12!.rank).toBeLessThan(r3!.rank); // 12-holder ranks higher
+  });
+
+  it("median holder weight > 20% ⇒ verifyData badge and conviction multiplier clamped to 1.0", () => {
+    const hi = mkTicker(
+      "HIWT",
+      Array.from({ length: 4 }, () => ({ adders: 2, held: 4, bps: 12, medianPctOfBook: 22, marketCapUsd: 5e9 })),
+    );
+    const board = computeLeaderboard([hi, ...universe()], TESTCFG);
+    const row = board.accumulation.find((r) => r.ticker === "HIWT");
+    expect(row).toBeDefined();
+    expect(row!.verifyData).toBe(true);
+    expect(row!.convictionMult).toBe(1.0);
+  });
+
+  it("null cell and computed-zero cell render differently (rendering contract)", () => {
+    const empty = heatCellDisplay(null);
+    const zero = heatCellDisplay({ netflow: 0 });
+    const nan = heatCellDisplay({ netflow: NaN });
+    expect(empty.mode).toBe("empty");
+    expect(empty.label).toBe("—");
+    expect(zero.mode).toBe("value");
+    expect(zero.label).toBe("0");
+    expect(nan.mode).toBe("empty"); // never default a missing field to "0"
+    expect(zero.label).not.toBe(empty.label);
+  });
+});
+
+// ── Part 3: regression fixture (snapshot) ───────────────────────────────────
+
+/** One synthetic quarter fixture covering the eight canonical scenarios. */
+function boardFixture(): TickerIngredients[] {
+  const q4 = (s: QSpec) => Array.from({ length: 4 }, () => s);
+
+  // Unit-error name: normal median weight, but one fund reports value 1000× off
+  // (implied price wildly off the cross-holder median) → unitErrorSuspected trips.
+  const unitErr: TickerIngredients = {
+    ticker: "UNITERR",
+    companyName: "UNITERR",
+    series: PERIODS.map((period) => {
+      const funds: FundPosition[] = [];
+      for (let i = 0; i < 3; i++) funds.push({ fundId: `n${i}`, isElite: false, status: "new", adjShareDeltaPct: null, netBps: 40, pctOfBook: 3, value: 100_000, shares: 1000 });
+      for (let i = 0; i < 3; i++) funds.push({ fundId: `h${i}`, isElite: false, status: "held", adjShareDeltaPct: 0, netBps: 0, pctOfBook: 3, value: 100_000, shares: 1000 });
+      funds[0]!.value = 100_000_000; // 1000× unit error on one position
+      return { period, holders: 6, priorHolders: 6, netflowBps: 12, medianPctOfBook: 3, marketCapUsd: 5e9, missingHolders: 0, funds };
+    }),
+  };
+
+  return [
+    mkTicker("ACCUM", q4({ adders: 6, held: 2, bps: 12, elite: 2, medianPctOfBook: 3, marketCapUsd: 8e9 })), // heavy count+bps
+    mkTicker("DEEPEN", q4({ held: 7, bps: 15, medianPctOfBook: 4, marketCapUsd: 6e9 })), // pure deepening, flat holders
+    mkTicker("DIVERGE", q4({ adders: 5, held: 2, bps: -10, medianPctOfBook: 2, marketCapUsd: 5e9 })), // counts up, capital down
+    mkTicker("DISTRIB", q4({ reducers: 6, held: 2, bps: -12, medianPctOfBook: 1, marketCapUsd: 5e9 })), // distribution streak
+    // Null-coverage: only two quarters of history + missing holders → partial data, short cell strip.
+    mkTicker("NULLCOV", [
+      { adders: 3, held: 2, bps: 8, medianPctOfBook: 2, marketCapUsd: 4e9, missingHolders: 3 },
+      { adders: 3, held: 2, bps: 8, medianPctOfBook: 2, marketCapUsd: 4e9, missingHolders: 3 },
+    ]),
+    mkTicker("HIWT3", q4({ adders: 2, held: 1, bps: 10, medianPctOfBook: 22, marketCapUsd: 5e9 })), // 3-holder high-weight
+    unitErr,
+    mkTicker("FLATNM", q4({ adders: 1, reducers: 1, held: 4, bps: 0, marketCapUsd: 2e9 })), // flat → gated out
+  ];
+}
+
+describe("flow-leaderboard fixture snapshot", () => {
+  it("renders a stable board for the synthetic fixture", () => {
+    const board = computeLeaderboard(boardFixture(), TESTCFG);
+    const project = (r: (typeof board.accumulation)[number]) => ({
+      rank: r.rank,
+      ticker: r.ticker,
+      score: r.score,
+      flowzCounts: r.flowzCounts,
+      flowzCap: r.flowzCap,
+      streak: r.streak,
+      verifyData: r.verifyData,
+      shrinkageFactor: r.shrinkageFactor,
+      reason: r.reason,
+      cells: r.cells.map((c) => c.netflow),
+    });
+    expect({
+      countFlowUnavailable: board.countFlowUnavailable,
+      accumulation: board.accumulation.map(project),
+      distribution: board.distribution.map(project),
+      gatedOut: board.gatedOut.map((g) => ({ ticker: g.ticker, reason: g.reason })),
+    }).toMatchSnapshot();
+  });
+
+  it("fixture: unit-error name is flagged verifyData even with a normal median weight", () => {
+    const board = computeLeaderboard(boardFixture(), TESTCFG);
+    const row = [...board.accumulation, ...board.distribution].find((r) => r.ticker === "UNITERR");
+    expect(row).toBeDefined();
+    expect(row!.verifyData).toBe(true);
+  });
+
+  it("fixture: the flat name is gated out below threshold", () => {
+    const board = computeLeaderboard(boardFixture(), TESTCFG);
+    expect(board.gatedOut.some((g) => g.ticker === "FLATNM")).toBe(true);
   });
 });
