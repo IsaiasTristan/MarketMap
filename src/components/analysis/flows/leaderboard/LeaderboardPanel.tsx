@@ -216,7 +216,19 @@ function padCells(cells: HeatCell[]): Array<HeatCell | null> {
 }
 
 function HeatCellView({ cell }: { cell: HeatCell | null }) {
-  if (!cell) return <span style={{ height: 30, background: "var(--bg-base)", border: "1px solid var(--bg-border)" }} />;
+  // Rendering contract: null / no coverage → em-dash (muted). A present cell whose
+  // netflow is not a finite number is treated as no-coverage too — never default a
+  // missing field to a computed "0". Only a real computed zero renders "0".
+  if (!cell || !Number.isFinite(cell.netflow)) {
+    return (
+      <span
+        title="no filing coverage"
+        style={{ height: 30, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-base)", border: "1px solid var(--bg-border)", color: "var(--text-muted)", fontSize: 11 }}
+      >
+        —
+      </span>
+    );
+  }
   const bg = flowHeatColor(cell.netflow, HEAT_SPAN);
   const color = pickTextColor(bg);
   const bps = Math.round(cell.netflowBps);

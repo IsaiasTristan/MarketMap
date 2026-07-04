@@ -68,6 +68,11 @@ export async function getLeaderboard(period?: string, config: FlowLeaderboardCon
   const windowPeriods = allPeriods.slice(Math.max(0, targetIdx - WINDOW + 1), targetIdx + 1);
   const windowSet = new Set(windowPeriods);
   const dateList = windowPeriods.map((p) => new Date(`${p}T00:00:00.000Z`));
+  // Raw-SQL date binding: Prisma serializes JS Date params as timestamptz, which
+  // does NOT match a `date` column under a non-UTC session timezone (silently
+  // returns zero rows). The typed `findMany` path binds `date` correctly, but the
+  // `$queryRaw` blocks below must bind ISO strings cast per-element to `::date`.
+  const periodSql = Prisma.join(windowPeriods.map((p) => Prisma.sql`${p}::date`));
 
   // ── Per-name aggregate rows over the window (holders, conviction, bps, mcap). ──
   const nameRows = await prisma.institutionalNameAggregate.findMany({
@@ -92,13 +97,13 @@ export async function getLeaderboard(period?: string, config: FlowLeaderboardCon
            h."expectedWeightBps" AS expected, h."pctOfBook" AS pct
     FROM "FundHoldingSnapshot" h
     JOIN "InstitutionalFund" f ON f.id = h."fundId" AND f."isActive" = true AND f."tier" = 'signal'
-    WHERE h."filingPeriod" IN (${Prisma.join(dateList)})`);
+    WHERE h."filingPeriod" IN (${periodSql})`);
 
   // Signal funds that filed each period (for the partial-data proxy).
   const filersRows = await prisma.$queryRaw<Array<{ period: Date; fundId: string }>>(Prisma.sql`
     SELECT DISTINCT h."filingPeriod" AS period, h."fundId" AS "fundId"
     FROM "FundHoldingSnapshot" h
-    WHERE h."filingPeriod" IN (${Prisma.join(dateList)}) AND h.shares > 0 AND ${signalFundFilter("h")}`);
+    WHERE h."filingPeriod" IN (${periodSql}) AND h.shares > 0 AND ${signalFundFilter("h")}`);
   const filersByPeriod = new Map<string, Set<string>>();
   for (const r of filersRows) {
     const p = iso(r.period);
