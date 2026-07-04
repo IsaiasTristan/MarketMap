@@ -15,6 +15,7 @@ import { QuadrantChart, type HoverState } from "./QuadrantChart";
 import { RegionInspector } from "./RegionInspector";
 import { useMeasure } from "./useMeasure";
 import { QUADRANT_CONFIG } from "./quadrantConfig";
+import { pushFrame, type ZoomFrame } from "./zoomState";
 
 const CHART_HEIGHT = 460;
 
@@ -106,12 +107,27 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
       else next.add(t);
       return next;
     });
-  // Esc clears the current selection (search box handles its own Esc).
+  // Semantic zoom (Part 3): a stack of zoom frames; the top is the active view.
+  const [zoomStack, setZoomStack] = useState<ZoomFrame[]>([]);
+  const viewDomain = zoomStack.length ? zoomStack[zoomStack.length - 1]! : null;
+  const resetZoom = () => setZoomStack([]);
+  // Esc clears selection AND resets the zoom (search box handles its own Esc).
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSelection(new Set()); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSelection(new Set());
+        setZoomStack([]);
+      }
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+  // A new period rebuilds the model against a different universe — drop any zoom
+  // and selection so they don't carry a stale domain/ticker set.
+  useEffect(() => {
+    setZoomStack([]);
+    setSelection(new Set());
+  }, [period]);
   useEffect(() => {
     const saved = window.localStorage.getItem(QUADRANT_CONFIG.zones.storageKey);
     if (saved !== null) setShowZones(saved === "1");
@@ -173,6 +189,22 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
               )}
             </div>
           </div>
+          {viewDomain && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10, color: "var(--text-secondary)" }}>
+              <span style={{ padding: "1px 6px", border: "1px solid var(--color-accent)", background: "var(--bg-elevated)", color: "var(--text-primary)" }}>
+                zoomed: {viewDomain.xDomain[0].toFixed(1)}–{viewDomain.xDomain[1].toFixed(1)}% breadth × {viewDomain.yDomain[0].toFixed(1)}–{viewDomain.yDomain[1].toFixed(1)}% conviction
+                {zoomStack.length > 1 ? ` · L${zoomStack.length}` : ""}
+              </span>
+              <button
+                type="button"
+                onClick={resetZoom}
+                title="Reset zoom (double-click empty canvas or Esc)"
+                style={{ height: 20, padding: "0 8px", fontSize: 10, border: "1px solid var(--bg-border)", background: "var(--bg-base)", color: "var(--text-secondary)", cursor: "pointer", borderRadius: 0 }}
+              >
+                reset
+              </button>
+            </div>
+          )}
           <div style={{ display: "flex", gap: 6, alignItems: "stretch", height: CHART_HEIGHT }}>
             <div
               ref={containerRef}
@@ -187,10 +219,14 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
                   showTrails={showTrails}
                   showZones={showZones}
                   promoted={promoted}
+                  viewDomain={viewDomain}
                   onHover={setHover}
                   onPinnedChange={setPinned}
                   onClickTicker={onSelectTicker}
                   onSelectRegion={(tickers) => setSelection(new Set(tickers))}
+                  onBrushZoom={(frame) => setZoomStack((s) => pushFrame(s, frame, QUADRANT_CONFIG.zoom.stackDepth))}
+                  onPan={(frame) => setZoomStack((s) => (s.length ? [...s.slice(0, -1), frame] : s))}
+                  onResetZoom={resetZoom}
                 />
               )}
               {tip && <QuadTooltip hover={tip} containerWidth={width} />}
@@ -212,7 +248,7 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
             {" "}Highlighted names had a meaningful holder swing this quarter or are established top-decile-conviction positions; the rest render as context only.
             {" "}Hover a name (or toggle <em>show trails</em>) to trace its move from last quarter — travel into the crowded upper-right is the risk signal.
             {" "}Breadth is discrete — each column is one more of the {model.trackedFunds} tracked funds (quant/index-like books excluded); low-holder columns are nudged apart slightly for legibility.
-            {" "}<span style={{ color: "var(--text-secondary)" }}>Hold <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Alt</kbd> to inspect context marks · drag empty space to select a region (<kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Esc</kbd> clears).</span>
+            {" "}<span style={{ color: "var(--text-secondary)" }}>Hold <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Alt</kbd> to inspect context marks · drag empty space to select · <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Shift</kbd>+drag to zoom (<kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Space</kbd>+drag to pan when zoomed) · <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Esc</kbd> resets.</span>
           </div>
         </div>
       )}

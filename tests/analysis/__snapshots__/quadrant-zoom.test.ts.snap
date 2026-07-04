@@ -1,0 +1,76 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`selectLabelCandidates > zoomed label pipeline is deterministic (snapshot) 1`] = `
+[
+  {
+    "anchor": "start",
+    "id": "FD",
+    "rect": {
+      "h": 14,
+      "w": 16,
+      "x": 85,
+      "y": 113,
+    },
+    "slot": "right",
+    "text": "FD",
+    "x": 87,
+    "y": 122.8,
+  },
+  {
+    "anchor": "start",
+    "id": "FA",
+    "rect": {
+      "h": 14,
+      "w": 16,
+      "x": 175,
+      "y": 173,
+    },
+    "slot": "right",
+    "text": "FA",
+    "x": 177,
+    "y": 182.8,
+  },
+  {
+    "anchor": "start",
+    "id": "FB",
+    "rect": {
+      "h": 14,
+      "w": 16,
+      "x": 265,
+      "y": 113,
+    },
+    "slot": "right",
+    "text": "FB",
+    "x": 267,
+    "y": 122.8,
+  },
+  {
+    "anchor": "start",
+    "id": "PA",
+    "rect": {
+      "h": 14,
+      "w": 16,
+      "x": 355,
+      "y": 173,
+    },
+    "slot": "right",
+    "text": "PA",
+    "x": 357,
+    "y": 182.8,
+  },
+  {
+    "anchor": "start",
+    "id": "PB",
+    "rect": {
+      "h": 14,
+      "w": 16,
+      "x": 445,
+      "y": 113,
+    },
+    "slot": "right",
+    "text": "PB",
+    "x": 447,
+    "y": 122.8,
+  },
+]
+`;

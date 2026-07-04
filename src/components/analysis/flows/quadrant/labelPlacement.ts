@@ -22,6 +22,12 @@ export interface LabelInput {
   score: number;
   /** Danger-zone callout — ranked ahead of all non-forced labels. */
   forced: boolean;
+  /**
+   * Coarse tier ranked ABOVE forced/score (higher wins). Default 0, so existing
+   * callers are unaffected. Used by the semantic-zoom label budget to keep
+   * user-pinned/foreground labels ahead of density-promoted ones.
+   */
+  priority?: number;
 }
 
 export interface Rect {
@@ -120,8 +126,13 @@ function slotGeometry(
  * as obstacles for every label but their own.
  */
 export function placeLabels(inputs: LabelInput[], bounds: PlotBounds, opts: PlaceOpts): PlacedLabel[] {
-  // Forced (danger-zone) first, then score desc, then id for a total, stable order.
+  // Priority tier first (default 0), then forced (danger-zone), then score desc,
+  // then id for a total, stable order. With all-default priority this is exactly
+  // the previous (forced, score, id) ordering.
   const ranked = [...inputs].sort((a, b) => {
+    const pa = a.priority ?? 0;
+    const pb = b.priority ?? 0;
+    if (pa !== pb) return pb - pa;
     if (a.forced !== b.forced) return a.forced ? -1 : 1;
     if (b.score !== a.score) return b.score - a.score;
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;

@@ -81,7 +81,7 @@ export function percentile(sorted: number[], p: number): number {
 }
 
 /** Config tick values that fall inside [lo, hi] — human values only, no auto-generation. */
-function ticksInDomain(ticks: readonly number[], lo: number, hi: number): number[] {
+export function ticksInDomain(ticks: readonly number[], lo: number, hi: number): number[] {
   return ticks.filter((t) => t >= lo && t <= hi);
 }
 
@@ -161,17 +161,22 @@ export interface PlotRect {
 export interface Scales {
   x: (breadth: number) => number;
   y: (conviction: number | null) => number;
+  /** Pixel → breadth (data). Not clamped — used to invert a brush-zoom rect. */
+  invertX: (px: number) => number;
+  /** Pixel → conviction (data). Not clamped. */
+  invertY: (py: number) => number;
 }
 
 /**
- * Logarithmic pixel scales. Values outside the domain clamp to the plot edge —
- * a point is never off-canvas, and a null/zero conviction lands on the y-floor
- * (its true value still shows in the tooltip). Both domains are strictly
- * positive, so log is always defined after clamping.
+ * Logarithmic pixel scales for an explicit domain. Values outside the domain
+ * clamp to the plot edge — a point is never off-canvas, and a null/zero
+ * conviction lands on the y-floor (its true value still shows in the tooltip).
+ * Both domains are strictly positive, so log is always defined after clamping.
+ * The inverses undo the (unclamped) linear-in-log-space mapping.
  */
-export function makeScales(model: QuadrantModel, rect: PlotRect): Scales {
-  const [x0, x1] = model.xDomain;
-  const [y0, y1] = model.yDomain;
+export function makeScalesForDomain(xDomain: [number, number], yDomain: [number, number], rect: PlotRect): Scales {
+  const [x0, x1] = xDomain;
+  const [y0, y1] = yDomain;
   const lx0 = Math.log(x0);
   const lxSpan = Math.log(x1) - lx0 || 1;
   const ly0 = Math.log(y0);
@@ -180,5 +185,12 @@ export function makeScales(model: QuadrantModel, rect: PlotRect): Scales {
   return {
     x: (b) => rect.left + ((Math.log(clamp(b, x0, x1)) - lx0) / lxSpan) * rect.width,
     y: (c) => rect.top + rect.height - ((Math.log(clamp(c ?? y0, y0, y1)) - ly0) / lySpan) * rect.height,
+    invertX: (px) => Math.exp(lx0 + ((px - rect.left) / rect.width) * lxSpan),
+    invertY: (py) => Math.exp(ly0 + ((rect.top + rect.height - py) / rect.height) * lySpan),
   };
+}
+
+/** Pixel scales for the model's own (unzoomed) domains. */
+export function makeScales(model: QuadrantModel, rect: PlotRect): Scales {
+  return makeScalesForDomain(model.xDomain, model.yDomain, rect);
 }
