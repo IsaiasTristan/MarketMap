@@ -8,7 +8,7 @@
  * signal; every view is timestamped with the filing as-of date. Not a
  * trade-recommendation system.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { BloombergTabStrip, type BloombergTabItem } from "@/components/analysis/BloombergTabStrip";
 import { useIsAdmin } from "@/lib/api/useMe";
@@ -17,7 +17,7 @@ import { useFlows } from "./useFlows";
 import { AsOfBanner, quarterLabel } from "./flowsUi";
 import { OverviewPanel } from "./OverviewPanel";
 import { QuadrantPanel } from "./quadrant/QuadrantPanel";
-import { TrajectoryGridPanel } from "./TrajectoryGridPanel";
+import { TrajectoryPipelinePanel } from "./TrajectoryPipelinePanel";
 import { RotationPanel } from "./RotationPanel";
 import { SignalsPanel } from "./SignalsPanel";
 import { WatchlistPanel } from "./WatchlistPanel";
@@ -39,6 +39,11 @@ export function FlowsClient() {
   const isAdmin = useIsAdmin();
   const qc = useQueryClient();
   const [tab, setTab] = useState<FlowTab>("overview");
+  // Apply a deep-linked ?tab= AFTER mount (no SSR/client hydration mismatch).
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get("tab");
+    if (t && TABS.some((x) => x.key === t)) setTab(t as FlowTab);
+  }, []);
   const [period, setPeriod] = useState<string | null>(null);
   const [ticker, setTicker] = useState<string | null>(null);
   const [ingesting, setIngesting] = useState(false);
@@ -81,7 +86,7 @@ export function FlowsClient() {
       case "overview": return <OverviewPanel period={activePeriod} onSelectTicker={select} />;
       case "leaderboard": return <LeaderboardPanel period={activePeriod} onSelectTicker={select} />;
       case "quadrant": return <QuadrantPanel period={activePeriod} onSelectTicker={select} />;
-      case "trajectories": return <TrajectoryGridPanel period={activePeriod} onSelectTicker={select} />;
+      case "trajectories": return <TrajectoryPipelinePanel period={activePeriod} onSelectTicker={select} />;
       case "rotation": return <RotationPanel period={activePeriod} onSelectTicker={select} />;
       case "signals": return <SignalsPanel period={activePeriod} onSelectTicker={select} />;
       case "watchlist": return <WatchlistPanel isAdmin={isAdmin} />;

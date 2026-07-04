@@ -23,6 +23,8 @@ export function LedgerPanel({ ticker, period, onClose }: { ticker: string; perio
     { key: "positionM", label: "Position ($M)", align: "right", render: (r) => `$${r.positionM.toLocaleString()}M`, sortValue: (r) => r.positionM },
     { key: "pctOfBook", label: "% of book", align: "right", render: (r) => (r.pctOfBook === null ? "—" : `${r.pctOfBook}%`), sortValue: (r) => r.pctOfBook ?? -1,
       colorize: (r) => ((r.pctOfBook ?? 0) >= 2 ? "warning" : null) },
+    { key: "sizingMult", label: "sizing×", align: "right", render: (r) => (r.sizingMult === null ? "—" : `${r.sizingMult}×`), sortValue: (r) => r.sizingMult ?? -1,
+      colorize: (r) => ((r.sizingMult ?? 0) >= 2 ? "positive" : null) },
   ];
 
   return (

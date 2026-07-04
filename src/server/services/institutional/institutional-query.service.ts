@@ -1056,6 +1056,8 @@ export interface LedgerRow {
   action: string;
   positionM: number; // $M
   pctOfBook: number | null;
+  /** Qualified-initiation sizing multiple (Part 1b); null if not a qualified entry. */
+  sizingMult: number | null;
 }
 export interface LedgerPayload {
   ticker: string;
@@ -1090,6 +1092,7 @@ export async function getLedger(ticker: string, period?: string): Promise<Ledger
     action: h.action,
     positionM: Number((Number(h.value) / 1e6).toFixed(1)),
     pctOfBook: h.pctOfBook !== null ? Number(h.pctOfBook.toFixed(2)) : null,
+    sizingMult: h.initiationStrength ?? null,
   }));
   // sort: holders first (by % of book desc), exits last
   rows.sort((a, b) => {
