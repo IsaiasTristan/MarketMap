@@ -334,6 +334,8 @@ export const flowsLedgerQuery = z.object({
   period: periodParam,
 });
 
+export const flowsLeaderboardQuery = z.object({ period: periodParam });
+
 export const flowsFirstMoversQuery = z.object({
   period: periodParam,
   broadThreshold: boundedInt(6, 3, 30),

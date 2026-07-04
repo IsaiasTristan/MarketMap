@@ -17,6 +17,7 @@ import { prisma } from "@/infrastructure/db/client";
 import { fetchMarketCapsBatch } from "@/infrastructure/providers/fmp/institutional";
 import { Prisma, RevisionGroupType } from "@prisma/client";
 import { buildActiveFlowMetrics, netDiffusionPct } from "./institutional-active-flow.service";
+import { runIngredientPrecompute } from "./institutional-ingredients.service";
 
 const iso = (d: Date | string): string =>
   (typeof d === "string" ? d : d.toISOString()).slice(0, 10);
@@ -482,6 +483,10 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
       fundsRotatedIn: af?.fundsIn ?? null,
       fundsRotatedOut: af?.fundsOut ?? null,
       fundsParticipating: af?.fundsParticipating ?? null,
+      // Leaderboard ingredients: capital-flow bps (mean over all signal funds) and
+      // point-in-time market cap (current cap; historical backfill is a follow-up).
+      netflowBps: af?.netBpsAllFunds ?? null,
+      marketCapUsd: mc !== null ? mc.toFixed(2) : null,
     });
   }
 
@@ -564,6 +569,11 @@ export async function runInstitutionalAggregate(opts: {
   for (const f of funds) await diffFund(f.id, log);
 
   const { periods } = await buildNameAndSectorAggregates(log);
+
+  // Config-independent leaderboard ingredients + split detection (bumps the
+  // ingredients_version that keys the leaderboard route cache).
+  await runIngredientPrecompute(log);
+
   const latestPeriod = periods.length ? periods[periods.length - 1]! : null;
 
   // Cache the landing payload for every quarter (not just the latest) so a

@@ -49,6 +49,7 @@ export type SectorMeta = ReadonlyMap<string, { sector: string | null; subsector:
 
 export interface ActiveFlowStat {
   activeBpsAvg: number; // group: mean over all evaluated funds; name: mean over participating funds
+  netBpsAllFunds: number; // mean (active − expected) weight over ALL evaluated funds (non-holders = 0)
   fundsIn: number; // active move > +ε
   fundsOut: number; // active move < −ε
   fundsParticipating: number; // funds with exposure at t−1 or t (diffusion denominator)
@@ -200,6 +201,9 @@ export function computeActiveFlowPair(
   for (const [t, a] of nameAcc) {
     byName.set(t, {
       activeBpsAvg: round2(a.participating > 0 ? a.sumDelta / a.participating : 0),
+      // Capital-flow ingredient: the same Σ deltaBps divided by ALL evaluated
+      // funds (non-holders contributed 0), i.e. the leaderboard's netflow_bps.
+      netBpsAllFunds: round2(fundsEvaluated > 0 ? a.sumDelta / fundsEvaluated : 0),
       fundsIn: a.fundsIn,
       fundsOut: a.fundsOut,
       fundsParticipating: a.participating,
@@ -209,8 +213,10 @@ export function computeActiveFlowPair(
   }
   const byGroup = new Map<string, ActiveFlowStat>();
   for (const [key, a] of groupAcc) {
+    const avg = round2(fundsEvaluated > 0 ? a.sumDelta / fundsEvaluated : 0);
     byGroup.set(key, {
-      activeBpsAvg: round2(fundsEvaluated > 0 ? a.sumDelta / fundsEvaluated : 0),
+      activeBpsAvg: avg,
+      netBpsAllFunds: avg,
       fundsIn: a.fundsIn,
       fundsOut: a.fundsOut,
       fundsParticipating: a.participating,
@@ -219,6 +225,60 @@ export function computeActiveFlowPair(
     });
   }
   return { byName, byGroup, skippedPrices };
+}
+
+/**
+ * Per-fund, per-ticker active vs expected weight (bps of the fund's tracked book)
+ * for one adjacent quarter pair. Pure. This is the fund-level view of the same
+ * math computeActiveFlowPair aggregates — used to precompute the leaderboard's
+ * per-fund ingredients (activeWeightBps / expectedWeightBps → netBps).
+ * Key: `${fundId}|${ticker}`. Only funds present in BOTH quarters with positive
+ * actual and counterfactual books are evaluated (matches the diffusion fund set).
+ */
+export function computePerFundActiveWeights(
+  prev: FundHoldingsByPeriod,
+  cur: FundHoldingsByPeriod,
+): Map<string, { activeWeightBps: number; expectedWeightBps: number }> {
+  // Implied price per ticker at t: median(value/shares), fall back to t−1.
+  const curPx = new Map<string, number[]>();
+  const prevPx = new Map<string, number[]>();
+  const collect = (src: FundHoldingsByPeriod, into: Map<string, number[]>) => {
+    for (const holdings of src.values())
+      for (const [t, h] of holdings) if (h.shares > 0) (into.get(t) ?? into.set(t, []).get(t)!).push(h.value / h.shares);
+  };
+  collect(cur, curPx);
+  collect(prev, prevPx);
+  const priceAt = new Map<string, number>();
+  for (const t of new Set([...curPx.keys(), ...prevPx.keys()])) {
+    const p = median(curPx.get(t) ?? []) ?? median(prevPx.get(t) ?? []);
+    if (p !== null) priceAt.set(t, p);
+  }
+
+  const out = new Map<string, { activeWeightBps: number; expectedWeightBps: number }>();
+  for (const [fundId, curHoldings] of cur) {
+    const prevHoldings = prev.get(fundId);
+    if (!prevHoldings) continue;
+    const book = bookOf(curHoldings);
+    if (book <= 0) continue;
+    let cfBook = 0;
+    for (const [t, h] of prevHoldings) {
+      const px = priceAt.get(t);
+      if (px !== undefined) cfBook += h.shares * px;
+    }
+    if (cfBook <= 0) continue;
+    const tickers = new Set([...prevHoldings.keys(), ...curHoldings.keys()]);
+    for (const t of tickers) {
+      const curV = curHoldings.get(t)?.value ?? 0;
+      const prevShares = prevHoldings.get(t)?.shares ?? 0;
+      const px = priceAt.get(t);
+      const cfV = prevShares > 0 && px !== undefined ? prevShares * px : 0;
+      out.set(`${fundId}|${t}`, {
+        activeWeightBps: round2((curV / book) * 10000),
+        expectedWeightBps: round2((cfV / cfBook) * 10000),
+      });
+    }
+  }
+  return out;
 }
 
 /** Net diffusion % = (fundsIn − fundsOut) / participating × 100, signed −100..+100. */

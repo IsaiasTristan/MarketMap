@@ -22,10 +22,12 @@ import { RotationPanel } from "./RotationPanel";
 import { SignalsPanel } from "./SignalsPanel";
 import { WatchlistPanel } from "./WatchlistPanel";
 import { LedgerPanel } from "./LedgerPanel";
+import { LeaderboardPanel } from "./leaderboard/LeaderboardPanel";
 
-type FlowTab = "overview" | "quadrant" | "trajectories" | "rotation" | "signals" | "watchlist";
+type FlowTab = "overview" | "leaderboard" | "quadrant" | "trajectories" | "rotation" | "signals" | "watchlist";
 const TABS: BloombergTabItem[] = [
   { key: "overview", label: "Overview" },
+  { key: "leaderboard", label: "Leaderboard" },
   { key: "quadrant", label: "Crowding × Conviction" },
   { key: "trajectories", label: "Trajectories" },
   { key: "rotation", label: "Rotation" },
@@ -77,6 +79,7 @@ export function FlowsClient() {
   const content = useMemo(() => {
     switch (tab) {
       case "overview": return <OverviewPanel period={activePeriod} onSelectTicker={select} />;
+      case "leaderboard": return <LeaderboardPanel period={activePeriod} onSelectTicker={select} />;
       case "quadrant": return <QuadrantPanel period={activePeriod} onSelectTicker={select} />;
       case "trajectories": return <TrajectoryGridPanel period={activePeriod} onSelectTicker={select} />;
       case "rotation": return <RotationPanel period={activePeriod} />;

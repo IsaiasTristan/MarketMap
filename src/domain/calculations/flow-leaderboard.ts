@@ -14,7 +14,6 @@
  * function so there is never a second scoring implementation.
  */
 import { zScore } from "@/domain/calculations/factor-scoring";
-import { quantileSorted } from "@/domain/calculations/percentile-range";
 import type { FlowLeaderboardConfig } from "@/domain/calculations/flow-leaderboard-config";
 
 /** A signal-tier fund's position in one (ticker, quarter), post split-adjustment. */
