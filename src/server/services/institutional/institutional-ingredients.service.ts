@@ -16,6 +16,16 @@
  *
  * The per-name netflowBps and point-in-time marketCapUsd are written by the name
  * aggregate pass (they piggyback on the active-flow metrics already computed there).
+ *
+ * BACKLOG — liquidity ingredients (adv_20d, days_to_exit): the leaderboard's LIQ
+ * column, the crowding scatter, and a future exit-stress view all want a
+ * per-(ticker,quarter) liquidity horizon = combined signal-tier position / 20-day
+ * ADV at 20% participation (formula ported from pnl.service.ts getAdv20d /
+ * daysToLiquidate). Precompute it HERE (versioned like marketCapUsd), not in the
+ * flows read path, so it is computed once and shared. It needs ticker→securityId
+ * resolution against the security master — the SAME mapping the taxonomy work
+ * (rotation spec Part 2) adds — so sequence this AFTER that lands to build the join
+ * once. Deferred from the Part 2 leaderboard UI on purpose.
  */
 import { prisma } from "@/infrastructure/db/client";
 import { Prisma } from "@prisma/client";

@@ -17,6 +17,7 @@ import {
   type QuarterIngredient,
   type TickerIngredients,
   type FundPosition,
+  type ScoredRow,
 } from "@/domain/calculations/flow-leaderboard";
 import { FLOW_LEADERBOARD_CONFIG, type FlowLeaderboardConfig } from "@/domain/calculations/flow-leaderboard-config";
 import { signalFundFilter } from "./institutional-aggregate.service";
@@ -36,7 +37,23 @@ const STATUS: Record<string, PositionStatus> = {
   EXITED: "exited",
 };
 
-export interface LeaderboardResult extends Leaderboard {
+/** A board row plus loader-only enrichments the pure core doesn't compute:
+ *  the 8-quarter cumulative active-accumulation trajectory (reused from the
+ *  trajectory view), the price return since period-end, and named top adders. */
+export interface EnrichedRow extends ScoredRow {
+  /** 8-quarter cumulative active bps (running sum of activeBpsAvg), ascending. */
+  accSeries: number[];
+  /** % change in split-adjusted close since the filing period-end; null if unknown. */
+  priceReturnPct: number | null;
+  /** Top adders over the latest 2 quarters (by |netBps|), with fund names. */
+  topAdders: Array<{ fund: string; deltaPct: number | null; netBps: number | null; isElite: boolean }>;
+}
+
+export interface LeaderboardResult {
+  accumulation: EnrichedRow[];
+  distribution: EnrichedRow[];
+  gatedOut: Leaderboard["gatedOut"];
+  countFlowUnavailable: boolean;
   filingPeriod: string;
   ingredientsVersion: number;
 }
@@ -85,6 +102,7 @@ export async function getLeaderboard(period?: string, config: FlowLeaderboardCon
       medianPctOfBook: true,
       netflowBps: true,
       marketCapUsd: true,
+      activeBpsAvg: true,
     },
   });
 
@@ -145,6 +163,7 @@ export async function getLeaderboard(period?: string, config: FlowLeaderboardCon
     medianPctOfBook: number | null;
     netflowBps: number;
     marketCapUsd: number | null;
+    activeBpsAvg: number;
   }
   const nameByTicker = new Map<string, Map<string, NameLite>>();
   for (const r of nameRows) {
@@ -156,6 +175,7 @@ export async function getLeaderboard(period?: string, config: FlowLeaderboardCon
       medianPctOfBook: r.medianPctOfBook,
       netflowBps: r.netflowBps ?? 0,
       marketCapUsd: r.marketCapUsd != null ? Number(r.marketCapUsd) : null,
+      activeBpsAvg: r.activeBpsAvg ?? 0,
     });
   }
 
@@ -202,7 +222,102 @@ export async function getLeaderboard(period?: string, config: FlowLeaderboardCon
     // data issue (e.g. unpopulated adjShareDeltaPct); the UI shows a banner.
     console.warn(`[leaderboard] count-flow signal unavailable for ${target} — scoring on capital flow only (data issue)`);
   }
-  const result: LeaderboardResult = { ...board, filingPeriod: target, ingredientsVersion: version };
+
+  // ── Row enrichment (loader-only; the pure core stays DB-free). ──
+  const boardRows = [...board.accumulation, ...board.distribution];
+  const boardTickers = boardRows.map((r) => r.ticker);
+
+  // 8-quarter cumulative active-accumulation trajectory (running sum of
+  // activeBpsAvg over the window, ascending) — the trajectory view's primary series.
+  const accSeriesByTicker = new Map<string, number[]>();
+  for (const ticker of boardTickers) {
+    const nameSeries = nameByTicker.get(ticker);
+    if (!nameSeries) continue;
+    let cum = 0;
+    const series: number[] = [];
+    for (const p of windowPeriods) {
+      const n = nameSeries.get(p);
+      if (!n) continue;
+      cum += n.activeBpsAvg;
+      series.push(Math.round(cum * 100) / 100);
+    }
+    accSeriesByTicker.set(ticker, series);
+  }
+
+  // Top adders (latest 2 quarters, by |netBps|) with fund names.
+  const isAdder = (m: { status: PositionStatus; deltaPct: number | null }): boolean =>
+    m.status === "new" || (m.deltaPct != null && m.deltaPct >= config.adder_threshold_pct);
+  const adderFundIds = new Set<string>();
+  for (const r of boardRows) for (const c of r.cells.slice(-2)) for (const m of c.movers) if (isAdder(m)) adderFundIds.add(m.fundId);
+  const fundNameRows = adderFundIds.size
+    ? await prisma.institutionalFund.findMany({ where: { id: { in: [...adderFundIds] } }, select: { id: true, name: true, isMostRespected: true } })
+    : [];
+  const fundName = new Map(fundNameRows.map((f) => [f.id, { name: f.name, isElite: f.isMostRespected }]));
+  const topAddersOf = (r: ScoredRow): EnrichedRow["topAdders"] => {
+    const best = new Map<string, { deltaPct: number | null; netBps: number | null }>();
+    for (const c of r.cells.slice(-2)) {
+      for (const m of c.movers) {
+        if (!isAdder(m)) continue;
+        const prev = best.get(m.fundId);
+        if (!prev || Math.abs(m.netBps ?? 0) > Math.abs(prev.netBps ?? 0)) best.set(m.fundId, { deltaPct: m.deltaPct, netBps: m.netBps });
+      }
+    }
+    const round1 = (n: number | null): number | null => (n == null ? null : Math.round(n * 10) / 10);
+    return [...best.entries()]
+      .map(([fundId, v]) => ({
+        fund: fundName.get(fundId)?.name ?? fundId,
+        isElite: fundName.get(fundId)?.isElite ?? false,
+        deltaPct: round1(v.deltaPct),
+        netBps: round1(v.netBps),
+      }))
+      .sort((a, b) => (b.netBps ?? 0) - (a.netBps ?? 0))
+      .slice(0, 3);
+  };
+
+  // Price return since period-end, from SPLIT-ADJUSTED closes. Adjusted closes are
+  // correct for returns; unadjusted closes are only needed for weight/value
+  // reconciliation, never here. One query per board: first row on/after period-end
+  // is the period-end close, last row is the latest close.
+  const priceReturnByTicker = new Map<string, number>();
+  if (boardTickers.length) {
+    const secs = await prisma.security.findMany({ where: { ticker: { in: boardTickers } }, select: { id: true, ticker: true } });
+    const tickerBySecId = new Map(secs.map((s) => [s.id, s.ticker]));
+    if (secs.length) {
+      const priceRows = await prisma.priceHistory.findMany({
+        where: { securityId: { in: secs.map((s) => s.id) }, tradeDate: { gte: new Date(`${target}T00:00:00.000Z`) } },
+        orderBy: { tradeDate: "asc" },
+        select: { securityId: true, adjClose: true },
+      });
+      const firstLast = new Map<string, { first: number; last: number }>();
+      for (const row of priceRows) {
+        const px = Number(row.adjClose);
+        if (!Number.isFinite(px) || px <= 0) continue;
+        const cur = firstLast.get(row.securityId);
+        if (!cur) firstLast.set(row.securityId, { first: px, last: px });
+        else cur.last = px;
+      }
+      for (const [secId, { first, last }] of firstLast) {
+        const t = tickerBySecId.get(secId);
+        if (t && first > 0) priceReturnByTicker.set(t, Math.round((last / first - 1) * 1000) / 10);
+      }
+    }
+  }
+
+  const enrich = (r: ScoredRow): EnrichedRow => ({
+    ...r,
+    accSeries: accSeriesByTicker.get(r.ticker) ?? [],
+    priceReturnPct: priceReturnByTicker.get(r.ticker) ?? null,
+    topAdders: topAddersOf(r),
+  });
+
+  const result: LeaderboardResult = {
+    accumulation: board.accumulation.map(enrich),
+    distribution: board.distribution.map(enrich),
+    gatedOut: board.gatedOut,
+    countFlowUnavailable: board.countFlowUnavailable,
+    filingPeriod: target,
+    ingredientsVersion: version,
+  };
   cache.set(key, result);
   return result;
 }
