@@ -36,6 +36,11 @@ export interface FlowLeaderboardConfig {
   recency_weights: readonly number[];
   /** Deliberate-rotation vote floor, per rollup level (bps of book). */
   min_vote_bps: MinVoteBpsConfig;
+  /** Stock-rotation view: minimum participating funds for a name to be ranked. */
+  min_participants_stock: number;
+  /** Stock-rotation view: shrinkage added to the diffusion denominator so a
+   *  3-of-3 name no longer reads 100% (sd = (in−out)/(n+k)). */
+  diffusion_shrink_k: number;
   adder_threshold_pct: number;
   raw_vs_relative_blend: number;
   count_vs_capital_blend: number;
@@ -78,6 +83,13 @@ export const FLOW_LEADERBOARD_CONFIG: FlowLeaderboardConfig = {
    *  merely drifts weights up shows sub-floor moves and votes 0, so a green
    *  diffusion bar means funds actually rotated in, not that the sector rallied. */
   min_vote_bps: { sector: 5, subsector: 3, stock: 2 },
+
+  /** A single-name bar needs at least this many participating funds, or a 2–3
+   *  holder 100% bar would dominate the board on noise. */
+  min_participants_stock: 5,
+  /** Diffusion shrinkage k: a 3-of-3 name reads 3/(3+4)=43%, not 100%; a broadly
+   *  held 20-of-25 reads 16/29=55%, so breadth is rewarded over tiny unanimity. */
+  diffusion_shrink_k: 4,
 
   /** A fund is an "adder" when split-adjusted shares rose ≥ this % QoQ (or it
    *  initiated); a "reducer" when they fell ≥ this % (or it exited). */

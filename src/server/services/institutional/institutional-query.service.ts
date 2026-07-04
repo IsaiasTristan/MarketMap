@@ -9,6 +9,8 @@ import { Prisma } from "@prisma/client";
 import { CROWDED_BREADTH_PCT, signalFundFilter } from "./institutional-aggregate.service";
 import { CATEGORY_TIER, type FundCategory } from "./watchlist";
 import { UNCLASSIFIED_SECTOR } from "@/lib/institutional/security-class";
+import { rankStockRotation, shrunkDiffusionPct, type RankedStockRow, type StockRotationInput } from "@/lib/institutional/stock-rotation";
+import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-config";
 
 const iso = (d: Date): string => d.toISOString().slice(0, 10);
 const HIGH_CONVICTION_PCT = 1; // % of book that marks a "real" position
@@ -324,8 +326,8 @@ export async function getTrajectory(ticker: string): Promise<SingleTrajectoryPay
 
 // ── 5.4 sector / subsector / stock rotation ─────────────────────────────────
 export type RotationGroupBy = "sector" | "subsector" | "stock";
+export type RotationSizeFilter = "all" | "ex-mega" | "mega-only";
 const SUBSECTOR_LIMIT = 15; // top/bottom N subsectors by net diffusion
-const STOCK_MIN_FUNDS = 3; // stock view: min participating funds (a 1-fund 100% bar is noise)
 
 export interface RotationGroup {
   groupKey: string; // sector name, subsector name, or ticker
@@ -336,8 +338,12 @@ export interface RotationGroup {
   nameCount: number; // stock view: fundsHolding (holder count)
   companyName?: string | null; // stock view only
   sector?: string | null; // stock view only
+  marketCapTier?: string | null; // stock view only
   // Price-adjusted active-rotation metric (null before the first prior quarter).
-  netDiffusionPct: number | null; // bar length: (in−out)/participating × 100
+  netDiffusionPct: number | null; // (in−out)/participating × 100 (raw)
+  shrunkDiffusionPct?: number | null; // stock view bar length: (in−out)/(n+k) × 100
+  rankScore?: number | null; // stock view ordering score
+  belowThreshold?: boolean; // stock view: below the participation floor (search-only)
   activeBpsAvg: number | null; // avg deliberate move in bps of book
   dollarNetFlow: number | null; // $ net capital moved (annotation)
   fundsIn: number | null;
@@ -349,6 +355,11 @@ export interface RotationPayload {
   groupBy: RotationGroupBy;
   hasActiveFlow: boolean; // false only when the period has no prior quarter → UI falls back
   groups: RotationGroup[];
+  // Stock view only: the full non-vehicle universe for the search box, and the
+  // count of names meeting the participation floor.
+  searchable?: RotationGroup[];
+  qualifyingCount?: number;
+  sizeFilter?: RotationSizeFilter;
 }
 
 type StoredActiveFlow = {
@@ -366,7 +377,38 @@ function diffusionOf(inN: number | null, outN: number | null, part: number | nul
   return Math.round((((inN ?? 0) - (outN ?? 0)) / part) * 10000) / 100;
 }
 
-export async function getRotation(period?: string, groupBy: RotationGroupBy = "sector"): Promise<RotationPayload | null> {
+/** Map a normalized stock-rotation row (+ optional ranked fields) to a RotationGroup. */
+function stockGroup(
+  r: StockRotationInput,
+  ranked: RankedStockRow | null,
+  belowThreshold?: boolean,
+): RotationGroup {
+  return {
+    groupKey: r.ticker,
+    netFundsAdding: r.fundsBought - r.fundsSold,
+    fundsAdding: r.fundsBought,
+    fundsTrimming: r.fundsSold,
+    nameCount: r.fundsHolding,
+    companyName: r.companyName,
+    sector: r.sector,
+    marketCapTier: r.marketCapTier,
+    netDiffusionPct: diffusionOf(r.fundsIn, r.fundsOut, r.fundsParticipating),
+    shrunkDiffusionPct: ranked ? ranked.shrunkDiffusionPct : null,
+    rankScore: ranked ? ranked.rankScore : null,
+    belowThreshold,
+    activeBpsAvg: r.activeBpsAvg,
+    dollarNetFlow: r.dollarNetFlow,
+    fundsIn: r.fundsIn,
+    fundsOut: r.fundsOut,
+    fundsParticipating: r.fundsParticipating,
+  };
+}
+
+export async function getRotation(
+  period?: string,
+  groupBy: RotationGroupBy = "sector",
+  sizeFilter: RotationSizeFilter = "all",
+): Promise<RotationPayload | null> {
   const p = await resolvePeriod(period);
   if (!p) return null;
   const periodDate = new Date(`${p}T00:00:00.000Z`);
@@ -378,32 +420,52 @@ export async function getRotation(period?: string, groupBy: RotationGroupBy = "s
       // funds rotate between — excluded from the rotation entirely.
       where: { filingPeriod: periodDate, NOT: { securityClass: "vehicle" } },
       select: {
-        ticker: true, companyName: true, sector: true, fundsBought: true, fundsSold: true, fundsHolding: true,
+        ticker: true, companyName: true, sector: true, marketCapTier: true, fundsBought: true, fundsSold: true, fundsHolding: true,
         activeBpsAvg: true, dollarNetFlow: true, fundsRotatedIn: true, fundsRotatedOut: true, fundsParticipating: true,
       },
     });
     const hasActiveFlow = rows.some((r) => r.activeBpsAvg !== null);
-    const mapped: RotationGroup[] = rows.map((r) => ({
-      groupKey: r.ticker,
-      netFundsAdding: r.fundsBought - r.fundsSold,
-      fundsAdding: r.fundsBought,
-      fundsTrimming: r.fundsSold,
-      nameCount: r.fundsHolding,
+    const cfg = FLOW_LEADERBOARD_CONFIG;
+    const inputs = rows.map((r) => ({
+      ticker: r.ticker,
       companyName: r.companyName,
       sector: r.sector,
-      netDiffusionPct: diffusionOf(r.fundsRotatedIn, r.fundsRotatedOut, r.fundsParticipating),
-      activeBpsAvg: r.activeBpsAvg,
-      dollarNetFlow: r.dollarNetFlow !== null ? Number(r.dollarNetFlow) : null,
+      marketCapTier: r.marketCapTier,
       fundsIn: r.fundsRotatedIn,
       fundsOut: r.fundsRotatedOut,
       fundsParticipating: r.fundsParticipating,
+      activeBpsAvg: r.activeBpsAvg,
+      dollarNetFlow: r.dollarNetFlow !== null ? Number(r.dollarNetFlow) : null,
+      fundsBought: r.fundsBought,
+      fundsSold: r.fundsSold,
+      fundsHolding: r.fundsHolding,
     }));
-    const groups = hasActiveFlow
-      ? mapped
-          .filter((r) => (r.fundsParticipating ?? 0) >= STOCK_MIN_FUNDS && r.netDiffusionPct !== null && r.netDiffusionPct !== 0)
-          .sort((a, b) => (b.netDiffusionPct ?? 0) - (a.netDiffusionPct ?? 0))
-      : mapped.filter((r) => r.netFundsAdding !== 0).sort((a, b) => b.netFundsAdding - a.netFundsAdding);
-    return { filingPeriod: p, groupBy, hasActiveFlow, groups };
+
+    if (!hasActiveFlow) {
+      // Earliest quarter: no prior to price-diff → legacy holder-count fallback.
+      const groups = inputs
+        .map((r) => stockGroup(r, null))
+        .filter((g) => g.netFundsAdding !== 0)
+        .sort((a, b) => b.netFundsAdding - a.netFundsAdding)
+        .slice(0, cfg.board_size.accumulation);
+      return { filingPeriod: p, groupBy, hasActiveFlow, groups, sizeFilter };
+    }
+
+    // Shrunk-diffusion, rank-scored top/bottom boards (no full-universe listing).
+    const ranked = rankStockRotation(inputs, {
+      minParticipants: cfg.min_participants_stock,
+      k: cfg.diffusion_shrink_k,
+      boardSize: 15,
+      sizeFilter,
+    });
+    const groups = [
+      ...ranked.accumulation.map((r) => stockGroup(r, r)),
+      ...ranked.distribution.map((r) => stockGroup(r, r)),
+    ];
+    const searchable = ranked.searchable.map((r) =>
+      stockGroup(r, r, (r.fundsParticipating ?? 0) < cfg.min_participants_stock),
+    );
+    return { filingPeriod: p, groupBy, hasActiveFlow, groups, searchable, qualifyingCount: ranked.qualifying, sizeFilter };
   }
 
   const rows = await prisma.institutionalSectorAggregate.findMany({
@@ -418,6 +480,9 @@ export async function getRotation(period?: string, groupBy: RotationGroupBy = "s
       fundsTrimming: r.fundsTrimming,
       nameCount: r.nameCount,
       netDiffusionPct: af?.netDiffusionPct ?? null,
+      shrunkDiffusionPct: af
+        ? shrunkDiffusionPct(af.fundsIn, af.fundsOut, af.fundsParticipating, FLOW_LEADERBOARD_CONFIG.diffusion_shrink_k)
+        : null,
       activeBpsAvg: af?.activeBpsAvg ?? null,
       dollarNetFlow: r.netValueFlow !== null ? Number(r.netValueFlow) : null,
       fundsIn: af?.fundsIn ?? null,

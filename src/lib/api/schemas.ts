@@ -327,6 +327,7 @@ export const flowsTrajectoryQuery = z.object({
 export const flowsRotationQuery = z.object({
   period: periodParam,
   groupBy: z.enum(["sector", "subsector", "stock"]).optional().default("sector"),
+  size: z.enum(["all", "ex-mega", "mega-only"]).optional().default("all"),
 });
 
 export const flowsLedgerQuery = z.object({
