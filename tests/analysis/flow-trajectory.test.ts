@@ -53,8 +53,8 @@ describe("flow-trajectory: accumulationStreak", () => {
   it("an opposite-signed quarter breaks the run", () => {
     expect(accumulationStreak([-3, 2, 2, 2])).toBe(3);
   });
-  it("dust (within the noise floor) does not reset a build", () => {
-    expect(accumulationStreak([2, 0.1, 2, 2])).toBe(4); // 0.1 < 0.5 floor
+  it("a flat/noise quarter breaks the active run (not accumulation)", () => {
+    expect(accumulationStreak([2, 0.1, 2, 2])).toBe(2); // the 0.1 quarter ends the run
   });
   it("latest quarter within the noise floor ⇒ streak 0", () => {
     expect(accumulationStreak([2, 2, 0.1])).toBe(0);

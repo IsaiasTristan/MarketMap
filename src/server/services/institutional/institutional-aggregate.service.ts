@@ -20,6 +20,7 @@ import { buildActiveFlowMetrics, netDiffusionPct } from "./institutional-active-
 import { runIngredientPrecompute } from "./institutional-ingredients.service";
 import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-config";
 import { cumulativeAccSeries } from "@/domain/calculations/flow-trajectory";
+import { classifyLifecycleSeries, detectTransitions, type StageInfo } from "@/domain/calculations/lifecycle";
 import { classifySecurity, type SecurityClass } from "@/lib/institutional/security-class";
 
 const iso = (d: Date | string): string =>
@@ -444,6 +445,39 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
     streakByTicker.set(ticker, new Map(periods.map((p, i) => [p, streaks[i]!])));
   }
 
+  // Lifecycle stage per (ticker, period) from the SINGLE accumulation series
+  // (Part 2): the per-quarter input is netBpsAllFunds (all signal funds). The
+  // CROWDED escalation flag fires when breadth ≥ the cross-sectional p75 of that
+  // period. Transition events feed the InstitutionalEvent stream.
+  const p75Breadth = new Map(
+    periods.map((p) => {
+      const arr = breadthSorted.get(p)!;
+      return [p, arr.length ? arr[Math.min(arr.length - 1, Math.floor(0.75 * (arr.length - 1)))]! : Infinity] as const;
+    }),
+  );
+  const lifecycleByTicker = new Map<string, Map<string, StageInfo>>();
+  const eventRows: Prisma.InstitutionalEventCreateManyInput[] = [];
+  for (const [ticker, series] of seriesByTicker) {
+    const perQuarterBps = periods.map((p) => activeFlow.byNamePeriod.get(`${ticker}|${p}`)?.netBpsAllFunds ?? 0);
+    const crowdedFlags = periods.map((p) => {
+      const holders = series.get(p);
+      if (holders == null) return false;
+      const breadth = (holders / (denom.get(p) ?? 1)) * 100;
+      return holders >= 2 && breadth >= (p75Breadth.get(p) ?? Infinity);
+    });
+    const stages = classifyLifecycleSeries(perQuarterBps, crowdedFlags);
+    lifecycleByTicker.set(ticker, new Map(periods.map((p, i) => [p, stages[i]!])));
+    for (const ev of detectTransitions(stages)) {
+      eventRows.push({
+        kind: "stage_transition",
+        ticker,
+        filingPeriod: new Date(`${periods[ev.index]}T00:00:00.000Z`),
+        significance: ev.significance,
+        payload: { from: ev.from, to: ev.to, transition: ev.transition, streak: stages[ev.index]!.streak } as Prisma.InputJsonValue,
+      });
+    }
+  }
+
   // Assemble + write name aggregates.
   const nameRows: Prisma.InstitutionalNameAggregateCreateManyInput[] = [];
   for (const ns of byKey.values()) {
@@ -489,6 +523,8 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
       medianPctOfBook: ns.medianPctBook,
       totalValue: ns.totalValue !== null ? ns.totalValue.toFixed(2) : null,
       trajectoryLabel: classifyTrajectory(window),
+      lifecycleStage: lifecycleByTicker.get(ns.ticker)?.get(ns.period)?.stage ?? null,
+      crowded: lifecycleByTicker.get(ns.ticker)?.get(ns.period)?.crowded ?? false,
       quadrant: classifyQuadrant(breadth, ns.medianPctBook, breadthMid.get(ns.period)!, convMid.get(ns.period)!),
       newArrival: idx > 0 && priorHolders === 0 && ns.fundsHolding > 0,
       breadthDecile: decileOf(breadthSorted.get(ns.period)!, breadth),
@@ -510,6 +546,14 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
     ...chunk(nameRows, 5000).map((c) => prisma.institutionalNameAggregate.createMany({ data: c })),
   ]);
   log(`[institutional-agg] name aggregates: ${nameRows.length} rows across ${periods.length} periods`);
+
+  // Lifecycle transition events (Part 2). Idempotent: replace the stage_transition
+  // slice each run (stasis_break events are written by the core-holdings pass).
+  await prisma.$transaction([
+    prisma.institutionalEvent.deleteMany({ where: { kind: "stage_transition" } }),
+    ...chunk(eventRows, 5000).map((c) => prisma.institutionalEvent.createMany({ data: c })),
+  ]);
+  log(`[institutional-agg] lifecycle transitions: ${eventRows.length} events`);
 
   // Sector + subsector rollups from the name aggregates.
   const sectorRows: Prisma.InstitutionalSectorAggregateCreateManyInput[] = [];

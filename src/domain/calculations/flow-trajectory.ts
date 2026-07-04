@@ -106,10 +106,13 @@ export function breadthGrowthFactor(
 
 /**
  * Signed accumulation streak from the per-quarter all-funds net-bps series:
- * consecutive quarters (ending at the latest) whose sign matches the latest
- * quarter's sign, where |move| ≤ noise_floor is treated as a continuation
- * (dust doesn't reset a build) and an opposite-signed quarter breaks the run.
- * Returns +N accumulating, −N distributing, 0 when the latest quarter is noise.
+ * consecutive quarters (ending at the latest) whose active move is above the
+ * noise floor AND matches the latest quarter's sign. A flat/noise quarter
+ * (|move| ≤ noise_floor) is NOT accumulation and BREAKS the run — so a lone
+ * jump after flat quarters is streak 1 (a spike), and a plateau ends the run.
+ * Returns +N accumulating, −N distributing, 0 when the latest quarter is flat.
+ * (Share-count "dividend dribble" tolerance is a Part 3 tenure concern, not this
+ * bps streak.)
  */
 export function accumulationStreak(
   perQuarterNetBps: number[],
@@ -123,8 +126,8 @@ export function accumulationStreak(
   if (latest === 0) return 0;
   let streak = 0;
   for (let i = n - 1; i >= 0; i--) {
-    if (sgn(perQuarterNetBps[i] ?? 0) === -latest) break; // opposite-signed quarter ends the run
-    streak += 1; // same sign or noise → extend
+    if (sgn(perQuarterNetBps[i] ?? 0) !== latest) break; // opposite sign OR flat ends the run
+    streak += 1;
   }
   return latest * streak;
 }
