@@ -82,7 +82,7 @@ export function FlowsClient() {
       case "leaderboard": return <LeaderboardPanel period={activePeriod} onSelectTicker={select} />;
       case "quadrant": return <QuadrantPanel period={activePeriod} onSelectTicker={select} />;
       case "trajectories": return <TrajectoryGridPanel period={activePeriod} onSelectTicker={select} />;
-      case "rotation": return <RotationPanel period={activePeriod} />;
+      case "rotation": return <RotationPanel period={activePeriod} onSelectTicker={select} />;
       case "signals": return <SignalsPanel period={activePeriod} onSelectTicker={select} />;
       case "watchlist": return <WatchlistPanel isAdmin={isAdmin} />;
     }

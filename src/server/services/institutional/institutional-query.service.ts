@@ -9,7 +9,7 @@ import { Prisma } from "@prisma/client";
 import { CROWDED_BREADTH_PCT, signalFundFilter } from "./institutional-aggregate.service";
 import { CATEGORY_TIER, type FundCategory } from "./watchlist";
 import { UNCLASSIFIED_SECTOR } from "@/lib/institutional/security-class";
-import { rankStockRotation, shrunkDiffusionPct, type RankedStockRow, type StockRotationInput } from "@/lib/institutional/stock-rotation";
+import { rankStockRotation, shrunkDiffusionPct, diffusionContext, type RankedStockRow, type StockRotationInput } from "@/lib/institutional/stock-rotation";
 import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-config";
 
 const iso = (d: Date): string => d.toISOString().slice(0, 10);
@@ -349,6 +349,12 @@ export interface RotationGroup {
   fundsIn: number | null;
   fundsOut: number | null;
   fundsParticipating: number | null;
+  // Decision-grade context (Part 5): last quarter's diffusion (ghost tick), the
+  // trailing 4-quarter history (tooltip), and the trailing-12q |diffusion|
+  // percentile of this quarter's move.
+  priorDiffusionPct?: number | null;
+  diffusionHistory?: number[];
+  percentile?: number | null;
 }
 export interface RotationPayload {
   filingPeriod: string;
@@ -404,42 +410,70 @@ function stockGroup(
   };
 }
 
+/** Normalized name-aggregate select shape used by the stock board + drill-down. */
+const STOCK_SELECT = {
+  ticker: true, companyName: true, sector: true, marketCapTier: true, fundsBought: true, fundsSold: true, fundsHolding: true,
+  activeBpsAvg: true, dollarNetFlow: true, fundsRotatedIn: true, fundsRotatedOut: true, fundsParticipating: true,
+} as const;
+type StockRow = {
+  ticker: string; companyName: string | null; sector: string | null; marketCapTier: string | null;
+  fundsBought: number; fundsSold: number; fundsHolding: number; activeBpsAvg: number | null;
+  dollarNetFlow: unknown; fundsRotatedIn: number | null; fundsRotatedOut: number | null; fundsParticipating: number | null;
+};
+function toStockInput(r: StockRow): StockRotationInput {
+  return {
+    ticker: r.ticker, companyName: r.companyName, sector: r.sector, marketCapTier: r.marketCapTier,
+    fundsIn: r.fundsRotatedIn, fundsOut: r.fundsRotatedOut, fundsParticipating: r.fundsParticipating,
+    activeBpsAvg: r.activeBpsAvg, dollarNetFlow: r.dollarNetFlow !== null ? Number(r.dollarNetFlow) : null,
+    fundsBought: r.fundsBought, fundsSold: r.fundsSold, fundsHolding: r.fundsHolding,
+  };
+}
+
 export async function getRotation(
   period?: string,
   groupBy: RotationGroupBy = "sector",
   sizeFilter: RotationSizeFilter = "all",
+  within?: string,
 ): Promise<RotationPayload | null> {
   const p = await resolvePeriod(period);
   if (!p) return null;
   const periodDate = new Date(`${p}T00:00:00.000Z`);
+  const cfg = FLOW_LEADERBOARD_CONFIG;
+
+  // Drill-down: names inside one sector/subsector — top-5 accumulation + bottom-5
+  // distribution, so the rotation view resolves to names, not a dead-end aggregate.
+  if (within && groupBy !== "stock") {
+    const rows = (await prisma.institutionalNameAggregate.findMany({
+      where: {
+        filingPeriod: periodDate,
+        NOT: { securityClass: "vehicle" },
+        ...(groupBy === "subsector" ? { subsector: within } : { sector: within }),
+      },
+      select: STOCK_SELECT,
+    })) as StockRow[];
+    const ranked = rankStockRotation(rows.map(toStockInput), {
+      minParticipants: 1,
+      k: cfg.diffusion_shrink_k,
+      boardSize: 5,
+      sizeFilter: "all",
+    });
+    const groups = [
+      ...ranked.accumulation.map((r) => stockGroup(r, r)),
+      ...ranked.distribution.map((r) => stockGroup(r, r)),
+    ];
+    return { filingPeriod: p, groupBy, hasActiveFlow: rows.some((r) => r.activeBpsAvg !== null), groups };
+  }
 
   if (groupBy === "stock") {
     // Per-ticker flow lives on the name aggregates (no sector precompute needed).
-    const rows = await prisma.institutionalNameAggregate.findMany({
+    const rows = (await prisma.institutionalNameAggregate.findMany({
       // Vehicles (index/sector/thematic/levered ETFs) are instruments, not names
       // funds rotate between — excluded from the rotation entirely.
       where: { filingPeriod: periodDate, NOT: { securityClass: "vehicle" } },
-      select: {
-        ticker: true, companyName: true, sector: true, marketCapTier: true, fundsBought: true, fundsSold: true, fundsHolding: true,
-        activeBpsAvg: true, dollarNetFlow: true, fundsRotatedIn: true, fundsRotatedOut: true, fundsParticipating: true,
-      },
-    });
+      select: STOCK_SELECT,
+    })) as StockRow[];
     const hasActiveFlow = rows.some((r) => r.activeBpsAvg !== null);
-    const cfg = FLOW_LEADERBOARD_CONFIG;
-    const inputs = rows.map((r) => ({
-      ticker: r.ticker,
-      companyName: r.companyName,
-      sector: r.sector,
-      marketCapTier: r.marketCapTier,
-      fundsIn: r.fundsRotatedIn,
-      fundsOut: r.fundsRotatedOut,
-      fundsParticipating: r.fundsParticipating,
-      activeBpsAvg: r.activeBpsAvg,
-      dollarNetFlow: r.dollarNetFlow !== null ? Number(r.dollarNetFlow) : null,
-      fundsBought: r.fundsBought,
-      fundsSold: r.fundsSold,
-      fundsHolding: r.fundsHolding,
-    }));
+    const inputs = rows.map(toStockInput);
 
     if (!hasActiveFlow) {
       // Earliest quarter: no prior to price-diff → legacy holder-count fallback.
@@ -462,6 +496,7 @@ export async function getRotation(
       ...ranked.accumulation.map((r) => stockGroup(r, r)),
       ...ranked.distribution.map((r) => stockGroup(r, r)),
     ];
+    await attachStockHistory(groups, periodDate, p, cfg.diffusion_shrink_k);
     const searchable = ranked.searchable.map((r) =>
       stockGroup(r, r, (r.fundsParticipating ?? 0) < cfg.min_participants_stock),
     );
@@ -503,7 +538,74 @@ export async function getRotation(
       ? [...sorted.slice(0, SUBSECTOR_LIMIT), ...sorted.slice(-SUBSECTOR_LIMIT)]
       : sorted;
   const groups = [...trimmed, ...unclassified];
+  await attachSectorHistory(groups, groupBy === "subsector" ? "SUBSECTOR" : "SECTOR", periodDate, p, cfg.diffusion_shrink_k);
   return { filingPeriod: p, groupBy, hasActiveFlow, groups };
+}
+
+/** Attach ghost/history/percentile to sector or subsector rows from their own
+ *  trailing-12-quarter shrunk-diffusion series. */
+async function attachSectorHistory(
+  groups: RotationGroup[],
+  groupType: "SECTOR" | "SUBSECTOR",
+  periodDate: Date,
+  currentIso: string,
+  k: number,
+): Promise<void> {
+  if (groups.length === 0) return;
+  const periods = await prisma.institutionalSectorAggregate.findMany({
+    where: { groupType, filingPeriod: { lte: periodDate } },
+    distinct: ["filingPeriod"],
+    select: { filingPeriod: true },
+    orderBy: { filingPeriod: "desc" },
+    take: 12,
+  });
+  const rows = await prisma.institutionalSectorAggregate.findMany({
+    where: { groupType, filingPeriod: { in: periods.map((r) => r.filingPeriod) } },
+    select: { groupKey: true, filingPeriod: true, aggregatesJson: true },
+  });
+  const series = new Map<string, Array<{ period: string; value: number }>>();
+  for (const r of rows) {
+    const af = (r.aggregatesJson as unknown as { activeFlow?: StoredActiveFlow } | null)?.activeFlow;
+    if (!af) continue;
+    const value = shrunkDiffusionPct(af.fundsIn, af.fundsOut, af.fundsParticipating, k);
+    (series.get(r.groupKey) ?? series.set(r.groupKey, []).get(r.groupKey)!).push({ period: iso(r.filingPeriod), value });
+  }
+  for (const g of groups) {
+    const ctx = diffusionContext(series.get(g.groupKey) ?? [], currentIso);
+    g.priorDiffusionPct = ctx.prior;
+    g.diffusionHistory = ctx.history;
+    g.percentile = ctx.percentile;
+  }
+}
+
+/** Attach ghost/history/percentile to the stock board rows (their own tickers'
+ *  trailing-12-quarter shrunk-diffusion series). */
+async function attachStockHistory(groups: RotationGroup[], periodDate: Date, currentIso: string, k: number): Promise<void> {
+  const tickers = groups.map((g) => g.groupKey);
+  if (tickers.length === 0) return;
+  const periods = await prisma.institutionalNameAggregate.findMany({
+    where: { filingPeriod: { lte: periodDate }, ticker: { in: tickers } },
+    distinct: ["filingPeriod"],
+    select: { filingPeriod: true },
+    orderBy: { filingPeriod: "desc" },
+    take: 12,
+  });
+  const rows = await prisma.institutionalNameAggregate.findMany({
+    where: { filingPeriod: { in: periods.map((r) => r.filingPeriod) }, ticker: { in: tickers } },
+    select: { ticker: true, filingPeriod: true, fundsRotatedIn: true, fundsRotatedOut: true, fundsParticipating: true },
+  });
+  const series = new Map<string, Array<{ period: string; value: number }>>();
+  for (const r of rows) {
+    if (r.fundsParticipating === null) continue;
+    const value = shrunkDiffusionPct(r.fundsRotatedIn ?? 0, r.fundsRotatedOut ?? 0, r.fundsParticipating, k);
+    (series.get(r.ticker) ?? series.set(r.ticker, []).get(r.ticker)!).push({ period: iso(r.filingPeriod), value });
+  }
+  for (const g of groups) {
+    const ctx = diffusionContext(series.get(g.groupKey) ?? [], currentIso);
+    g.priorDiffusionPct = ctx.prior;
+    g.diffusionHistory = ctx.history;
+    g.percentile = ctx.percentile;
+  }
 }
 
 // ── 5.5 single-name fund ledger ─────────────────────────────────────────────

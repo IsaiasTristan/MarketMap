@@ -49,6 +49,30 @@ export function stockRankScore(sd: number, participating: number, netBps: number
   return sd * Math.log(1 + participating) * Math.sqrt(Math.abs(netBps));
 }
 
+/**
+ * Diffusion context for a bucket from its own quarterly series (ascending by
+ * period): last quarter's value (ghost tick), the trailing 4-quarter history
+ * (tooltip), and the percentile of the current |diffusion| within its trailing
+ * 12-quarter |diffusion| distribution (how unusual this quarter's move is).
+ */
+export interface DiffusionContext {
+  prior: number | null;
+  history: number[];
+  percentile: number | null;
+}
+export function diffusionContext(series: Array<{ period: string; value: number }>, currentPeriod: string): DiffusionContext {
+  const sorted = [...series].sort((a, b) => (a.period < b.period ? -1 : a.period > b.period ? 1 : 0));
+  const idx = sorted.findIndex((s) => s.period === currentPeriod);
+  if (idx < 0) return { prior: null, history: [], percentile: null };
+  const prior = idx > 0 ? sorted[idx - 1]!.value : null;
+  const history = sorted.slice(Math.max(0, idx - 3), idx + 1).map((s) => s.value);
+  const trailing = sorted.slice(Math.max(0, idx - 11), idx + 1).map((s) => Math.abs(s.value));
+  const cur = Math.abs(sorted[idx]!.value);
+  const pct =
+    trailing.length >= 4 ? Math.round((trailing.filter((v) => v <= cur).length / trailing.length) * 100) : null;
+  return { prior, history, percentile: pct };
+}
+
 function passesSize(tier: string | null, filter: SizeFilter): boolean {
   if (filter === "ex-mega") return tier !== "mega";
   if (filter === "mega-only") return tier === "mega";

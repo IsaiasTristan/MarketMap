@@ -328,6 +328,8 @@ export const flowsRotationQuery = z.object({
   period: periodParam,
   groupBy: z.enum(["sector", "subsector", "stock"]).optional().default("sector"),
   size: z.enum(["all", "ex-mega", "mega-only"]).optional().default("all"),
+  // Drill-down: names inside this sector/subsector (top-5 acc + bottom-5 dist).
+  within: z.string().min(1).max(64).optional(),
 });
 
 export const flowsLedgerQuery = z.object({

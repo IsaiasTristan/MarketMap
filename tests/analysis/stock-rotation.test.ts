@@ -3,6 +3,7 @@ import {
   rankStockRotation,
   shrunkDiffusionPct,
   stockRankScore,
+  diffusionContext,
   type StockRotationInput,
 } from "@/lib/institutional/stock-rotation";
 
@@ -101,5 +102,28 @@ describe("rankStockRotation", () => {
     expect(stockRankScore(50, 10, 100)).toBeGreaterThan(0);
     expect(stockRankScore(-50, 10, 100)).toBeLessThan(0);
     expect(stockRankScore(50, 10, 0)).toBe(0); // no magnitude → no score
+  });
+});
+
+describe("diffusionContext (ghost tick + percentile)", () => {
+  const series = [
+    { period: "2024-03-31", value: 10 },
+    { period: "2024-06-30", value: -5 },
+    { period: "2024-09-30", value: 20 },
+    { period: "2024-12-31", value: 40 },
+  ];
+  it("returns last quarter's value as the ghost prior", () => {
+    expect(diffusionContext(series, "2024-12-31").prior).toBe(20);
+    expect(diffusionContext(series, "2024-03-31").prior).toBeNull(); // no prior
+  });
+  it("returns the trailing 4-quarter history up to the current period", () => {
+    expect(diffusionContext(series, "2024-12-31").history).toEqual([10, -5, 20, 40]);
+    expect(diffusionContext(series, "2024-09-30").history).toEqual([10, -5, 20]);
+  });
+  it("percentile ranks current |diffusion| within the trailing distribution", () => {
+    // |40| is the largest of {10,5,20,40} → 100th percentile.
+    expect(diffusionContext(series, "2024-12-31").percentile).toBe(100);
+    // |10| ranks above only {10,5} of {10,5,20} at that point... needs 4+ points.
+    expect(diffusionContext(series, "2024-09-30").percentile).toBeNull(); // <4 points
   });
 });
