@@ -18,6 +18,7 @@ import { fetchMarketCapsBatch } from "@/infrastructure/providers/fmp/institution
 import { Prisma, RevisionGroupType } from "@prisma/client";
 import { buildActiveFlowMetrics, netDiffusionPct } from "./institutional-active-flow.service";
 import { runIngredientPrecompute } from "./institutional-ingredients.service";
+import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-config";
 
 const iso = (d: Date | string): string =>
   (typeof d === "string" ? d : d.toISOString()).slice(0, 10);
@@ -379,7 +380,13 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
 
   // Price-adjusted, equal-weighted active-rotation metric per (name|period) and
   // (groupType|groupKey|period). Reuses the sector/subsector taxonomy in `meta`.
-  const activeFlow = await buildActiveFlowMetrics(periods, meta, log);
+  // Per-level materiality floors so rally-drift dust doesn't cast rotation votes.
+  const mv = FLOW_LEADERBOARD_CONFIG.min_vote_bps;
+  const activeFlow = await buildActiveFlowMetrics(periods, meta, log, {
+    name: mv.stock,
+    sector: mv.sector,
+    subsector: mv.subsector,
+  });
 
   // Market-cap tiers for the held universe (current cap; tags are stable enough).
   const tickers = Array.from(meta.keys());

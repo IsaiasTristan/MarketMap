@@ -12,10 +12,11 @@
  *   book is one vote, so no single whale can paint a sector.
  *
  * Three numbers per bucket (sector / subsector / name):
- *   - activeBpsAvg    — the average fund's deliberate move, in bps of book.
- *   - diffusion       — how many funds moved the same direction (fundsIn/Out over
- *                       participating), so a broad migration is distinguishable
- *                       from one fund's reallocation.
+ *   - activeBpsAvg    — the average fund's deliberate weight move, in bps of book.
+ *   - diffusion       — how many funds TRADED the same direction (fundsIn/Out over
+ *                       participating, voting on net $ traded — not weight change,
+ *                       which a fund raising cash would inflate), so a broad
+ *                       migration is distinguishable from one fund's reallocation.
  *   - dollarNetFlow   — the net capital added/removed, for dollar intuition.
  *
  * Prices are implied per name as median(value / shares) across funds (shares > 0);
@@ -30,8 +31,25 @@ import { Prisma } from "@prisma/client";
 import { signalFundFilter } from "./institutional-aggregate.service";
 
 /** Diffusion dead-band: |active move| below this (bps) is rebalancing dust, not a
- *  deliberate rotation, and doesn't count toward fundsIn / fundsOut. */
+ *  deliberate rotation, and doesn't count toward fundsIn / fundsOut. This is the
+ *  fallback default when explicit per-level floors are not supplied. */
 export const ACTIVE_FLOW_EPS_BPS = 1;
+
+/** Per-level materiality floor (bps of book) a fund's net TRADED dollars must
+ *  clear to cast a rotation vote. `name` is the per-ticker (Stock view) floor;
+ *  `sector`/`subsector` gate the fund's TOTAL traded $ within that bucket.
+ *  Passed in so the core stays pure. */
+export interface VoteFloorsBps {
+  name: number;
+  sector: number;
+  subsector: number;
+}
+/** Backwards-compatible default: the legacy uniform 1 bp dead-band everywhere. */
+export const DEFAULT_VOTE_FLOORS: VoteFloorsBps = {
+  name: ACTIVE_FLOW_EPS_BPS,
+  sector: ACTIVE_FLOW_EPS_BPS,
+  subsector: ACTIVE_FLOW_EPS_BPS,
+};
 
 export type HoldingLite = { shares: number; value: number };
 /** fundId → (ticker → { shares, value }) for a single quarter. */
@@ -50,8 +68,8 @@ export type SectorMeta = ReadonlyMap<string, { sector: string | null; subsector:
 export interface ActiveFlowStat {
   activeBpsAvg: number; // group: mean over all evaluated funds; name: mean over participating funds
   netBpsAllFunds: number; // mean (active − expected) weight over ALL evaluated funds (non-holders = 0)
-  fundsIn: number; // active move > +ε
-  fundsOut: number; // active move < −ε
+  fundsIn: number; // net $ traded in bucket > +floor bps of book
+  fundsOut: number; // net $ traded in bucket < −floor bps of book
   fundsParticipating: number; // funds with exposure at t−1 or t (diffusion denominator)
   fundsEvaluated: number; // |F| for this pair (all funds present both quarters, book > 0)
   dollarNetFlow: number; // Σ (curValue − prevShares·priceₜ)
@@ -86,6 +104,7 @@ export function computeActiveFlowPair(
   prev: FundHoldingsByPeriod,
   cur: FundHoldingsByPeriod,
   meta: SectorMeta,
+  floors: VoteFloorsBps = DEFAULT_VOTE_FLOORS,
 ): { byName: Map<string, ActiveFlowStat>; byGroup: Map<string, ActiveFlowStat>; skippedPrices: number } {
   // ── implied price per ticker at t: median(value/shares); fall back to t−1. ──
   const curPx = new Map<string, number[]>();
@@ -152,15 +171,20 @@ export function computeActiveFlowPair(
       const px = priceAt.get(t);
       const cfV = prevShares > 0 && px !== undefined ? prevShares * px : 0;
       const deltaBps = (curV / book - cfV / cfBook) * 10000;
-      const dollar = curV - cfV;
+      const dollar = curV - cfV; // net $ TRADED = Δshares × price (price drift cancels)
 
-      // Name-level: averaged over participating funds only.
+      // Name-level: activeBpsAvg (avg deliberate weight move) is averaged over
+      // participating funds. The VOTE, however, is cast on net dollars TRADED as
+      // bps of book — not on the active-weight change. Weight change is corrupted
+      // when a fund's book shrinks (raising cash makes every held-flat position
+      // gain weight → spurious "rotated in" votes); trading direction is not.
+      const tradeBps = (dollar / book) * 10000;
       const na = bump(nameAcc, t);
       na.sumDelta += deltaBps;
       na.dollar += dollar;
       na.participating += 1;
-      if (deltaBps > ACTIVE_FLOW_EPS_BPS) na.fundsIn += 1;
-      else if (deltaBps < -ACTIVE_FLOW_EPS_BPS) na.fundsOut += 1;
+      if (tradeBps > floors.name) na.fundsIn += 1;
+      else if (tradeBps < -floors.name) na.fundsOut += 1;
 
       const m = meta.get(t);
       if (m?.sector) {
@@ -178,19 +202,22 @@ export function computeActiveFlowPair(
     }
 
     // Roll this fund's per-sector / per-subsector totals into the group accumulators.
-    // Diffusion is counted on the fund's TOTAL move in the bucket, not per name.
-    const rollGroup = (per: Map<string, { delta: number; dollar: number }>, prefix: string) => {
+    // Diffusion is counted on the fund's TOTAL move in the bucket, not per name, and
+    // the vote is cast on net dollars TRADED in the bucket (as bps of book), so a
+    // fund that raised cash can't paint every held sector green.
+    const rollGroup = (per: Map<string, { delta: number; dollar: number }>, prefix: string, floor: number) => {
       for (const [key, { delta, dollar }] of per) {
         const a = bump(groupAcc, `${prefix}|${key}`);
         a.sumDelta += delta;
         a.dollar += dollar;
         a.participating += 1;
-        if (delta > ACTIVE_FLOW_EPS_BPS) a.fundsIn += 1;
-        else if (delta < -ACTIVE_FLOW_EPS_BPS) a.fundsOut += 1;
+        const tradeBps = (dollar / book) * 10000;
+        if (tradeBps > floor) a.fundsIn += 1;
+        else if (tradeBps < -floor) a.fundsOut += 1;
       }
     };
-    rollGroup(fundSector, "SECTOR");
-    rollGroup(fundSub, "SUBSECTOR");
+    rollGroup(fundSector, "SECTOR", floors.sector);
+    rollGroup(fundSub, "SUBSECTOR", floors.subsector);
   }
 
   // Finalize. Group averages divide by ALL evaluated funds (non-participants moved
@@ -315,6 +342,7 @@ export async function buildActiveFlowMetrics(
   periods: string[],
   meta: SectorMeta,
   log: (m: string) => void,
+  floors: VoteFloorsBps = DEFAULT_VOTE_FLOORS,
 ): Promise<{ byNamePeriod: Map<string, ActiveFlowStat>; byGroupPeriod: Map<string, ActiveFlowStat> }> {
   const byNamePeriod = new Map<string, ActiveFlowStat>();
   const byGroupPeriod = new Map<string, ActiveFlowStat>();
@@ -324,7 +352,7 @@ export async function buildActiveFlowMetrics(
   for (const p of periods) {
     const cur = await loadPeriod(p);
     if (prev) {
-      const { byName, byGroup, skippedPrices } = computeActiveFlowPair(prev, cur, meta);
+      const { byName, byGroup, skippedPrices } = computeActiveFlowPair(prev, cur, meta, floors);
       for (const [ticker, stat] of byName) byNamePeriod.set(`${ticker}|${p}`, stat);
       for (const [gk, stat] of byGroup) byGroupPeriod.set(`${gk}|${p}`, stat);
       totalSkipped += skippedPrices;
