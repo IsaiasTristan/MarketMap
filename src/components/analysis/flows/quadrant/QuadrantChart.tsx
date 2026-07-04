@@ -15,6 +15,7 @@ import { buildSpatialIndex, type IndexedPoint, type QueryRect } from "./spatialI
 import { classifyGesture, dragDistance, normalizeRect, type Gesture } from "./gesture";
 import { brushToFrame, lerpLogDomain, panLogDomain, type ZoomFrame } from "./zoomState";
 import { computeDensity, pointsInView, selectPromoted, selectLabelCandidates, type ViewPoint } from "./densityPromotion";
+import { classifyZone, type Zone } from "./zones";
 
 export interface HoverState {
   point: PlottedPoint;
@@ -42,6 +43,9 @@ export function QuadrantChart({
   showZones,
   promoted,
   viewDomain,
+  watchlist,
+  zoneFilter,
+  highlight,
   onHover,
   onPinnedChange,
   onClickTicker,
@@ -63,6 +67,12 @@ export function QuadrantChart({
   promoted: Set<string>;
   /** Active zoom domain (top of the panel's zoom stack); null = full view. */
   viewDomain: ZoomFrame | null;
+  /** Tickers on the user's watchlist (active portfolio holdings) — hollow ring. */
+  watchlist: Set<string>;
+  /** Census zone filter: when set, foreground names outside the zone dim. */
+  zoneFilter: Zone | null;
+  /** A name to emphasize (from a danger-vector / census row click). */
+  highlight: string | null;
   onHover: (h: HoverState | null) => void;
   /** Reports the single searched match (with position) for a persistent tooltip. */
   onPinnedChange: (h: HoverState | null) => void;
@@ -221,6 +231,14 @@ export function QuadrantChart({
   }, [fgPos, bgPos, viewDomain, promotedByDensity, promoted, animating, rect.left, rect.top, rect.width, rect.height]);
 
   const labeledIds = useMemo(() => new Set(labels.map((l) => l.id)), [labels]);
+
+  // Census zone filter (Part 4a): foreground names outside the active zone dim.
+  const zoneDimSet = useMemo(() => {
+    if (!zoneFilter) return null;
+    const s = new Set<string>();
+    for (const pos of fgPos) if (classifyZone(pos.p.breadth, pos.p.conviction, model.p75Breadth, model.p75Conviction) !== zoneFilter) s.add(pos.p.ticker);
+    return s;
+  }, [zoneFilter, fgPos, model.p75Breadth, model.p75Conviction]);
 
   // Search: match ticker + company name (case-insensitive substring), across
   // BOTH layers, so a name filtered out of the foreground can still be found.
@@ -602,7 +620,8 @@ export function QuadrantChart({
       <g>
         {fgPos.map(({ p, x, y }) => {
           const matched = matchSet?.has(p.ticker) ?? false;
-          const op = !searching ? 0.75 : matched ? 1 : cfg.search.dimOpacity;
+          let op = !searching ? 0.75 : matched ? 1 : cfg.search.dimOpacity;
+          if (zoneDimSet?.has(p.ticker)) op *= 0.2;
           const outlined = hovered === p.ticker || matched;
           return (
             <circle
@@ -646,7 +665,7 @@ export function QuadrantChart({
               y={l.y}
               textAnchor={l.anchor}
               style={labelTextStyle}
-              opacity={searching && !matchSet!.has(l.id) ? cfg.search.dimOpacity : 1}
+              opacity={zoneDimSet?.has(l.id) ? 0.2 : searching && !matchSet!.has(l.id) ? cfg.search.dimOpacity : 1}
             >
               {l.id}
               {badge && <tspan fill="var(--color-accent)"> {badge}</tspan>}
@@ -689,6 +708,45 @@ export function QuadrantChart({
           })}
         </g>
       )}
+
+      {/* WATCHLIST RINGS (Part 4c) — hollow ring on portfolio-held names, any layer. */}
+      {watchlist.size > 0 && (
+        <g style={{ pointerEvents: "none" }}>
+          {[...watchlist].map((t) => {
+            const pos = posByTicker.get(t);
+            if (!pos) return null;
+            const r = Math.max(pos.p.r, cfg.colors.backgroundRadius) + 3;
+            return <circle key={`wl-${t}`} cx={pos.x} cy={pos.y} r={r} fill="none" stroke={cfg.colors.watchlistRing} strokeWidth={1.25} strokeOpacity={0.9} />;
+          })}
+        </g>
+      )}
+
+      {/* FLAG GLYPHS (Part 4d) — data-quality flags from the shared leaderboard
+          rows: verify (red ⚠) or partial-data (muted ◐). */}
+      <g style={{ pointerEvents: "none" }}>
+        {[...posByTicker.values()]
+          .filter(({ p }) => p.verifyData || p.partialData)
+          .map(({ p, x, y }) => (
+            <text
+              key={`flag-${p.ticker}`}
+              x={x + p.r + 1}
+              y={y - p.r}
+              textAnchor="start"
+              style={{ fontSize: 9, fill: p.verifyData ? "var(--color-neg, #e34948)" : "var(--text-muted)" }}
+            >
+              {p.verifyData ? "⚠" : "◐"}
+            </text>
+          ))}
+      </g>
+
+      {/* HIGHLIGHT — a name emphasized from a census / danger-vector row click. */}
+      {highlight &&
+        posByTicker.get(highlight) &&
+        (() => {
+          const pos = posByTicker.get(highlight)!;
+          const r = Math.max(pos.p.r, cfg.radius.base) + 5;
+          return <circle cx={pos.x} cy={pos.y} r={r} fill="none" stroke="var(--bb-highlight-text)" strokeWidth={2} strokeOpacity={0.95} />;
+        })()}
 
       {/* Box-select rectangle (in progress). */}
       {selRect && (

@@ -7,15 +7,20 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import type { QuadrantPayload } from "@/server/services/institutional/institutional-query.service";
+import { useAnalysisStore } from "@/store/analysis";
 import { useFlows } from "../useFlows";
 import { PanelState, QUADRANT_LABEL, fmtDelta } from "../flowsUi";
 import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import { buildQuadrantModel } from "./quadrantModel";
 import { QuadrantChart, type HoverState } from "./QuadrantChart";
 import { RegionInspector } from "./RegionInspector";
+import { CensusStrip } from "./CensusStrip";
+import { DangerRail } from "./DangerRail";
 import { useMeasure } from "./useMeasure";
 import { QUADRANT_CONFIG } from "./quadrantConfig";
 import { pushFrame, type ZoomFrame } from "./zoomState";
+import { zoneCensus, regimeVector, movingIntoCrowding, eliteLeavingCrowded, watchlistCensus } from "./takeaways";
+import type { Zone } from "./zones";
 
 const CHART_HEIGHT = 460;
 
@@ -38,7 +43,17 @@ function FlowLegend() {
   );
 }
 
-function QuadTooltip({ hover, containerWidth }: { hover: HoverState; containerWidth: number }) {
+function FlagLines({ p }: { p: HoverState["point"] }) {
+  if (!p.verifyData && !p.partialData) return null;
+  return (
+    <>
+      {p.verifyData && <div style={{ color: "var(--color-neg, #e34948)" }}>⚠ verify weights</div>}
+      {p.partialData && <div style={{ color: "var(--text-muted)" }}>◐ partial data</div>}
+    </>
+  );
+}
+
+function QuadTooltip({ hover, containerWidth, watchlisted }: { hover: HoverState; containerWidth: number; watchlisted: boolean }) {
   const p = hover.point;
   // Flip to the left of the mark when close to the right edge so the tooltip stays on-canvas.
   const flip = hover.x > containerWidth * 0.62;
@@ -64,6 +79,8 @@ function QuadTooltip({ hover, containerWidth }: { hover: HoverState; containerWi
         {Math.abs(p.holderStreak) >= QUADRANT_CONFIG.streak.badgeMin && (
           <div style={{ color: "var(--text-muted)" }}>held {Math.abs(p.holderStreak)}+ quarters</div>
         )}
+        {watchlisted && <div style={{ color: QUADRANT_CONFIG.colors.watchlistRing }}>◍ watchlist</div>}
+        <FlagLines p={p} />
       </div>
     );
   }
@@ -82,6 +99,8 @@ function QuadTooltip({ hover, containerWidth }: { hover: HoverState; containerWi
           streak: {Math.abs(p.holderStreak)} quarters {p.holderStreak > 0 ? "accumulating" : "distributing"}
         </div>
       )}
+      {watchlisted && <div style={{ color: QUADRANT_CONFIG.colors.watchlistRing }}>◍ watchlist (portfolio)</div>}
+      <FlagLines p={p} />
     </div>
   );
 }
@@ -140,10 +159,43 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
     });
   const [containerRef, width] = useMeasure<HTMLDivElement>();
 
+  // Part 4 state: census zone click-filter, highlighted name (from a takeaway
+  // row), and the danger-vector rail toggle.
+  const [zoneFilter, setZoneFilter] = useState<Zone | null>(null);
+  const [highlight, setHighlight] = useState<string | null>(null);
+  const [dangerOpen, setDangerOpen] = useState(true);
+  useEffect(() => {
+    setZoneFilter(null);
+    setHighlight(null);
+  }, [period]);
+
+  // Watchlist rings (Part 4c) = tickers in the user's active portfolio.
+  const { activePortfolioId } = useAnalysisStore();
+  const { data: holdings } = useFlows<{ rows: Array<{ ticker: string }> }>(
+    ["quadrant-watchlist", activePortfolioId],
+    `/api/analysis/portfolio/holdings?portfolioId=${activePortfolioId ?? ""}`,
+    !!activePortfolioId,
+  );
+  const watchlist = useMemo(() => new Set((holdings?.rows ?? []).map((r) => r.ticker.toUpperCase())), [holdings]);
+
   const model = useMemo(() => (data ? buildQuadrantModel(data, { streakOnly }) : null), [data, streakOnly]);
+
+  // Stated takeaways (Part 4a/4b/4c) — pure, computed off the foreground.
+  const takeaways = useMemo(() => {
+    if (!model) return null;
+    const v = QUADRANT_CONFIG.vectors;
+    return {
+      census: zoneCensus(model.foreground, model.p75Breadth, model.p75Conviction),
+      regime: regimeVector(model.foreground, v),
+      movingIn: movingIntoCrowding(model.foreground, v),
+      eliteLeaving: eliteLeavingCrowded(model.foreground, data?.exitClusters ?? [], model.p75Breadth, model.p75Conviction, v.topN),
+      watchlist: watchlistCensus(model.foreground, watchlist, model.p75Breadth, model.p75Conviction),
+    };
+  }, [model, data, watchlist]);
 
   // Hovering shows the hovered tooltip; otherwise the pinned search match (if any).
   const tip = hover ?? pinned;
+  const toggleZone = (z: Zone) => setZoneFilter((cur) => (cur === z ? null : z));
 
   return (
     <PanelState state={state} error={error}>
@@ -173,6 +225,14 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
                 <input type="checkbox" checked={showTrails} onChange={(e) => setShowTrails(e.target.checked)} style={{ accentColor: "var(--color-accent)" }} />
                 show trails
               </label>
+              <button
+                type="button"
+                onClick={() => setDangerOpen((v) => !v)}
+                title="Toggle the danger-vector takeaways rail"
+                style={{ height: 22, padding: "0 8px", fontSize: 10, borderRadius: 0, cursor: "pointer", border: `1px solid ${dangerOpen ? "var(--color-accent)" : "var(--bg-border)"}`, background: dangerOpen ? "var(--color-accent)" : "var(--bg-base)", color: dangerOpen ? "#000" : "var(--text-secondary)", fontWeight: dangerOpen ? 700 : 400 }}
+              >
+                danger vectors
+              </button>
               <input
                 type="text"
                 value={search}
@@ -189,6 +249,16 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
               )}
             </div>
           </div>
+          {takeaways && (
+            <CensusStrip
+              census={takeaways.census}
+              regime={takeaways.regime}
+              watchlist={takeaways.watchlist}
+              hasWatchlist={watchlist.size > 0}
+              zoneFilter={zoneFilter}
+              onToggleZone={toggleZone}
+            />
+          )}
           {viewDomain && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10, color: "var(--text-secondary)" }}>
               <span style={{ padding: "1px 6px", border: "1px solid var(--color-accent)", background: "var(--bg-elevated)", color: "var(--text-primary)" }}>
@@ -220,6 +290,9 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
                   showZones={showZones}
                   promoted={promoted}
                   viewDomain={viewDomain}
+                  watchlist={watchlist}
+                  zoneFilter={zoneFilter}
+                  highlight={highlight}
                   onHover={setHover}
                   onPinnedChange={setPinned}
                   onClickTicker={onSelectTicker}
@@ -229,9 +302,11 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
                   onResetZoom={resetZoom}
                 />
               )}
-              {tip && <QuadTooltip hover={tip} containerWidth={width} />}
+              {tip && <QuadTooltip hover={tip} containerWidth={width} watchlisted={watchlist.has(tip.point.ticker)} />}
             </div>
-            {selection.size > 0 && (
+            {/* Right column: the box-select inspector takes precedence over the
+                danger-vector rail while a selection is active. */}
+            {selection.size > 0 ? (
               <RegionInspector
                 tickers={selection}
                 model={model}
@@ -241,6 +316,18 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
                 onSelectTicker={onSelectTicker}
                 onClear={() => setSelection(new Set())}
               />
+            ) : (
+              dangerOpen &&
+              takeaways && (
+                <DangerRail
+                  movingIn={takeaways.movingIn}
+                  eliteLeaving={takeaways.eliteLeaving}
+                  width={QUADRANT_CONFIG.inspector.width}
+                  onHighlight={setHighlight}
+                  onOpenTicker={onSelectTicker}
+                  onClose={() => setDangerOpen(false)}
+                />
+              )
             )}
           </div>
           <div style={{ fontSize: 10, color: "var(--text-muted)" }}>

@@ -25,6 +25,8 @@ export const QUADRANT_CONFIG = {
     background: "#8a8a8a",
     backgroundOpacity: 0.25,
     backgroundRadius: 2.5,
+    /** Hollow ring drawn around watchlist (portfolio-held) names (Part 4c). */
+    watchlistRing: "#c9a227",
   },
   /** Foreground mark radius = clamp(base + perDelta * |Δholders|, base, max). */
   radius: { base: 4, perDelta: 1.1, max: 12 },
@@ -60,8 +62,10 @@ export const QUADRANT_CONFIG = {
    *  view self-promote to foreground render-state. dragThresholdPx separates a
    *  click from a drag-select. */
   density: { promoteDensity: 6, maxLabels: 25, dragThresholdPx: 4 },
-  /** Danger-vector takeaways (Part 4b). */
-  vectors: { topN: 5, minTrailQuarters: 2 },
+  /** Danger-vector + regime takeaways (Part 4b). breadthWeight/convictionWeight
+   *  weight the two components of "velocity toward the crowded corner";
+   *  neutralEps is the log-space dead-zone for calling the regime vector neutral. */
+  vectors: { topN: 5, minTrailQuarters: 2, breadthWeight: 0.6, convictionWeight: 0.4, neutralEps: 0.02 },
   /** Below-range gutter band beneath the plot (Part 0). floorBps 30 = 0.3% of
    *  book, aligned with axes.y.floor. */
   gutter: { floorBps: 30, height: 28, opacity: 0.18, caption: "< 0.3% of book" },

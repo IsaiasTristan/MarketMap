@@ -8,6 +8,7 @@ import { prisma } from "@/infrastructure/db/client";
 import { Prisma } from "@prisma/client";
 import { CROWDED_BREADTH_PCT, signalFundFilter } from "./institutional-aggregate.service";
 import { CATEGORY_TIER, type FundCategory } from "./watchlist";
+import { getLeaderboard } from "./institutional-leaderboard.service";
 import { UNCLASSIFIED_SECTOR } from "@/lib/institutional/security-class";
 import { rankStockRotation, shrunkDiffusionPct, diffusionContext, type RankedStockRow, type StockRotationInput } from "@/lib/institutional/stock-rotation";
 import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-config";
@@ -133,6 +134,18 @@ export interface QuadrantPoint {
   /** Prior-quarter position for the QoQ trajectory trail; null if the name was
    *  not in the universe last quarter (entered this quarter → no trail). */
   prev: { breadth: number; conviction: number | null } | null;
+  /** Data-quality flags joined from the SAME leaderboard rows the Leaderboard tab
+   *  renders (parity — no view-local flag logic). Absent for names the leaderboard
+   *  doesn't score. */
+  verifyData?: boolean;
+  partialData?: boolean;
+}
+/** Per-ticker elite-exit summary for the "elite leaving crowded" danger list. */
+export interface QuadrantExitCluster {
+  ticker: string;
+  eliteExits: number;
+  eliteSizing: number;
+  convictionExits: number;
 }
 export interface QuadrantPayload {
   filingPeriod: string;
@@ -141,6 +154,8 @@ export interface QuadrantPayload {
   convictionLine: number;
   trackedFunds: number;
   points: QuadrantPoint[];
+  /** Crowded-name elite exits (Part 4b); empty when there is no prior quarter. */
+  exitClusters: QuadrantExitCluster[];
 }
 
 export async function getQuadrant(period?: string, minFunds = 2): Promise<QuadrantPayload | null> {
@@ -177,28 +192,64 @@ export async function getQuadrant(period?: string, minFunds = 2): Promise<Quadra
     }
   }
 
+  // Data-quality flags come from the SAME leaderboard rows the Leaderboard tab
+  // renders (parity — no view-local flag logic); crowded-name elite exits feed
+  // the "elite leaving crowded" danger list. Both are best-effort: if the source
+  // is unavailable for this period, names simply carry no flags / no clusters.
+  const tickerSet = new Set(rows.map((r) => r.ticker));
+  const flagByTicker = new Map<string, { verify: boolean; partial: boolean }>();
+  let exitClusters: QuadrantExitCluster[] = [];
+  await Promise.all([
+    (async () => {
+      try {
+        const lb = await getLeaderboard(p);
+        if (lb) for (const er of [...lb.accumulation, ...lb.distribution]) flagByTicker.set(er.ticker, { verify: er.verifyData, partial: er.partialData });
+      } catch {
+        /* leaderboard unavailable for this period */
+      }
+    })(),
+    (async () => {
+      try {
+        const ec = await getExitClusters(p);
+        if (ec) {
+          exitClusters = ec.rows
+            .filter((e) => e.eliteExits > 0 && tickerSet.has(e.ticker))
+            .map((e) => ({ ticker: e.ticker, eliteExits: e.eliteExits, eliteSizing: Math.round(e.eliteSizing * 10) / 10, convictionExits: e.convictionExits }));
+        }
+      } catch {
+        /* no prior quarter → no exit clusters */
+      }
+    })(),
+  ]);
+
   return {
     filingPeriod: p,
     priorPeriod,
     breadthLine: CROWDED_BREADTH_PCT,
     convictionLine,
     trackedFunds,
-    points: rows.map((r) => ({
-      ticker: r.ticker,
-      companyName: r.companyName,
-      sector: r.sector,
-      marketCapTier: r.marketCapTier,
-      breadth: Number(r.pctOfFunds.toFixed(2)),
-      conviction: r.medianPctOfBook !== null ? Number(r.medianPctOfBook.toFixed(3)) : null,
-      deltaHolders: r.deltaHolders,
-      holderStreak: r.holderStreak,
-      fundsHolding: r.fundsHolding,
-      fundsBought: r.fundsBought,
-      fundsSold: r.fundsSold,
-      quadrant: r.quadrant,
-      trajectoryLabel: r.trajectoryLabel,
-      prev: prevByTicker.get(r.ticker) ?? null,
-    })),
+    exitClusters,
+    points: rows.map((r) => {
+      const flags = flagByTicker.get(r.ticker);
+      return {
+        ticker: r.ticker,
+        companyName: r.companyName,
+        sector: r.sector,
+        marketCapTier: r.marketCapTier,
+        breadth: Number(r.pctOfFunds.toFixed(2)),
+        conviction: r.medianPctOfBook !== null ? Number(r.medianPctOfBook.toFixed(3)) : null,
+        deltaHolders: r.deltaHolders,
+        holderStreak: r.holderStreak,
+        fundsHolding: r.fundsHolding,
+        fundsBought: r.fundsBought,
+        fundsSold: r.fundsSold,
+        quadrant: r.quadrant,
+        trajectoryLabel: r.trajectoryLabel,
+        prev: prevByTicker.get(r.ticker) ?? null,
+        verifyData: flags?.verify,
+        partialData: flags?.partial,
+      };
+    }),
   };
 }
 
@@ -1224,6 +1275,8 @@ export interface ExitClusterRow {
   sector: string | null;
   marketCapTier: string | null;
   convictionExits: number; // # high-conviction holders that trimmed/exited
+  eliteExits: number; // # of those that were most-respected (elite) funds
+  eliteSizing: number; // Σ prior %-of-book of the elite trims (trim sizing)
   totalExits: number;
   funds: Array<{ name: string; action: string; priorPctOfBook: number | null }>;
 }
@@ -1257,12 +1310,18 @@ export async function getExitClusters(period?: string, minExits = 3): Promise<{ 
         sector: null,
         marketCapTier: null,
         convictionExits: 0,
+        eliteExits: 0,
+        eliteSizing: 0,
         totalExits: 0,
         funds: [],
       });
     }
     const e = byTicker.get(r.ticker)!;
     e.convictionExits += 1;
+    if (r.is_respected) {
+      e.eliteExits += 1;
+      e.eliteSizing += r.prior_pct !== null ? Number(r.prior_pct) : 0;
+    }
     e.funds.push({ name: r.fund_name, action: r.action, priorPctOfBook: r.prior_pct !== null ? Number(Number(r.prior_pct).toFixed(2)) : null });
   }
   const out = Array.from(byTicker.values()).filter((e) => e.convictionExits >= minExits);
