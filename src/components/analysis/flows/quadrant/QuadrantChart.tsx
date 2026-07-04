@@ -10,6 +10,7 @@ import type { CSSProperties } from "react";
 import { breadthJitter, flowColor, flowRadius, makeScales, type PlottedPoint, type QuadrantModel } from "./quadrantModel";
 import { QUADRANT_CONFIG } from "./quadrantConfig";
 import { placeLabels, placeOptsFromConfig, type LabelInput } from "./labelPlacement";
+import { isBelowRange } from "./gutter";
 
 export interface HoverState {
   point: PlottedPoint;
@@ -55,20 +56,38 @@ export function QuadrantChart({
 }) {
   const [hovered, setHovered] = useState<string | null>(null);
 
+  // A gutter strip sits between the plot floor and the axis labels; below-range
+  // names (conviction < floor, or null) render there instead of clamping onto
+  // the axis-floor pixel row. The plot area shrinks by the strip height so every
+  // existing layer (which reads `rect`) is unaffected.
+  const gutterH = QUADRANT_CONFIG.gutter.height;
+  const gutterFloorPct = QUADRANT_CONFIG.gutter.floorBps / 100;
   const rect = {
     left: MARGIN.left,
     top: MARGIN.top,
     width: Math.max(10, width - MARGIN.left - MARGIN.right),
-    height: Math.max(10, height - MARGIN.top - MARGIN.bottom),
+    height: Math.max(10, height - MARGIN.top - MARGIN.bottom - gutterH),
   };
+  const gutterTop = rect.top + rect.height;
+  const gutterCenterY = gutterTop + gutterH / 2;
 
-  const { scales, bgPos, fgPos, labels, badges } = useMemo(() => {
+  const { scales, bgPos, fgPos, gutterPos, labels, badges } = useMemo(() => {
     const s = makeScales(model, rect);
     const place = (p: PlottedPoint): Positioned => ({ p, x: s.x(p.breadth + breadthJitter(p.ticker, p.fundsHolding)), y: s.y(p.conviction) });
-    const fg = model.foreground.map(place);
+    const inGutter = (p: PlottedPoint) => isBelowRange(p.conviction, gutterFloorPct);
 
-    // Label candidates: the top-N foreground by score, unioned with every
-    // danger-zone name (crowded high-conviction distribution — always called out).
+    // Below-range names (conviction < floor or null, in either layer) are pulled
+    // out of the plot body and laid out along the gutter strip so they no longer
+    // pile onto the axis-floor pixel row. Their x still uses the breadth scale;
+    // only y is overridden to the strip. They are never labeled or trailed.
+    const fgAll = model.foreground.map(place);
+    const bgAll = model.background.map(place);
+    const fg = fgAll.filter((pos) => !inGutter(pos.p));
+    const bg = bgAll.filter((pos) => !inGutter(pos.p));
+    const gutter = [...fgAll, ...bgAll].filter((pos) => inGutter(pos.p)).map((pos) => ({ ...pos, y: gutterCenterY }));
+
+    // Label candidates: the top-N in-range foreground by score, unioned with
+    // every danger-zone name (crowded high-conviction distribution — always called out).
     const cfg = QUADRANT_CONFIG.labels;
     const byScore = [...fg].sort((a, b) => b.p.score - a.p.score);
     const chosen = new Map<string, Positioned>();
@@ -94,9 +113,9 @@ export function QuadrantChart({
     const placed = placeLabels(inputs, bounds, placeOptsFromConfig(QUADRANT_CONFIG));
     const badges = new Map(fg.map((pos) => [pos.p.ticker, badgeOf(pos.p)] as const).filter(([, b]) => b));
 
-    return { scales: s, bgPos: model.background.map(place), fgPos: fg, labels: placed, badges };
+    return { scales: s, bgPos: bg, fgPos: fg, gutterPos: gutter, labels: placed, badges };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, rect.left, rect.top, rect.width, rect.height]);
+  }, [model, rect.left, rect.top, rect.width, rect.height, gutterCenterY, gutterFloorPct]);
 
   const labeledIds = useMemo(() => new Set(labels.map((l) => l.id)), [labels]);
 
@@ -109,8 +128,9 @@ export function QuadrantChart({
     const hit = (p: PlottedPoint) => p.ticker.toLowerCase().includes(q) || (p.companyName ?? "").toLowerCase().includes(q);
     for (const pos of fgPos) if (hit(pos.p)) set.add(pos.p.ticker);
     for (const pos of bgPos) if (hit(pos.p)) set.add(pos.p.ticker);
+    for (const pos of gutterPos) if (hit(pos.p)) set.add(pos.p.ticker);
     return set;
-  }, [search, fgPos, bgPos]);
+  }, [search, fgPos, bgPos, gutterPos]);
   const searching = matchSet !== null;
 
   // Matched background names are promoted to full foreground rendering.
@@ -123,12 +143,12 @@ export function QuadrantChart({
   useEffect(() => {
     if (matchSet && matchSet.size === 1) {
       const t = [...matchSet][0];
-      const pos = fgPos.find((f) => f.p.ticker === t) ?? bgPos.find((b) => b.p.ticker === t);
+      const pos = fgPos.find((f) => f.p.ticker === t) ?? bgPos.find((b) => b.p.ticker === t) ?? gutterPos.find((g) => g.p.ticker === t);
       onPinnedChange(pos ? { point: pos.p, x: pos.x, y: pos.y } : null);
     } else {
       onPinnedChange(null);
     }
-  }, [matchSet, fgPos, bgPos, onPinnedChange]);
+  }, [matchSet, fgPos, bgPos, gutterPos, onPinnedChange]);
 
   function hitTest(evt: React.MouseEvent<SVGSVGElement>): Positioned | null {
     const bounds = evt.currentTarget.getBoundingClientRect();
@@ -239,9 +259,9 @@ export function QuadrantChart({
         );
       })()}
 
-      {/* Axis tick labels */}
+      {/* Axis tick labels — x labels sit BELOW the gutter strip so they clear it. */}
       {model.xTicks.map((t) => (
-        <text key={`tx${t}`} x={scales.x(t)} y={rect.top + rect.height + 14} textAnchor="middle" style={tickStyle}>
+        <text key={`tx${t}`} x={scales.x(t)} y={gutterTop + gutterH + 14} textAnchor="middle" style={tickStyle}>
           {t}%
         </text>
       ))}
@@ -268,6 +288,33 @@ export function QuadrantChart({
       <text x={rect.left + rect.width - 4} y={scales.y(model.convictionLine) - 4} textAnchor="end" style={refLabelStyle}>
         median conviction
       </text>
+
+      {/* GUTTER band — below-range names (conviction < floor, or null). Extra-muted,
+          never labeled or trailed; a hairline separates it from the real axis floor.
+          x still comes from the breadth scale so the column structure is preserved. */}
+      {gutterPos.length > 0 && (
+        <g style={{ pointerEvents: "none" }}>
+          <line x1={rect.left} x2={rect.left + rect.width} y1={gutterTop} y2={gutterTop} stroke="var(--bg-border)" strokeOpacity={0.9} />
+          <text x={rect.left + rect.width} y={gutterCenterY + 3} textAnchor="end" style={{ fontSize: 9, fill: "var(--text-muted)", opacity: 0.7, fontStyle: "italic" }}>
+            {QUADRANT_CONFIG.gutter.caption}
+          </text>
+          {gutterPos.map(({ p, x, y }) => {
+            const matched = matchSet?.has(p.ticker) ?? false;
+            return (
+              <circle
+                key={p.ticker}
+                cx={x}
+                cy={y}
+                r={cfg.colors.backgroundRadius}
+                fill={cfg.colors.background}
+                fillOpacity={searching ? (matched ? 0.9 : cfg.search.dimOpacity) : cfg.gutter.opacity}
+                stroke={matched ? "var(--text-primary)" : "none"}
+                strokeWidth={matched ? 1 : 0}
+              />
+            );
+          })}
+        </g>
+      )}
 
       {/* BACKGROUND layer — context only, never intercepts hover/click. Matched
           names are pulled out and re-drawn in the promoted layer below. */}
