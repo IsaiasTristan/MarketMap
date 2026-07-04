@@ -72,6 +72,39 @@ export function panLogDomain(domain: Domain, pxDelta: number, pxExtent: number, 
 }
 
 /**
+ * Zoom one axis by `factor` (<1 zoom in, >1 zoom out) about `cursor`, keeping the
+ * data value under the cursor at the same fractional screen position, in log
+ * space. The result is clamped to `base` preserving the new width; if the new
+ * width reaches/exceeds the base width, the full base domain is returned (fully
+ * zoomed out). Used for mouse-wheel zoom.
+ */
+export function zoomAxis(domain: Domain, cursor: number, factor: number, base: Domain): Domain {
+  const la = Math.log(domain[0]);
+  const lb = Math.log(domain[1]);
+  const bla = Math.log(base[0]);
+  const blb = Math.log(base[1]);
+  const lw = lb - la;
+  const baseLw = blb - bla;
+  const newLw = Math.min(lw * factor, baseLw);
+  if (newLw >= baseLw) return [base[0], base[1]];
+  const lc = Math.min(Math.max(Math.log(cursor), la), lb); // clamp cursor into domain
+  const frac = lw > 0 ? (lc - la) / lw : 0.5;
+  let nla = lc - frac * newLw;
+  let nlb = nla + newLw;
+  if (nla < bla) {
+    const d = bla - nla;
+    nla += d;
+    nlb += d;
+  }
+  if (nlb > blb) {
+    const d = nlb - blb;
+    nla -= d;
+    nlb -= d;
+  }
+  return [Math.exp(Math.max(nla, bla)), Math.exp(Math.min(nlb, blb))];
+}
+
+/**
  * Push a zoom frame honoring `maxDepth`: once the stack is full, further zooms
  * REPLACE the top level (keeping the earlier frames) rather than growing.
  */

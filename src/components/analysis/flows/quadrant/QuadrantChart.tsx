@@ -13,7 +13,7 @@ import { placeLabels, placeOptsFromConfig, type LabelInput } from "./labelPlacem
 import { isBelowRange } from "./gutter";
 import { buildSpatialIndex, type IndexedPoint, type QueryRect } from "./spatialIndex";
 import { classifyGesture, dragDistance, normalizeRect, type Gesture } from "./gesture";
-import { brushToFrame, lerpLogDomain, panLogDomain, type ZoomFrame } from "./zoomState";
+import { lerpLogDomain, panLogDomain, zoomAxis, type ZoomFrame } from "./zoomState";
 import { computeDensity, pointsInView, selectPromoted, selectLabelCandidates, type ViewPoint } from "./densityPromotion";
 import { classifyZone, type Zone } from "./zones";
 
@@ -50,7 +50,7 @@ export function QuadrantChart({
   onPinnedChange,
   onClickTicker,
   onSelectRegion,
-  onBrushZoom,
+  onWheelZoom,
   onPan,
   onResetZoom,
 }: {
@@ -77,11 +77,11 @@ export function QuadrantChart({
   /** Reports the single searched match (with position) for a persistent tooltip. */
   onPinnedChange: (h: HoverState | null) => void;
   onClickTicker: (ticker: string) => void;
-  /** A completed box-select reports the tickers whose centers fell inside. */
+  /** A completed box-select (right-drag) reports the tickers whose centers fell inside. */
   onSelectRegion: (tickers: string[]) => void;
-  /** A completed brush (Shift+drag) reports the new zoom frame to push. */
-  onBrushZoom: (frame: ZoomFrame) => void;
-  /** A pan (Space+drag while zoomed) reports the shifted frame to replace the top. */
+  /** A wheel tick reports the new zoom frame, or null when zoomed fully out. */
+  onWheelZoom: (frame: ZoomFrame | null) => void;
+  /** A pan (left-drag) reports the shifted frame to replace the current view. */
   onPan: (frame: ZoomFrame) => void;
   /** Double-click on empty canvas / Esc resets the zoom. */
   onResetZoom: () => void;
@@ -90,14 +90,18 @@ export function QuadrantChart({
   // While Alt/Option is held, context (background) marks become hit-testable
   // (Part 1a). Tracked at the window level so the mode survives focus in the SVG.
   const [altHeld, setAltHeld] = useState(false);
-  // Space held + already zoomed = pan mode (Part 3). overRef gates space-scroll
-  // suppression to when the pointer is actually over the chart.
-  const [spaceHeld, setSpaceHeld] = useState(false);
-  const overRef = useRef(false);
 
-  // A single mousedown-classified gesture drives hover / click / box-select /
-  // brush-zoom / pan so the modes don't fight over one drag.
+  // Native wheel listener target (React onWheel can't reliably preventDefault).
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  // Wheel zoom (like pan) must be instant, not animated — this flag tells the
+  // animation effect to jump straight to the new frame.
+  const wheelInstantRef = useRef(false);
+
+  // A single mousedown-classified gesture drives hover / click / left-drag pan /
+  // right-drag box-select so the modes don't fight over one drag. `panning`
+  // drives the grab cursor.
   const dragRef = useRef<{ x: number; y: number; kind: Gesture; moved: boolean; lastX: number; lastY: number } | null>(null);
+  const [panning, setPanning] = useState(false);
   const [selRect, setSelRect] = useState<QueryRect | null>(null);
 
   // ── Semantic zoom (Part 3) ──────────────────────────────────────────────────
@@ -118,10 +122,12 @@ export function QuadrantChart({
     const from = effectiveRef.current;
     const to = targetFrame;
     const close = (a: number, b: number) => Math.abs(Math.log(a) - Math.log(b)) < 1e-6;
-    // Pan updates the domain continuously — jump instantly, never animate, so it
-    // tracks the cursor. Equal frames also short-circuit.
-    const panning = dragRef.current?.kind === "pan";
-    if (panning || (close(from.xDomain[0], to.xDomain[0]) && close(from.xDomain[1], to.xDomain[1]) && close(from.yDomain[0], to.yDomain[0]) && close(from.yDomain[1], to.yDomain[1]))) {
+    // Pan and wheel-zoom update the domain continuously — jump instantly, never
+    // animate, so they track the cursor. Equal frames also short-circuit.
+    const isPanning = dragRef.current?.kind === "pan";
+    const isWheeling = wheelInstantRef.current;
+    wheelInstantRef.current = false;
+    if (isPanning || isWheeling || (close(from.xDomain[0], to.xDomain[0]) && close(from.xDomain[1], to.xDomain[1]) && close(from.yDomain[0], to.yDomain[0]) && close(from.yDomain[1], to.yDomain[1]))) {
       setAnimFrame(null);
       setAnimating(false);
       return;
@@ -198,10 +204,20 @@ export function QuadrantChart({
 
   const badgeOf = (p: PlottedPoint) => (Math.abs(p.holderStreak) >= QUADRANT_CONFIG.streak.badgeMin ? `×${Math.abs(p.holderStreak)}` : "");
 
-  // Labels. Default view keeps the historical top-maxByScore + danger set. Under
-  // zoom we run the budgeted, tiered candidate selection (foreground > density-
-  // promoted, capped at max_labels), reusing placeLabels via the priority field.
-  // Labels are hidden mid-tween to avoid them sliding around.
+  // Census zone isolation (Part 4a / Part 5): the foreground names IN the active
+  // zone. When set, those go full-opacity + labeled + trailed + hoverable and
+  // everything else dims and goes inert.
+  const zoneActiveSet = useMemo(() => {
+    if (!zoneFilter) return null;
+    const s = new Set<string>();
+    for (const pos of fgPos) if (classifyZone(pos.p.breadth, pos.p.conviction, model.p75Breadth, model.p75Conviction) === zoneFilter) s.add(pos.p.ticker);
+    return s;
+  }, [zoneFilter, fgPos, model.p75Breadth, model.p75Conviction]);
+
+  // Labels. When a census zone is isolated, label EVERY name in that zone (top
+  // priority). Otherwise: default view keeps the historical top-maxByScore +
+  // danger set; under zoom, the budgeted tiered selection (foreground > density-
+  // promoted). Reuses placeLabels via the priority field; hidden mid-tween.
   const { labels, badges } = useMemo(() => {
     const badgeSources = viewDomain ? [...fgPos, ...bgPos.filter((pos) => promotedByDensity.has(pos.p.ticker))] : fgPos;
     const badges = new Map(badgeSources.map((pos) => [pos.p.ticker, badgeOf(pos.p)] as const).filter(([, b]) => b));
@@ -209,7 +225,16 @@ export function QuadrantChart({
 
     const bounds = { x0: rect.left, y0: rect.top, x1: rect.left + rect.width, y1: rect.top + rect.height };
     let inputs: LabelInput[];
-    if (viewDomain) {
+    if (zoneActiveSet) {
+      // Isolated zone: label the whole subset (collision-placed, capped).
+      inputs = fgPos
+        .filter((pos) => zoneActiveSet.has(pos.p.ticker))
+        .slice(0, QUADRANT_CONFIG.density.maxLabels)
+        .map((pos) => {
+          const badge = badgeOf(pos.p);
+          return { id: pos.p.ticker, x: pos.x, y: pos.y, r: pos.p.r, text: badge ? `${pos.p.ticker} ${badge}` : pos.p.ticker, score: pos.p.score, forced: true, priority: 3 };
+        });
+    } else if (viewDomain) {
       const toVP = (pos: Positioned): ViewPoint => ({ ticker: pos.p.ticker, x: pos.x, y: pos.y, r: pos.p.r, score: pos.p.score, conviction: pos.p.conviction ?? 0, danger: pos.p.danger });
       const fgVP = fgPos.map(toVP);
       const promVP = bgPos.filter((pos) => promotedByDensity.has(pos.p.ticker)).map((pos) => ({ ...toVP(pos), r: flowRadius(pos.p.deltaHolders) }));
@@ -228,17 +253,9 @@ export function QuadrantChart({
     const placed = placeLabels(inputs, bounds, placeOptsFromConfig(QUADRANT_CONFIG));
     return { labels: placed, badges };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fgPos, bgPos, viewDomain, promotedByDensity, promoted, animating, rect.left, rect.top, rect.width, rect.height]);
+  }, [fgPos, bgPos, viewDomain, promotedByDensity, promoted, animating, zoneActiveSet, rect.left, rect.top, rect.width, rect.height]);
 
   const labeledIds = useMemo(() => new Set(labels.map((l) => l.id)), [labels]);
-
-  // Census zone filter (Part 4a): foreground names outside the active zone dim.
-  const zoneDimSet = useMemo(() => {
-    if (!zoneFilter) return null;
-    const s = new Set<string>();
-    for (const pos of fgPos) if (classifyZone(pos.p.breadth, pos.p.conviction, model.p75Breadth, model.p75Conviction) !== zoneFilter) s.add(pos.p.ticker);
-    return s;
-  }, [zoneFilter, fgPos, model.p75Breadth, model.p75Conviction]);
 
   // Search: match ticker + company name (case-insensitive substring), across
   // BOTH layers, so a name filtered out of the foreground can still be found.
@@ -275,23 +292,12 @@ export function QuadrantChart({
   const fgSet = useMemo(() => new Set(fgPos.map((p) => p.p.ticker)), [fgPos]);
   const bgSet = useMemo(() => new Set(bgPos.map((p) => p.p.ticker)), [bgPos]);
 
-  // Track Alt/Option (context hover) and Space (pan) at the window level; a
-  // window blur (e.g. alt-tab) always releases so a mode can't get stuck on.
-  // Space is preventDefault'd only while the pointer is over the chart, so it
-  // pans instead of scrolling the page but stays normal everywhere else.
+  // Track Alt/Option (context hover) at the window level; a window blur
+  // (e.g. alt-tab) always releases so the mode can't get stuck on.
   useEffect(() => {
-    const down = (e: KeyboardEvent) => {
-      if (e.key === "Alt") setAltHeld(true);
-      if (e.key === " " || e.code === "Space") {
-        if (overRef.current) e.preventDefault();
-        setSpaceHeld(true);
-      }
-    };
-    const up = (e: KeyboardEvent) => {
-      if (e.key === "Alt") setAltHeld(false);
-      if (e.key === " " || e.code === "Space") setSpaceHeld(false);
-    };
-    const blur = () => { setAltHeld(false); setSpaceHeld(false); };
+    const down = (e: KeyboardEvent) => { if (e.key === "Alt") setAltHeld(true); };
+    const up = (e: KeyboardEvent) => { if (e.key === "Alt") setAltHeld(false); };
+    const blur = () => setAltHeld(false);
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     window.addEventListener("blur", blur);
@@ -301,6 +307,30 @@ export function QuadrantChart({
       window.removeEventListener("blur", blur);
     };
   }, []);
+
+  // Native non-passive wheel listener → zoom toward the cursor (instant). React's
+  // onWheel is passive and can't preventDefault the page scroll.
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const b = el.getBoundingClientRect();
+      const mx = e.clientX - b.left;
+      const my = e.clientY - b.top;
+      const step = QUADRANT_CONFIG.wheel.zoomStep;
+      const factor = e.deltaY < 0 ? 1 / step : step;
+      const cx = scales.invertX(mx);
+      const cy = scales.invertY(my);
+      const nx = zoomAxis(effectiveFrame.xDomain, cx, factor, baseFrame.xDomain);
+      const ny = zoomAxis(effectiveFrame.yDomain, cy, factor, baseFrame.yDomain);
+      const atBase = nx[0] === baseFrame.xDomain[0] && nx[1] === baseFrame.xDomain[1] && ny[0] === baseFrame.yDomain[0] && ny[1] === baseFrame.yDomain[1];
+      wheelInstantRef.current = true;
+      onWheelZoom(atBase ? null : { xDomain: nx, yDomain: ny });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [scales, effectiveFrame, baseFrame, onWheelZoom]);
 
   // Releasing Alt clears a context-mark hover (foreground/search hovers persist).
   useEffect(() => {
@@ -333,6 +363,8 @@ export function QuadrantChart({
     const altR = QUADRANT_CONFIG.altHover.radiusPx;
     const searchRadius = Math.max(QUADRANT_CONFIG.radius.max + sp.hitSlop, sp.minHitRadius, altR);
     const accept = (p: IndexedPoint, d: number): boolean => {
+      // Zone isolation: only the isolated zone's marks respond; the rest go inert.
+      if (zoneActiveSet && !zoneActiveSet.has(p.ticker)) return false;
       if (fgSet.has(p.ticker)) return d <= Math.max(p.r + sp.hitSlop, sp.minHitRadius);
       // Density-promoted context marks (under zoom) hover like foreground.
       if (promotedByDensity.has(p.ticker)) return d <= Math.max(p.r + sp.hitSlop, sp.minHitRadius);
@@ -350,9 +382,11 @@ export function QuadrantChart({
   }
 
   function handleDown(evt: React.MouseEvent<SVGSVGElement>) {
+    // Left button (0) → pan; right button (2) → box-select. Ignore the middle button.
+    if (evt.button !== 0 && evt.button !== 2) return;
     const pt = localXY(evt);
     const onMark = hitTest(evt) !== null;
-    const kind = classifyGesture({ shiftKey: evt.shiftKey, spaceKey: spaceHeld, onMark, zoomed: viewDomain !== null });
+    const kind = classifyGesture({ rightButton: evt.button === 2, onMark });
     dragRef.current = { x: pt.x, y: pt.y, kind, moved: false, lastX: pt.x, lastY: pt.y };
   }
 
@@ -362,8 +396,10 @@ export function QuadrantChart({
       const pt = localXY(evt);
       if (!drag.moved && dragDistance(drag, pt) > QUADRANT_CONFIG.density.dragThresholdPx) drag.moved = true;
       if (drag.kind === "pan") {
+        if (drag.moved && !panning) setPanning(true);
         // Grab-scroll: dragging right/down shifts the view the opposite way in
-        // data space. Y is inverted (pixel down = lower conviction).
+        // data space. Y is inverted (pixel down = lower conviction). At the base
+        // domain panLogDomain clamps to a no-op, so panning only bites when zoomed.
         const dx = pt.x - drag.lastX;
         const dy = pt.y - drag.lastY;
         drag.lastX = pt.x;
@@ -372,7 +408,7 @@ export function QuadrantChart({
           xDomain: panLogDomain(effectiveFrame.xDomain, -dx, rect.width, baseFrame.xDomain),
           yDomain: panLogDomain(effectiveFrame.yDomain, dy, rect.height, baseFrame.yDomain),
         });
-      } else if ((drag.kind === "select" || drag.kind === "brush") && drag.moved) {
+      } else if (drag.kind === "select" && drag.moved) {
         setSelRect(normalizeRect(drag, pt));
       }
       return; // suppress hover while a gesture is active
@@ -396,22 +432,19 @@ export function QuadrantChart({
   function handleUp(evt: React.MouseEvent<SVGSVGElement>) {
     const drag = dragRef.current;
     dragRef.current = null;
+    if (panning) setPanning(false);
     if (!drag) return;
     if (!drag.moved) {
-      // A below-threshold drag is a click.
-      const hit = hitTest(evt);
-      if (hit) onClickTicker(hit.p.ticker);
+      // A left click that didn't drag opens the ledger (right click does nothing).
+      if (drag.kind === "pan") {
+        const hit = hitTest(evt);
+        if (hit) onClickTicker(hit.p.ticker);
+      }
       setSelRect(null);
       return;
     }
     if (drag.kind === "select") {
       onSelectRegion(index.within(normalizeRect(drag, localXY(evt))).map((p) => p.ticker));
-    } else if (drag.kind === "brush") {
-      const rectPx = normalizeRect(drag, localXY(evt));
-      const bm = QUADRANT_CONFIG.zoom.brushMinPx;
-      if (rectPx.x1 - rectPx.x0 >= bm && rectPx.y1 - rectPx.y0 >= bm) {
-        onBrushZoom(brushToFrame(rectPx, scales, baseFrame));
-      }
     }
     setSelRect(null);
   }
@@ -424,7 +457,7 @@ export function QuadrantChart({
   function handleLeave() {
     dragRef.current = null;
     setSelRect(null);
-    overRef.current = false;
+    if (panning) setPanning(false);
     if (hovered !== null) setHovered(null);
     onHover(null);
   }
@@ -456,24 +489,29 @@ export function QuadrantChart({
         out.push(pos);
       }
     };
-    if (showTrails) for (const pos of fgPos) if (labeledIds.has(pos.p.ticker)) add(pos);
+    if (showTrails) {
+      // When a zone is isolated, trail exactly that subset; otherwise every labeled mark.
+      if (zoneActiveSet) for (const pos of fgPos) { if (zoneActiveSet.has(pos.p.ticker)) add(pos); }
+      else for (const pos of fgPos) if (labeledIds.has(pos.p.ticker)) add(pos);
+    }
     // Any hovered mark (foreground, search-promoted, density-promoted, alt-bg) trails.
     if (hovered) add(posByTicker.get(hovered));
     return out;
-  }, [fgPos, posByTicker, showTrails, labeledIds, hovered]);
+  }, [fgPos, posByTicker, showTrails, labeledIds, hovered, zoneActiveSet]);
 
-  const panReady = spaceHeld && viewDomain !== null;
+  const cursor = hovered ? "pointer" : panning ? "grabbing" : altHeld ? "crosshair" : viewDomain ? "grab" : "default";
   return (
     <svg
+      ref={svgRef}
       width={width}
       height={height}
-      style={{ display: "block", cursor: hovered ? "pointer" : panReady ? "grab" : altHeld ? "crosshair" : "default" }}
-      onMouseEnter={() => { overRef.current = true; }}
+      style={{ display: "block", cursor }}
       onMouseDown={handleDown}
       onMouseMove={handleMove}
       onMouseUp={handleUp}
       onMouseLeave={handleLeave}
       onDoubleClick={handleDoubleClick}
+      onContextMenu={(e) => e.preventDefault()}
     >
       {/* Grid — ticks re-filtered to the effective (possibly zoomed) domain. */}
       {xTicks.map((t) => (
@@ -552,7 +590,7 @@ export function QuadrantChart({
                 cy={y}
                 r={cfg.colors.backgroundRadius}
                 fill={cfg.colors.background}
-                fillOpacity={searching ? (matched ? 0.9 : cfg.search.dimOpacity) : cfg.gutter.opacity}
+                fillOpacity={searching ? (matched ? 0.9 : cfg.search.dimOpacity) : zoneActiveSet ? cfg.gutter.opacity * 0.4 : cfg.gutter.opacity}
                 stroke={matched ? "var(--text-primary)" : "none"}
                 strokeWidth={matched ? 1 : 0}
               />
@@ -572,7 +610,7 @@ export function QuadrantChart({
               cy={y}
               r={p.r}
               fill={p.fill}
-              fillOpacity={searching ? cfg.search.dimOpacity : altHeld ? cfg.colors.backgroundOpacity * 1.8 : cfg.colors.backgroundOpacity}
+              fillOpacity={searching ? cfg.search.dimOpacity : zoneActiveSet ? cfg.colors.backgroundOpacity * 0.35 : altHeld ? cfg.colors.backgroundOpacity * 1.8 : cfg.colors.backgroundOpacity}
             />
           ),
         )}
@@ -621,8 +659,9 @@ export function QuadrantChart({
         {fgPos.map(({ p, x, y }) => {
           const matched = matchSet?.has(p.ticker) ?? false;
           let op = !searching ? 0.75 : matched ? 1 : cfg.search.dimOpacity;
-          if (zoneDimSet?.has(p.ticker)) op *= 0.2;
-          const outlined = hovered === p.ticker || matched;
+          // Zone isolation: the isolated zone pops to full opacity; the rest fade.
+          if (zoneActiveSet) op = zoneActiveSet.has(p.ticker) ? 1 : 0.12;
+          const outlined = hovered === p.ticker || matched || (zoneActiveSet?.has(p.ticker) ?? false);
           return (
             <circle
               key={p.ticker}
@@ -665,7 +704,7 @@ export function QuadrantChart({
               y={l.y}
               textAnchor={l.anchor}
               style={labelTextStyle}
-              opacity={zoneDimSet?.has(l.id) ? 0.2 : searching && !matchSet!.has(l.id) ? cfg.search.dimOpacity : 1}
+              opacity={searching && !matchSet!.has(l.id) ? cfg.search.dimOpacity : 1}
             >
               {l.id}
               {badge && <tspan fill="var(--color-accent)"> {badge}</tspan>}

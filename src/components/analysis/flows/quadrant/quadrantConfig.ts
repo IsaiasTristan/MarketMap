@@ -57,6 +57,8 @@ export const QUADRANT_CONFIG = {
   spatial: { cellSize: 32, hitSlop: 4, minHitRadius: 12 },
   /** Semantic zoom (Part 3): brush → animated log-domain interpolation. */
   zoom: { stackDepth: 2, animMs: 240, brushMinPx: 6 },
+  /** Mouse-wheel zoom (Part 5): log-width multiplier per wheel tick. */
+  wheel: { zoomStep: 1.15 },
   /** Density-driven promotion + label budget under zoom (Part 3b/3c).
    *  promoteDensity is points per 10,000 px² below which background marks in
    *  view self-promote to foreground render-state. dragThresholdPx separates a

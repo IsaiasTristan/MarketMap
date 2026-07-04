@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { lerpLogDomain, brushToFrame, panLogDomain, pushFrame, popFrame, type ZoomFrame } from "@/components/analysis/flows/quadrant/zoomState";
+import { lerpLogDomain, brushToFrame, panLogDomain, pushFrame, popFrame, zoomAxis, type ZoomFrame } from "@/components/analysis/flows/quadrant/zoomState";
 import { computeDensity, pointsInView, selectPromoted, selectLabelCandidates, type ViewPoint } from "@/components/analysis/flows/quadrant/densityPromotion";
 import { makeScalesForDomain, ticksInDomain } from "@/components/analysis/flows/quadrant/quadrantModel";
 import { placeLabels, type LabelInput, type PlotBounds, type PlaceOpts } from "@/components/analysis/flows/quadrant/labelPlacement";
@@ -59,6 +59,31 @@ describe("panLogDomain", () => {
   it("clamps to base bounds", () => {
     const out = panLogDomain([2, 8], 100000, 700, [1, 40]);
     expect(out[1]).toBeCloseTo(40, 6); // pinned to the base ceiling
+  });
+});
+
+describe("zoomAxis", () => {
+  const base: [number, number] = [1, 40];
+  it("zooms in (factor<1) and shrinks the log-width by that factor", () => {
+    const out = zoomAxis(base, 6, 0.5, base);
+    const lw = Math.log(out[1]) - Math.log(out[0]);
+    const baseLw = Math.log(40) - Math.log(1);
+    expect(lw).toBeCloseTo(baseLw * 0.5, 6);
+  });
+  it("keeps the cursor value at the same fractional position", () => {
+    const cursor = 6;
+    const fracIn = (Math.log(cursor) - Math.log(base[0])) / (Math.log(base[1]) - Math.log(base[0]));
+    const out = zoomAxis(base, cursor, 0.5, base);
+    const fracOut = (Math.log(cursor) - Math.log(out[0])) / (Math.log(out[1]) - Math.log(out[0]));
+    expect(fracOut).toBeCloseTo(fracIn, 6); // cursor stays put (away from a clamped edge)
+  });
+  it("returns the full base domain when zooming out to/beyond base width", () => {
+    expect(zoomAxis([2, 8], 4, 5, base)).toEqual([1, 40]);
+  });
+  it("clamps within base bounds", () => {
+    const out = zoomAxis(base, 39, 0.5, base); // cursor near the top edge
+    expect(out[0]).toBeGreaterThanOrEqual(base[0] - 1e-9);
+    expect(out[1]).toBeLessThanOrEqual(base[1] + 1e-9);
   });
 });
 

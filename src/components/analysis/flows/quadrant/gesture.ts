@@ -8,7 +8,7 @@
  */
 import type { QueryRect } from "./spatialIndex";
 
-export type Gesture = "brush" | "pan" | "select" | "click";
+export type Gesture = "pan" | "select";
 
 export interface Point {
   x: number;
@@ -16,18 +16,16 @@ export interface Point {
 }
 
 /**
- * Classify a starting gesture from the modifiers and context at mousedown:
- * - Shift → brush-zoom (draw a zoom rectangle).
- * - Space held AND already zoomed → pan the view.
- * - press began on a mark → click-through (resolved on mouseup by drag distance).
- * - otherwise (press on empty canvas) → box-select.
- * Shift wins over everything; pan requires an active zoom to have somewhere to go.
+ * Classify a starting drag from the mouse button (map-style navigation):
+ * - Right button → box-select (draw the region-inspector rectangle).
+ * - Left button → pan (grab-scroll).
+ * A left press with no drag is resolved as a click (ledger) on mouseup by drag
+ * distance — that's handled by the caller, not here. `onMark` is accepted for
+ * call-site symmetry but no longer changes the drag kind (a left-drag from a
+ * mark still pans, like dragging a map).
  */
-export function classifyGesture(m: { shiftKey: boolean; spaceKey: boolean; onMark: boolean; zoomed: boolean }): Gesture {
-  if (m.shiftKey) return "brush";
-  if (m.spaceKey && m.zoomed) return "pan";
-  if (m.onMark) return "click";
-  return "select";
+export function classifyGesture(m: { rightButton: boolean; onMark: boolean }): Gesture {
+  return m.rightButton ? "select" : "pan";
 }
 
 /** Axis-aligned rect from two drag corners, normalized so x0≤x1 and y0≤y1. */

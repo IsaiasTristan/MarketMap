@@ -18,7 +18,7 @@ import { CensusStrip } from "./CensusStrip";
 import { DangerRail } from "./DangerRail";
 import { useMeasure } from "./useMeasure";
 import { QUADRANT_CONFIG } from "./quadrantConfig";
-import { pushFrame, type ZoomFrame } from "./zoomState";
+import { type ZoomFrame } from "./zoomState";
 import { zoneCensus, regimeVector, movingIntoCrowding, eliteLeavingCrowded, watchlistCensus } from "./takeaways";
 import type { Zone } from "./zones";
 
@@ -297,7 +297,7 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
                   onPinnedChange={setPinned}
                   onClickTicker={onSelectTicker}
                   onSelectRegion={(tickers) => setSelection(new Set(tickers))}
-                  onBrushZoom={(frame) => setZoomStack((s) => pushFrame(s, frame, QUADRANT_CONFIG.zoom.stackDepth))}
+                  onWheelZoom={(frame) => setZoomStack(frame ? [frame] : [])}
                   onPan={(frame) => setZoomStack((s) => (s.length ? [...s.slice(0, -1), frame] : s))}
                   onResetZoom={resetZoom}
                 />
@@ -335,7 +335,7 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
             {" "}Highlighted names had a meaningful holder swing this quarter or are established top-decile-conviction positions; the rest render as context only.
             {" "}Hover a name (or toggle <em>show trails</em>) to trace its move from last quarter — travel into the crowded upper-right is the risk signal.
             {" "}Breadth is discrete — each column is one more of the {model.trackedFunds} tracked funds (quant/index-like books excluded); low-holder columns are nudged apart slightly for legibility.
-            {" "}<span style={{ color: "var(--text-secondary)" }}>Hold <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Alt</kbd> to inspect context marks · drag empty space to select · <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Shift</kbd>+drag to zoom (<kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Space</kbd>+drag to pan when zoomed) · <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Esc</kbd> resets.</span>
+            {" "}<span style={{ color: "var(--text-secondary)" }}>Scroll to zoom · left-drag to pan · right-drag to box-select · click a census chip to isolate a zone · hold <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Alt</kbd> to inspect context marks · double-click or <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Esc</kbd> resets.</span>
           </div>
         </div>
       )}

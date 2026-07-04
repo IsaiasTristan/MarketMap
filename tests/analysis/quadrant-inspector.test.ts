@@ -6,20 +6,13 @@ import type { PlottedPoint, QuadrantModel } from "@/components/analysis/flows/qu
 
 // ── gesture ────────────────────────────────────────────────────────────────
 describe("classifyGesture", () => {
-  const base = { shiftKey: false, spaceKey: false, onMark: false, zoomed: false };
-  it("shift always brushes", () => {
-    expect(classifyGesture({ ...base, shiftKey: true })).toBe("brush");
-    expect(classifyGesture({ ...base, shiftKey: true, onMark: true, spaceKey: true, zoomed: true })).toBe("brush");
+  it("right button selects (box-select)", () => {
+    expect(classifyGesture({ rightButton: true, onMark: false })).toBe("select");
+    expect(classifyGesture({ rightButton: true, onMark: true })).toBe("select");
   });
-  it("space pans only when zoomed", () => {
-    expect(classifyGesture({ ...base, spaceKey: true, zoomed: true })).toBe("pan");
-    expect(classifyGesture({ ...base, spaceKey: true, zoomed: false })).toBe("select");
-  });
-  it("press on a mark is a click", () => {
-    expect(classifyGesture({ ...base, onMark: true })).toBe("click");
-  });
-  it("press on empty canvas selects", () => {
-    expect(classifyGesture(base)).toBe("select");
+  it("left button pans, even starting on a mark (map-style)", () => {
+    expect(classifyGesture({ rightButton: false, onMark: false })).toBe("pan");
+    expect(classifyGesture({ rightButton: false, onMark: true })).toBe("pan");
   });
 });
 
