@@ -1035,8 +1035,9 @@ model InstitutionalNameAggregate {
   ticker                 String
   filingPeriod           DateTime @db.Date
   companyName            String?
-  sector                 String?
-  subsector              String?
+  sector                 String? // canonical market-map sector (grouping key), or "Unclassified"
+  subsector              String? // canonical market-map sub-theme
+  securityClass          String? // equity | vehicle | unclassified — vehicles excluded from rotation/leaderboard
   marketCapTier          String? // small | mid | large | mega
   fundsHolding           Int      @default(0)
   fundsNew               Int      @default(0)

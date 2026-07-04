@@ -93,7 +93,9 @@ export async function getLeaderboard(period?: string, config: FlowLeaderboardCon
 
   // ── Per-name aggregate rows over the window (holders, conviction, bps, mcap). ──
   const nameRows = await prisma.institutionalNameAggregate.findMany({
-    where: { filingPeriod: { in: dateList } },
+    // Exclude vehicles (index/sector/thematic/levered ETFs); keep equities and
+    // unclassified names (nulls tolerated for pre-classification data).
+    where: { filingPeriod: { in: dateList }, OR: [{ securityClass: { not: "vehicle" } }, { securityClass: null }] },
     select: {
       ticker: true,
       filingPeriod: true,

@@ -19,6 +19,7 @@ import { Prisma, RevisionGroupType } from "@prisma/client";
 import { buildActiveFlowMetrics, netDiffusionPct } from "./institutional-active-flow.service";
 import { runIngredientPrecompute } from "./institutional-ingredients.service";
 import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-config";
+import { classifySecurity, type SecurityClass } from "@/lib/institutional/security-class";
 
 const iso = (d: Date | string): string =>
   (typeof d === "string" ? d : d.toISOString()).slice(0, 10);
@@ -351,7 +352,11 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
     GROUP BY h."filingPeriod"`);
   const denom = new Map(denomRows.map((r) => [iso(r.period), Number(r.n)]));
 
-  const meta = new Map<string, { sector: string | null; subsector: string | null; name: string | null }>();
+  // meta.sector / .subsector are the canonical GROUPING keys after classification
+  // (vehicles → null so they drop out of sector rollups; uncovered names →
+  // "Unclassified"). securityClass is stored on the name aggregate so the stock
+  // view and leaderboard can exclude vehicles.
+  const meta = new Map<string, { sector: string | null; subsector: string | null; name: string | null; securityClass: SecurityClass }>();
   const byKey = new Map<string, NameStat>();
   const seriesByTicker = new Map<string, Map<string, number>>();
   const allPeriods = new Set<string>();
@@ -372,7 +377,8 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
       totalValue: r.total_value !== null ? Number(r.total_value) : null,
     };
     byKey.set(`${r.ticker}|${period}`, ns);
-    meta.set(r.ticker, { sector: r.sector, subsector: r.subsector, name: r.company_name });
+    const cls = classifySecurity(r.sector, r.subsector);
+    meta.set(r.ticker, { sector: cls.groupSector, subsector: cls.groupSubsector, name: r.company_name, securityClass: cls.securityClass });
     if (!seriesByTicker.has(r.ticker)) seriesByTicker.set(r.ticker, new Map());
     seriesByTicker.get(r.ticker)!.set(period, ns.fundsHolding);
   }
@@ -466,6 +472,7 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
       companyName: m.name,
       sector: m.sector,
       subsector: m.subsector,
+      securityClass: m.securityClass,
       marketCapTier: marketCapTier(mc),
       fundsHolding: ns.fundsHolding,
       fundsNew: ns.fundsNew,

@@ -8,6 +8,7 @@ import { prisma } from "@/infrastructure/db/client";
 import { Prisma } from "@prisma/client";
 import { CROWDED_BREADTH_PCT, signalFundFilter } from "./institutional-aggregate.service";
 import { CATEGORY_TIER, type FundCategory } from "./watchlist";
+import { UNCLASSIFIED_SECTOR } from "@/lib/institutional/security-class";
 
 const iso = (d: Date): string => d.toISOString().slice(0, 10);
 const HIGH_CONVICTION_PCT = 1; // % of book that marks a "real" position
@@ -373,7 +374,9 @@ export async function getRotation(period?: string, groupBy: RotationGroupBy = "s
   if (groupBy === "stock") {
     // Per-ticker flow lives on the name aggregates (no sector precompute needed).
     const rows = await prisma.institutionalNameAggregate.findMany({
-      where: { filingPeriod: periodDate },
+      // Vehicles (index/sector/thematic/levered ETFs) are instruments, not names
+      // funds rotate between — excluded from the rotation entirely.
+      where: { filingPeriod: periodDate, NOT: { securityClass: "vehicle" } },
       select: {
         ticker: true, companyName: true, sector: true, fundsBought: true, fundsSold: true, fundsHolding: true,
         activeBpsAvg: true, dollarNetFlow: true, fundsRotatedIn: true, fundsRotatedOut: true, fundsParticipating: true,
@@ -423,13 +426,18 @@ export async function getRotation(period?: string, groupBy: RotationGroupBy = "s
     };
   });
   const hasActiveFlow = mapped.some((m) => m.netDiffusionPct !== null);
+  // Pull the data-quality "Unclassified" bucket out of the ranking so it always
+  // renders last, never competing with real sectors for the top/bottom slots.
+  const unclassified = mapped.filter((m) => m.groupKey === UNCLASSIFIED_SECTOR);
+  const ranked = mapped.filter((m) => m.groupKey !== UNCLASSIFIED_SECTOR);
   const sorted = hasActiveFlow
-    ? mapped.slice().sort((a, b) => (b.netDiffusionPct ?? 0) - (a.netDiffusionPct ?? 0))
-    : mapped.slice().sort((a, b) => b.netFundsAdding - a.netFundsAdding);
-  const groups =
+    ? ranked.slice().sort((a, b) => (b.netDiffusionPct ?? 0) - (a.netDiffusionPct ?? 0))
+    : ranked.slice().sort((a, b) => b.netFundsAdding - a.netFundsAdding);
+  const trimmed =
     groupBy === "subsector" && sorted.length > SUBSECTOR_LIMIT * 2
       ? [...sorted.slice(0, SUBSECTOR_LIMIT), ...sorted.slice(-SUBSECTOR_LIMIT)]
       : sorted;
+  const groups = [...trimmed, ...unclassified];
   return { filingPeriod: p, groupBy, hasActiveFlow, groups };
 }
 
