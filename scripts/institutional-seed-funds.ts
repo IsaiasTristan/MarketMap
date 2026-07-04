@@ -19,19 +19,37 @@ async function main() {
   const replace = process.argv.includes("--replace");
   let created = 0;
   let updated = 0;
+  let retiered = 0;
   for (const f of WATCHLIST_SEED) {
     const existing = await prisma.institutionalFund.findUnique({ where: { cik: f.cik } });
+    const tier = f.tier ?? "signal";
     const common = {
       name: f.name,
       edgarName: f.edgarName,
       category: f.category,
-      tier: CATEGORY_TIER[f.category],
+      tier,
+      categorySort: CATEGORY_TIER[f.category],
       isMostRespected: f.isMostRespected ?? false,
     };
+    // Tier is user-editable and the DB is the source of truth after seeding, so a
+    // plain re-seed PRESERVES the DB tier; only --replace re-asserts the seed tier.
+    // Re-tiering is global — log every change so a full metrics recompute
+    // (job:institutional --aggregate-only) can be triggered downstream.
+    if (existing && replace && existing.tier !== tier) {
+      retiered++;
+      await prisma.dataQualityEvent.create({
+        data: {
+          kind: "tier_change",
+          fundId: existing.id,
+          payload: { cik: f.cik, name: f.name, from: existing.tier, to: tier, actor: "seed --replace" },
+        },
+      });
+    }
+    const { tier: _seedTier, ...commonNoTier } = common;
     await prisma.institutionalFund.upsert({
       where: { cik: f.cik },
       create: { cik: f.cik, ...common, notes: f.notes ?? null },
-      update: replace ? { ...common, notes: f.notes ?? null, isActive: true } : common,
+      update: replace ? { ...common, notes: f.notes ?? null, isActive: true } : commonNoTier,
     });
     if (existing) updated++;
     else created++;
@@ -63,7 +81,9 @@ async function main() {
 
   const total = await prisma.institutionalFund.count();
   const active = await prisma.institutionalFund.count({ where: { isActive: true } });
-  console.log(`[institutional-seed] created=${created} updated=${updated} deactivated=${deactivated} deleted=${deleted} total=${total} active=${active}`);
+  const signal = await prisma.institutionalFund.count({ where: { isActive: true, tier: "signal" } });
+  const context = await prisma.institutionalFund.count({ where: { isActive: true, tier: "context" } });
+  console.log(`[institutional-seed] created=${created} updated=${updated} retiered=${retiered} deactivated=${deactivated} deleted=${deleted} total=${total} active=${active} signal=${signal} context=${context}`);
 }
 
 main()

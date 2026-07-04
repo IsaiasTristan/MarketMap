@@ -924,6 +924,26 @@ enum InstitutionalAction {
   EXITED
 }
 
+/// Fund universe tier. `signal` funds are the concentrated, conviction-bearing
+/// books whose actions carry information; `context` funds (broadly-diversified /
+/// quant / large index-like books) stay ingested for context-universe analytics
+/// (crowding, liquidity) but are EXCLUDED from every flow denominator. This is the
+/// single source of truth that replaces the old >1000-name `notDiversifiedFilter`.
+/// Global (not effective-dated): re-tiering a fund recomputes its entire history.
+enum FundTier {
+  signal
+  context
+}
+
+/// Provenance of a corporate action. `derived` rows are auto-inserted by the
+/// split detector (cross-sectional holder ratio + implied-price corroboration);
+/// a real vendor feed can later be layered in as `vendor` and reconciled.
+enum CorporateActionSource {
+  vendor
+  derived
+  manual
+}
+
 /// Editable watchlist (~143 curated funds, seeded from smart_money_universe,
 /// then user-maintained via the admin UI). `cik` is the 10-digit zero-padded filer id.
 model InstitutionalFund {
@@ -931,9 +951,10 @@ model InstitutionalFund {
   cik             String   @unique
   name            String // display name
   edgarName       String? // EDGAR 13F-HR filer name
-  tier            Int      @default(1) // coarse sort key derived from category (1 growth-ish · 2 value-ish · 3 activist/event)
+  tier            FundTier @default(signal) // signal (flow denominator) vs context (excluded); single source of truth
+  categorySort    Int      @default(1) // coarse sort key derived from category (1 growth-ish · 2 value-ish · 3 activist/event)
   category        String   @default("Growth/Quality") // display taxonomy (see FUND_CATEGORIES in watchlist.ts)
-  isMostRespected Boolean  @default(false) // hand-weighted subset → first-mover view
+  isMostRespected Boolean  @default(false) // hand-weighted subset → first-mover view (elite ⊂ signal)
   isActive        Boolean  @default(true) // include in aggregates
   notes           String?
   addedAt         DateTime @default(now())
@@ -944,6 +965,7 @@ model InstitutionalFund {
 
   @@index([isActive])
   @@index([tier])
+  @@index([categorySort])
 }
 
 /// Fact table: one aggregated long-equity position per (fund, ticker, period).
@@ -964,6 +986,14 @@ model FundHoldingSnapshot {
   filingDate   DateTime?           @db.Date
   acceptedDate DateTime?           @db.Date
   rawJson      Json? // put/call + share-class rows retained for reconciliation
+  // ── Config-independent precomputed leaderboard ingredients (signal-tier only) ──
+  // Split-adjusted QoQ share delta % (null at a fund's first period for this name).
+  adjShareDeltaPct   Float?
+  // Deliberate weight this quarter, in bps of the fund's tracked long-equity book.
+  activeWeightBps    Float?
+  // Price-drift-only expected weight (prior shares revalued at this quarter's
+  // implied price / counterfactual book), in bps. active − expected = net move.
+  expectedWeightBps  Float?
   createdAt    DateTime            @default(now())
 
   fund InstitutionalFund @relation(fields: [fundId], references: [id], onDelete: Cascade)
@@ -1034,6 +1064,12 @@ model InstitutionalNameAggregate {
   fundsRotatedIn         Int? // funds whose active move > +ε
   fundsRotatedOut        Int? // funds whose active move < −ε
   fundsParticipating     Int? // funds with exposure at t-1 or t (diffusion denominator)
+  // Capital-flow ingredient: mean (active − expected) weight in bps over ALL
+  // signal-tier funds (non-holders = 0) — the leaderboard's flowz_cap input.
+  netflowBps             Float?
+  // Point-in-time market cap (USD) as of this quarter-end, for the mega-cap gate.
+  // Null = unknown → the gate stays open (never silently shrink the board).
+  marketCapUsd           Decimal? @db.Decimal(24, 2)
   createdAt              DateTime @default(now())
 
   @@unique([ticker, filingPeriod])
@@ -1067,4 +1103,50 @@ model InstitutionalQuarterSnapshot {
   filingPeriod DateTime @unique @db.Date
   payloadJson  Json
   computedAt   DateTime @default(now())
+}
+
+/// Stock split / corporate action used to reconcile raw 13F share counts across
+/// quarters. `derived` rows are auto-inserted by the split detector when the
+/// cross-sectional holder ratio and the implied-price fingerprint agree; a real
+/// vendor feed can be layered in later as `vendor` and reconciled against these.
+model CorporateAction {
+  id         String                @id @default(cuid())
+  ticker     String
+  exDate     DateTime              @db.Date // ~ the period boundary the split lands on
+  ratio      Float // new shares per old share (2.0 for a 2:1 split)
+  source     CorporateActionSource
+  confidence Float? // detector agreement fraction (derived rows)
+  nFunds     Int? // continuing holders that corroborated (derived rows)
+  notes      String?
+  createdAt  DateTime              @default(now())
+
+  @@unique([ticker, exDate, source])
+  @@index([ticker])
+  @@index([exDate])
+}
+
+/// Data-quality event queue: tier-review suggestions, missing market caps,
+/// unresolved splits (detector fired but corroboration failed → data hold), and
+/// derived-split audit rows. Surfaced for review; `status` tracks resolution.
+model DataQualityEvent {
+  id        String   @id @default(cuid())
+  kind      String // tier_review | missing_mcap | unresolved_split | derived_split | tier_change | source_conflict
+  ticker    String?
+  fundId    String?
+  period    DateTime? @db.Date
+  payload   Json?
+  status    String   @default("open") // open | resolved | ignored
+  createdAt DateTime @default(now())
+
+  @@index([kind, status])
+  @@index([ticker])
+}
+
+/// Small key/value store for Engine-3 pipeline metadata. Holds
+/// `ingredients_version` (a monotonically bumped counter used in the leaderboard
+/// route cache key so precompute changes invalidate cached boards).
+model InstitutionalMeta {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
 }

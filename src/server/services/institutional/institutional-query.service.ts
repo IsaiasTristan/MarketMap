@@ -6,7 +6,7 @@
  */
 import { prisma } from "@/infrastructure/db/client";
 import { Prisma } from "@prisma/client";
-import { CROWDED_BREADTH_PCT, notDiversifiedFilter } from "./institutional-aggregate.service";
+import { CROWDED_BREADTH_PCT, signalFundFilter } from "./institutional-aggregate.service";
 import { CATEGORY_TIER, type FundCategory } from "./watchlist";
 
 const iso = (d: Date): string => d.toISOString().slice(0, 10);
@@ -32,13 +32,12 @@ async function resolvePeriod(period?: string): Promise<string | null> {
  *  NB: a raw date column must be compared with a ::date cast, not a JS Date
  *  parameter (which binds as a timestamp and silently fails to match). */
 async function trackedFundsInPeriod(period: string): Promise<number> {
-  // Excludes broadly-diversified quant books so the count matches the breadth
-  // denominator used to build the aggregates (see notDiversifiedFilter).
+  // Signal-tier only, so the count matches the breadth denominator used to build
+  // the aggregates and the leaderboard (see signalFundFilter — single source of truth).
   const rows = await prisma.$queryRaw<Array<{ n: bigint }>>(Prisma.sql`
     SELECT count(DISTINCT h."fundId") AS n
     FROM "FundHoldingSnapshot" h
-    JOIN "InstitutionalFund" f ON f.id = h."fundId" AND f."isActive" = true
-    WHERE h."filingPeriod" = ${period}::date AND h.shares > 0 AND ${notDiversifiedFilter("h")}`);
+    WHERE h."filingPeriod" = ${period}::date AND h.shares > 0 AND ${signalFundFilter("h")}`);
   return Number(rows[0]?.n ?? 0);
 }
 
@@ -522,8 +521,7 @@ export async function getFirstMovers(period?: string, broadThreshold = 6): Promi
       count(*) FILTER (WHERE h.shares > 0) AS total,
       count(*) FILTER (WHERE h.shares > 0 AND f."isMostRespected") AS respected
     FROM "FundHoldingSnapshot" h
-    JOIN "InstitutionalFund" f ON f.id = h."fundId" AND f."isActive" = true
-    WHERE ${notDiversifiedFilter("h")}
+    JOIN "InstitutionalFund" f ON f.id = h."fundId" AND f."isActive" = true AND f."tier" = 'signal'
     GROUP BY h.ticker, h."filingPeriod"`);
 
   const byTicker = new Map<string, Map<string, { total: number; respected: number }>>();
@@ -626,12 +624,11 @@ export async function getExitClusters(period?: string, minExits = 3): Promise<{ 
   >(Prisma.sql`
     SELECT c.ticker, f.name AS fund_name, c.action, pr."pctOfBook" AS prior_pct, f."isMostRespected" AS is_respected
     FROM "FundHoldingSnapshot" c
-    JOIN "InstitutionalFund" f ON f.id = c."fundId" AND f."isActive" = true
+    JOIN "InstitutionalFund" f ON f.id = c."fundId" AND f."isActive" = true AND f."tier" = 'signal'
     JOIN "FundHoldingSnapshot" pr ON pr."fundId" = c."fundId" AND pr.ticker = c.ticker AND pr."filingPeriod" = ${priorP}::date
     WHERE c."filingPeriod" = ${p}::date
       AND c.action IN ('TRIMMED', 'EXITED')
-      AND (pr."pctOfBook" >= ${HIGH_CONVICTION_PCT} OR f."isMostRespected" = true)
-      AND ${notDiversifiedFilter("c")}`);
+      AND (pr."pctOfBook" >= ${HIGH_CONVICTION_PCT} OR f."isMostRespected" = true)`);
 
   const byTicker = new Map<string, ExitClusterRow>();
   for (const r of rows) {
@@ -710,13 +707,14 @@ export interface FundRow {
   name: string;
   edgarName: string | null;
   category: string;
+  tier: string; // "signal" | "context"
   isMostRespected: boolean;
   isActive: boolean;
   notes: string | null;
   latestHoldings: number | null;
 }
 export async function listFunds(): Promise<FundRow[]> {
-  const funds = await prisma.institutionalFund.findMany({ orderBy: [{ tier: "asc" }, { category: "asc" }, { name: "asc" }] });
+  const funds = await prisma.institutionalFund.findMany({ orderBy: [{ categorySort: "asc" }, { category: "asc" }, { name: "asc" }] });
   // latest holdings count per fund
   const latest = await prisma.institutionalNameAggregate.findFirst({ orderBy: { filingPeriod: "desc" }, select: { filingPeriod: true } });
   const counts = latest
@@ -733,6 +731,7 @@ export async function listFunds(): Promise<FundRow[]> {
     name: f.name,
     edgarName: f.edgarName,
     category: f.category,
+    tier: f.tier,
     isMostRespected: f.isMostRespected,
     isActive: f.isActive,
     notes: f.notes,
@@ -745,6 +744,7 @@ export async function createFund(input: {
   name: string;
   edgarName?: string;
   category?: FundCategory;
+  tier?: "signal" | "context";
   isMostRespected?: boolean;
 }): Promise<{ id: string }> {
   const cik = input.cik.replace(/\D/g, "").padStart(10, "0");
@@ -755,7 +755,8 @@ export async function createFund(input: {
       name: input.name,
       edgarName: input.edgarName ?? null,
       category,
-      tier: CATEGORY_TIER[category],
+      categorySort: CATEGORY_TIER[category],
+      tier: input.tier ?? "signal",
       isMostRespected: input.isMostRespected ?? false,
     },
   });
@@ -764,10 +765,20 @@ export async function createFund(input: {
 
 export async function updateFund(
   id: string,
-  patch: Partial<{ name: string; edgarName: string | null; category: FundCategory; isMostRespected: boolean; isActive: boolean; notes: string | null }>,
+  patch: Partial<{ name: string; edgarName: string | null; category: FundCategory; tier: "signal" | "context"; isMostRespected: boolean; isActive: boolean; notes: string | null }>,
 ): Promise<void> {
   const data: Prisma.InstitutionalFundUpdateInput = { ...patch };
-  if (patch.category) data.tier = CATEGORY_TIER[patch.category]; // tier stays a derived sort key
+  if (patch.category) data.categorySort = CATEGORY_TIER[patch.category]; // categorySort stays a derived sort key
+  // Re-tiering is global (recomputes a fund's whole history). Log the change so a
+  // metrics recompute (job:institutional --aggregate-only) can be triggered.
+  if (patch.tier) {
+    const existing = await prisma.institutionalFund.findUnique({ where: { id }, select: { tier: true, cik: true, name: true } });
+    if (existing && existing.tier !== patch.tier) {
+      await prisma.dataQualityEvent.create({
+        data: { kind: "tier_change", fundId: id, payload: { cik: existing.cik, name: existing.name, from: existing.tier, to: patch.tier, actor: "admin" } },
+      });
+    }
+  }
   await prisma.institutionalFund.update({ where: { id }, data });
 }
 

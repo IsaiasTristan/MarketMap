@@ -27,7 +27,7 @@
  */
 import { prisma } from "@/infrastructure/db/client";
 import { Prisma } from "@prisma/client";
-import { notDiversifiedFilter } from "./institutional-aggregate.service";
+import { signalFundFilter } from "./institutional-aggregate.service";
 
 /** Diffusion dead-band: |active move| below this (bps) is rebalancing dust, not a
  *  deliberate rotation, and doesn't count toward fundsIn / fundsOut. */
@@ -232,8 +232,7 @@ async function loadPeriod(period: string): Promise<FundHoldingsByPeriod> {
   const rows = await prisma.$queryRaw<Array<{ fundId: string; ticker: string; shares: number; value: number }>>(Prisma.sql`
     SELECT h."fundId" AS "fundId", h.ticker, h.shares::float8 AS shares, h.value::float8 AS value
     FROM "FundHoldingSnapshot" h
-    JOIN "InstitutionalFund" f ON f.id = h."fundId" AND f."isActive" = true
-    WHERE h."filingPeriod" = ${period}::date AND h.shares > 0 AND ${notDiversifiedFilter("h")}`);
+    WHERE h."filingPeriod" = ${period}::date AND h.shares > 0 AND ${signalFundFilter("h")}`);
   const holdings: FundHoldingsByPeriod = new Map();
   for (const r of rows) {
     let m = holdings.get(r.fundId);

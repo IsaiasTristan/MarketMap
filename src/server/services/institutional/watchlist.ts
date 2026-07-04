@@ -14,10 +14,17 @@
  * Blackwells Capital. Two "(pre-…)" legacy rows keep history for funds whose
  * filer entity changed mid-window.
  *
- * `category` is the display taxonomy; `tier` (1 growth-ish · 2 value-ish ·
+ * `category` is the display taxonomy; `categorySort` (1 growth-ish · 2 value-ish ·
  * 3 activist/event) is derived via CATEGORY_TIER for coarse sorting only.
  * `isMostRespected` marks the hand-weighted subset used by the first-mover /
  * consensus-lag view; it mirrors the CSV's elite_tier and is fully editable.
+ *
+ * `tier` ("signal" | "context") is the flow-universe tier — the single source of
+ * truth that replaces the old >1000-name diversified filter. `signal` funds feed
+ * every flow denominator; `context` funds (broadly-diversified / quant / large
+ * index-like books) stay ingested for context analytics but are excluded from
+ * flow. Seeded from the notes below (the funds historically flagged for context);
+ * DB is source of truth after seeding, tunable per-fund. Default = signal.
  */
 
 export const FUND_CATEGORIES = [
@@ -35,7 +42,11 @@ export const FUND_CATEGORIES = [
 
 export type FundCategory = (typeof FUND_CATEGORIES)[number];
 
-/** Coarse legacy tier used for sorting: 1 growth-ish · 2 value-ish · 3 activist/event. */
+/** Flow-universe tier. See header: signal funds feed every flow denominator. */
+export type FundTierValue = "signal" | "context";
+
+/** Coarse legacy sort key: 1 growth-ish · 2 value-ish · 3 activist/event.
+ *  (Formerly `tier`; renamed to `categorySort` when `tier` became the flow tier.) */
 export const CATEGORY_TIER: Record<FundCategory, 1 | 2 | 3> = {
   "Growth/Quality": 1,
   "Quality Compounder": 1,
@@ -54,6 +65,7 @@ export type WatchlistFund = {
   name: string; // display name
   edgarName: string; // EDGAR conformed filer name
   category: FundCategory;
+  tier?: FundTierValue; // flow-universe tier; omit ⇒ "signal"
   isMostRespected?: boolean;
   notes?: string;
 };
@@ -81,11 +93,11 @@ export const WATCHLIST_SEED: WatchlistFund[] = [
   { cik: "0001608485", name: "Lansdowne", edgarName: "LANSDOWNE PARTNERS (UK) LLP", category: "Growth/Quality", notes: "Files as Lansdowne Partners (UK) LLP; prior seed CIK 1315309 was the dormant Limited Partnership (no 13F-HR since 2014)." },
   { cik: "0001569049", name: "Light Street", edgarName: "LIGHT STREET CAPITAL MANAGEMENT, LLC", category: "Growth/Quality" },
   { cik: "0001061165", name: "Lone Pine Capital", edgarName: "LONE PINE CAPITAL LLC", category: "Growth/Quality", isMostRespected: true, notes: "Tiger cub" },
-  { cik: "0001318757", name: "Marshall Wace", edgarName: "MARSHALL WACE, LLP", category: "Growth/Quality", notes: "RECOMMEND: move to context tier - quant multi-manager, 2592 positions is noise for signal purposes" },
+  { cik: "0001318757", name: "Marshall Wace", edgarName: "MARSHALL WACE, LLP", category: "Growth/Quality", tier: "context", notes: "Quant multi-manager, ~2592 positions — context tier (excluded from flow denominators)." },
   { cik: "0001410830", name: "Matrix Capital Management", edgarName: "Matrix Capital Management Company, LP", category: "Growth/Quality", notes: "David Goel, concentrated TMT, Tiger lineage" },
   { cik: "0000934639", name: "Maverick Capital", edgarName: "MAVERICK CAPITAL LTD", category: "Growth/Quality", isMostRespected: true, notes: "Lee Ainslie, original Tiger cub" },
   { cik: "0001837309", name: "Polar Capital", edgarName: "Polar Capital Holdings Plc", category: "Growth/Quality", notes: "13F-HR filed by parent Polar Capital Holdings Plc; the LLP went notice-only (13F-NT) in 2021." },
-  { cik: "0001034524", name: "Polen Capital", edgarName: "POLEN CAPITAL MANAGEMENT LLC", category: "Growth/Quality", notes: "Large long-only; consider context tier or weight-cap" },
+  { cik: "0001034524", name: "Polen Capital", edgarName: "POLEN CAPITAL MANAGEMENT LLC", category: "Growth/Quality", tier: "context", notes: "Large diversified long-only — context tier." },
   { cik: "0001020066", name: "Sands Capital", edgarName: "SANDS CAPITAL MANAGEMENT, LLC", category: "Growth/Quality", isMostRespected: true },
   { cik: "0001537530", name: "SCGE Management", edgarName: "SCGE MANAGEMENT, L.P.", category: "Growth/Quality", notes: "Sequoia-affiliated public growth" },
   { cik: "0001675884", name: "Skye Global", edgarName: "Skye Global Management LP", category: "Growth/Quality", notes: "Jamie Sterne, concentrated" },
@@ -129,26 +141,26 @@ export const WATCHLIST_SEED: WatchlistFund[] = [
   // ── Value ───────────────────────────────────────────────────────────────
   { cik: "0001358706", name: "Abrams Capital", edgarName: "ABRAMS CAPITAL MANAGEMENT, L.P.", category: "Value", isMostRespected: true, notes: "David Abrams, Baupost alum, concentrated" },
   { cik: "0001656456", name: "Appaloosa", edgarName: "Appaloosa LP", category: "Value", notes: "David Tepper" },
-  { cik: "0001466153", name: "Artisan Partners", edgarName: "Artisan Partners Limited Partnership", category: "Value", notes: "Large diversified; consider context tier" },
+  { cik: "0001466153", name: "Artisan Partners", edgarName: "Artisan Partners Limited Partnership", category: "Value", tier: "context", notes: "Large diversified — context tier." },
   { cik: "0001061768", name: "Baupost", edgarName: "BAUPOST GROUP LLC/MA", category: "Value", isMostRespected: true, notes: "Seth Klarman" },
   { cik: "0001067983", name: "Berkshire Hathaway", edgarName: "BERKSHIRE HATHAWAY INC", category: "Value", isMostRespected: true, notes: "Buffett" },
   { cik: "0001166559", name: "Bill & Melinda Gates Foundation Trust", edgarName: "GATES FOUNDATION TRUST", category: "Value", notes: "Ultra-low turnover, ~20 positions" },
   { cik: "0001549575", name: "Dalal Street (Pabrai)", edgarName: "Dalal Street, LLC", category: "Value", notes: "Mohnish Pabrai" },
   { cik: "0001036325", name: "Davis Selected Advisers", edgarName: "DAVIS SELECTED ADVISERS", category: "Value" },
-  { cik: "0001217541", name: "Diamond Hill", edgarName: "DIAMOND HILL CAPITAL MANAGEMENT INC", category: "Value", notes: "Consider context tier" },
-  { cik: "0000200217", name: "Dodge & Cox", edgarName: "DODGE & COX", category: "Value", notes: "Consider context tier" },
+  { cik: "0001217541", name: "Diamond Hill", edgarName: "DIAMOND HILL CAPITAL MANAGEMENT INC", category: "Value", tier: "context", notes: "Large diversified value — context tier." },
+  { cik: "0000200217", name: "Dodge & Cox", edgarName: "DODGE & COX", category: "Value", tier: "context", notes: "Large diversified value — context tier." },
   { cik: "0001536411", name: "Duquesne Family Office", edgarName: "Duquesne Family Office LLC", category: "Value", isMostRespected: true, notes: "Druckenmiller - macro-informed, higher turnover" },
   { cik: "0000915191", name: "Fairfax Financial", edgarName: "FAIRFAX FINANCIAL HOLDINGS LTD/ CAN", category: "Value", notes: "Prem Watsa insurance float book" },
   { cik: "0001056831", name: "Fairholme", edgarName: "FAIRHOLME CAPITAL MANAGEMENT LLC", category: "Value", notes: "Berkowitz - now mostly St. Joe, marginal" },
-  { cik: "0001325447", name: "First Eagle", edgarName: "First Eagle Investment Management, LLC", category: "Value", notes: "Consider context tier - 414 positions" },
+  { cik: "0001325447", name: "First Eagle", edgarName: "First Eagle Investment Management, LLC", category: "Value", tier: "context", notes: "~414 positions — context tier." },
   { cik: "0001377581", name: "FPA", edgarName: "First Pacific Advisors, LP", category: "Value" },
-  { cik: "0000807249", name: "Gabelli / GAMCO", edgarName: "GAMCO INVESTORS, INC. ET AL", category: "Value", notes: "RECOMMEND: context tier - 950 positions" },
+  { cik: "0000807249", name: "Gabelli / GAMCO", edgarName: "GAMCO INVESTORS, INC. ET AL", category: "Value", tier: "context", notes: "~950 positions — context tier." },
   { cik: "0001138995", name: "Glenview Capital", edgarName: "GLENVIEW CAPITAL MANAGEMENT, LLC", category: "Value", notes: "Larry Robbins, healthcare tilt" },
   { cik: "0000846222", name: "Greenhaven Associates", edgarName: "GREENHAVEN ASSOCIATES INC", category: "Value", notes: "Ed Wachenheim" },
   { cik: "0001489933", name: "Greenlight", edgarName: "DME Capital Management, LP", category: "Value", notes: "David Einhorn David Einhorn — files as DME Capital Management LP since Q1 2024." },
   { cik: "0001079114", name: "Greenlight (pre-2024 filer)", edgarName: "GREENLIGHT CAPITAL INC", category: "Value", notes: "Legacy Einhorn filer — history through Q4 2023; successor filer is DME Capital Management LP." },
   { cik: "0001056823", name: "Horizon Kinetics", edgarName: "HORIZON KINETICS ASSET MANAGEMENT LLC", category: "Value", notes: "Murray Stahl - TPL heavy" },
-  { cik: "0001164833", name: "Hotchkis & Wiley", edgarName: "HOTCHKIS & WILEY CAPITAL MANAGEMENT LLC", category: "Value", notes: "Consider context tier - 454 positions" },
+  { cik: "0001164833", name: "Hotchkis & Wiley", edgarName: "HOTCHKIS & WILEY CAPITAL MANAGEMENT LLC", category: "Value", tier: "context", notes: "~454 positions — context tier." },
   { cik: "0000921669", name: "Icahn Capital", edgarName: "ICAHN CARL C", category: "Value", notes: "Carl Icahn (also activist)" },
   { cik: "0001039565", name: "Kahn Brothers", edgarName: "KAHN BROTHERS GROUP INC", category: "Value", notes: "Deep value" },
   { cik: "0001419999", name: "Mar Vista", edgarName: "MAR VISTA INVESTMENT PARTNERS LLC", category: "Value" },
@@ -157,7 +169,7 @@ export const WATCHLIST_SEED: WatchlistFund[] = [
   { cik: "0000813917", name: "Oakmark / Harris Associates", edgarName: "HARRIS ASSOCIATES L P", category: "Value" },
   { cik: "0000949509", name: "Oaktree", edgarName: "OAKTREE CAPITAL MANAGEMENT LP", category: "Value", notes: "Marks; mostly credit - equities are residual" },
   { cik: "0001336528", name: "Pershing Square", edgarName: "Pershing Square Capital Management, L.P.", category: "Value", isMostRespected: true, notes: "Ackman" },
-  { cik: "0001027796", name: "Pzena", edgarName: "PZENA INVESTMENT MANAGEMENT LLC", category: "Value", notes: "Consider context tier" },
+  { cik: "0001027796", name: "Pzena", edgarName: "PZENA INVESTMENT MANAGEMENT LLC", category: "Value", tier: "context", notes: "Diversified deep value — context tier." },
   { cik: "0001720792", name: "Ruane Cunniff & Goldfarb", edgarName: "Ruane, Cunniff & Goldfarb L.P.", category: "Value", notes: "Sequoia Fund Sequoia Fund. Re-registered as L.P. — holdings under CIK 1720792 since 2018." },
   { cik: "0001649339", name: "Scion Asset Management", edgarName: "Scion Asset Management, LLC", category: "Value", notes: "Michael Burry — treat as sentiment. Deregistered late 2025; last 13F-HR Q3 2025." },
   { cik: "0001427008", name: "Smead", edgarName: "Smead Capital Management, Inc.", category: "Value" },
@@ -175,7 +187,7 @@ export const WATCHLIST_SEED: WatchlistFund[] = [
   { cik: "0001058854", name: "Cannell Capital", edgarName: "CANNELL CAPITAL LLC", category: "Smid Specialist", notes: "Micro-cap activist" },
   { cik: "0001531612", name: "Cove Street Capital", edgarName: "Cove Street Capital, LLC", category: "Smid Specialist", notes: "Small-cap value Last 13F-HR Nov 2025 (Q3 2025) — monitor filing status." },
   { cik: "0001741129", name: "Greenhaven Road", edgarName: "Greenhaven Road Investment Management, L.P.", category: "Smid Specialist", notes: "Scott Miller, micro/smid" },
-  { cik: "0001592643", name: "Select Equity Group", edgarName: "Select Equity Group, L.P.", category: "Smid Specialist", notes: "Quality smid; larger position count - maybe context" },
+  { cik: "0001592643", name: "Select Equity Group", edgarName: "Select Equity Group, L.P.", category: "Smid Specialist", tier: "context", notes: "Quality smid; larger position count — context tier." },
   { cik: "0001505183", name: "Stockbridge Partners", edgarName: "Stockbridge Partners LLC", category: "Smid Specialist", notes: "Berkshire Partners public arm" },
   { cik: "0001484148", name: "Turtle Creek Asset Management", edgarName: "Turtle Creek Asset Management Inc.", category: "Smid Specialist", notes: "Canadian, concentrated mid-cap" },
   { cik: "0001730145", name: "Voss Capital", edgarName: "Voss Capital, LP", category: "Smid Specialist", notes: "Texas smid value" },
@@ -194,7 +206,7 @@ export const WATCHLIST_SEED: WatchlistFund[] = [
   { cik: "0001687509", name: "Rubric Capital", edgarName: "Rubric Capital Management LP", category: "Event-Driven", notes: "Smid event/value" },
   { cik: "0001443689", name: "Senator Investment Group", edgarName: "Senator Investment Group LP", category: "Event-Driven" },
   // ── Activist ────────────────────────────────────────────────────────────
-  { cik: "0001446114", name: "Ancora", edgarName: "Ancora Advisors LLC", category: "Activist", notes: "RECOMMEND: context tier OR filter to activist book only - 2151 positions is mostly wealth-mgmt noise" },
+  { cik: "0001446114", name: "Ancora", edgarName: "Ancora Advisors LLC", category: "Activist", tier: "context", notes: "~2151 positions, mostly wealth-mgmt — context tier (excluded from flow denominators)." },
   { cik: "0000887762", name: "Barington Companies", edgarName: "BARINGTON COMPANIES MANAGEMENT, LLC", category: "Activist", notes: "Smid activist" },
   { cik: "0001535472", name: "Corvex", edgarName: "Corvex Management LP", category: "Activist", notes: "Meister" },
   { cik: "0001791786", name: "Elliott", edgarName: "Elliott Investment Management L.P.", category: "Activist", isMostRespected: true, notes: "Note: 13F understates - much exposure via swaps" },

@@ -46,6 +46,9 @@ export const DIVERSIFIED_FUND_MAX_HOLDINGS = 1000;
  * SQL predicate — TRUE when the row's fund is NOT a broadly-diversified filer that
  * period (correlated on fund + filing period). `alias` is the FundHoldingSnapshot
  * alias used by the outer query; it is a hardcoded literal, never user input.
+ *
+ * DEPRECATED for flow denominators: superseded by `signalFundFilter` (the global
+ * signal/context tier). Retained only for any diagnostic / migration comparison.
  */
 export function notDiversifiedFilter(alias: string): Prisma.Sql {
   return Prisma.sql`NOT EXISTS (
@@ -55,6 +58,22 @@ export function notDiversifiedFilter(alias: string): Prisma.Sql {
       AND hd.shares > 0
     GROUP BY hd."fundId"
     HAVING count(*) > ${DIVERSIFIED_FUND_MAX_HOLDINGS})`;
+}
+
+/**
+ * SQL predicate — TRUE when the row's fund is an ACTIVE, SIGNAL-tier fund.
+ * This is the SINGLE SOURCE OF TRUTH for the flow universe: breadth, netflow,
+ * netflow_bps, conviction, crowding, diffusion, trajectory, and the leaderboard
+ * all gate on this so their denominators agree. Context-tier / inactive funds
+ * still ingest and appear in the single-name ledger, but never in flow denominators.
+ * `alias` is the FundHoldingSnapshot alias; a hardcoded literal, never user input.
+ */
+export function signalFundFilter(alias: string): Prisma.Sql {
+  return Prisma.sql`EXISTS (
+    SELECT 1 FROM "InstitutionalFund" f
+    WHERE f.id = ${Prisma.raw(`${alias}."fundId"`)}
+      AND f."isActive" = true
+      AND f."tier" = 'signal')`;
 }
 
 /** Minimum net holder swing for a name to count toward the headline tiles. */
@@ -312,23 +331,21 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
            rr.sector, rr.subsector,
            COALESCE(rr."companyName", max(h."nameOfIssuer")) AS company_name
     FROM "FundHoldingSnapshot" h
-    JOIN "InstitutionalFund" f ON f.id = h."fundId" AND f."isActive" = true
     -- LEFT JOIN: keep held names that are NOT in the curated coverage universe
     -- (sub-$300M micro/small-caps where activist edge lives). Uncovered names
     -- get null sector/subsector and are excluded from sector rotation, but still
     -- surface in the quadrant / trajectory / overview so discovery isn't gated.
     LEFT JOIN "RevisionReference" rr ON rr.ticker = h.ticker
-    -- Drop broadly-diversified quant books (see notDiversifiedFilter): a name
-    -- held only by them is not a conviction signal.
-    WHERE ${notDiversifiedFilter("h")}
+    -- Signal-tier universe only (see signalFundFilter): context-tier / inactive
+    -- funds ingest but never count toward a flow denominator.
+    WHERE ${signalFundFilter("h")}
     GROUP BY h.ticker, h."filingPeriod", rr.sector, rr.subsector, rr."companyName"`);
 
-  // Denominator: tracked-active, non-diversified funds that filed each period.
+  // Denominator: active signal-tier funds that filed each period.
   const denomRows = await prisma.$queryRaw<Array<{ period: Date; n: bigint }>>(Prisma.sql`
     SELECT h."filingPeriod" AS period, count(DISTINCT h."fundId") AS n
     FROM "FundHoldingSnapshot" h
-    JOIN "InstitutionalFund" f ON f.id = h."fundId" AND f."isActive" = true
-    WHERE h.shares > 0 AND ${notDiversifiedFilter("h")}
+    WHERE h.shares > 0 AND ${signalFundFilter("h")}
     GROUP BY h."filingPeriod"`);
   const denom = new Map(denomRows.map((r) => [iso(r.period), Number(r.n)]));
 
