@@ -11,17 +11,18 @@ import { breadthJitter, flowColor, flowRadius, makeScales, type PlottedPoint, ty
 import { QUADRANT_CONFIG } from "./quadrantConfig";
 import { placeLabels, placeOptsFromConfig, type LabelInput } from "./labelPlacement";
 import { isBelowRange } from "./gutter";
+import { buildSpatialIndex, type IndexedPoint } from "./spatialIndex";
 
 export interface HoverState {
   point: PlottedPoint;
   /** Pixel position of the mark inside the chart container. */
   x: number;
   y: number;
+  /** Alt-hover of a context (background) mark → the panel renders a minimal tooltip. */
+  minimal?: boolean;
 }
 
 const MARGIN = { top: 14, right: 20, bottom: 38, left: 50 };
-const HIT_SLOP = 4;
-const MIN_HIT_RADIUS = 12;
 
 interface Positioned {
   p: PlottedPoint;
@@ -55,6 +56,9 @@ export function QuadrantChart({
   onClickTicker: (ticker: string) => void;
 }) {
   const [hovered, setHovered] = useState<string | null>(null);
+  // While Alt/Option is held, context (background) marks become hit-testable
+  // (Part 1a). Tracked at the window level so the mode survives focus in the SVG.
+  const [altHeld, setAltHeld] = useState(false);
 
   // A gutter strip sits between the plot floor and the axis labels; below-range
   // names (conviction < floor, or null) render there instead of clamping onto
@@ -139,6 +143,45 @@ export function QuadrantChart({
     [matchSet, bgPos],
   );
 
+  // One spatial index over every positioned mark (foreground + background +
+  // gutter), reused for hover (Part 1), box-select (Part 2) and density (Part 3).
+  // Eligibility per mode is applied in the `accept` callback, not by rebuilding.
+  const { index, posByTicker } = useMemo(() => {
+    const pts: IndexedPoint[] = [];
+    const map = new Map<string, Positioned>();
+    for (const pos of [...fgPos, ...bgPos, ...gutterPos]) {
+      pts.push({ ticker: pos.p.ticker, x: pos.x, y: pos.y, r: pos.p.r });
+      map.set(pos.p.ticker, pos);
+    }
+    return { index: buildSpatialIndex(pts, QUADRANT_CONFIG.spatial.cellSize), posByTicker: map };
+  }, [fgPos, bgPos, gutterPos]);
+  const fgSet = useMemo(() => new Set(fgPos.map((p) => p.p.ticker)), [fgPos]);
+  const bgSet = useMemo(() => new Set(bgPos.map((p) => p.p.ticker)), [bgPos]);
+
+  // Track Alt/Option at the window level. keydown/keyup on the "Alt" key, and a
+  // window blur (e.g. alt-tab) always releases so the mode can't get stuck on.
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => { if (e.key === "Alt") setAltHeld(true); };
+    const up = (e: KeyboardEvent) => { if (e.key === "Alt") setAltHeld(false); };
+    const blur = () => setAltHeld(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, []);
+
+  // Releasing Alt clears a context-mark hover (foreground/search hovers persist).
+  useEffect(() => {
+    if (!altHeld && !searching && hovered && !fgSet.has(hovered)) {
+      setHovered(null);
+      onHover(null);
+    }
+  }, [altHeld, searching, hovered, fgSet, onHover]);
+
   // A lone match gets a persistent tooltip; report it (with position) to the panel.
   useEffect(() => {
     if (matchSet && matchSet.size === 1) {
@@ -150,29 +193,34 @@ export function QuadrantChart({
     }
   }, [matchSet, fgPos, bgPos, gutterPos, onPinnedChange]);
 
+  // Foreground marks are always hoverable (unchanged threshold, so behavior is
+  // byte-identical to the old linear scan); while searching, promoted background
+  // matches are hoverable too; while Alt is held, ALL background marks are.
+  // Gutter marks are never hovered (they are box-select targets, Part 2).
   function hitTest(evt: React.MouseEvent<SVGSVGElement>): Positioned | null {
     const bounds = evt.currentTarget.getBoundingClientRect();
     const mx = evt.clientX - bounds.left;
     const my = evt.clientY - bounds.top;
-    // Promoted background matches become hoverable while searching.
-    const targets = searching ? [...fgPos, ...promotedBg] : fgPos;
-    let best: Positioned | null = null;
-    let bestD = Infinity;
-    for (const pos of targets) {
-      const d = Math.hypot(pos.x - mx, pos.y - my);
-      if (d < bestD && d <= Math.max(pos.p.r + HIT_SLOP, MIN_HIT_RADIUS)) {
-        best = pos;
-        bestD = d;
-      }
-    }
-    return best;
+    const sp = QUADRANT_CONFIG.spatial;
+    const altR = QUADRANT_CONFIG.altHover.radiusPx;
+    const searchRadius = Math.max(QUADRANT_CONFIG.radius.max + sp.hitSlop, sp.minHitRadius, altR);
+    const accept = (p: IndexedPoint, d: number): boolean => {
+      if (fgSet.has(p.ticker)) return d <= Math.max(p.r + sp.hitSlop, sp.minHitRadius);
+      if (searching) return (matchSet?.has(p.ticker) ?? false) && d <= Math.max(p.r + sp.hitSlop, sp.minHitRadius);
+      if (altHeld && bgSet.has(p.ticker)) return d <= altR;
+      return false;
+    };
+    const hit = index.nearest(mx, my, searchRadius, accept);
+    return hit ? posByTicker.get(hit.ticker) ?? null : null;
   }
 
   function handleMove(evt: React.MouseEvent<SVGSVGElement>) {
     const hit = hitTest(evt);
     if (hit) {
       if (hit.p.ticker !== hovered) setHovered(hit.p.ticker);
-      onHover({ point: hit.p, x: hit.x, y: hit.y });
+      // Context (background) marks picked up via Alt get the minimal tooltip.
+      const minimal = altHeld && !searching && bgSet.has(hit.p.ticker);
+      onHover({ point: hit.p, x: hit.x, y: hit.y, minimal });
     } else if (hovered !== null) {
       setHovered(null);
       onHover(null);
@@ -225,7 +273,7 @@ export function QuadrantChart({
     <svg
       width={width}
       height={height}
-      style={{ display: "block", cursor: hovered ? "pointer" : "default" }}
+      style={{ display: "block", cursor: hovered ? "pointer" : altHeld ? "crosshair" : "default" }}
       onMouseMove={handleMove}
       onMouseLeave={handleLeave}
       onClick={handleClick}
@@ -327,7 +375,7 @@ export function QuadrantChart({
               cy={y}
               r={p.r}
               fill={p.fill}
-              fillOpacity={searching ? cfg.search.dimOpacity : cfg.colors.backgroundOpacity}
+              fillOpacity={searching ? cfg.search.dimOpacity : altHeld ? cfg.colors.backgroundOpacity * 1.8 : cfg.colors.backgroundOpacity}
             />
           ),
         )}

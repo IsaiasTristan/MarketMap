@@ -50,6 +50,22 @@ function QuadTooltip({ hover, containerWidth }: { hover: HoverState; containerWi
     whiteSpace: "nowrap",
     zIndex: 5,
   };
+  // Alt-hover of a context (background) mark → a deliberately minimal tooltip.
+  if (hover.minimal) {
+    return (
+      <div style={style}>
+        <div style={{ fontWeight: 700 }}>
+          {p.ticker} <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>{p.companyName ?? ""}</span>
+        </div>
+        <div>breadth {p.breadth.toFixed(1)}% · conviction {p.conviction === null ? "—" : `${p.conviction.toFixed(2)}%`}</div>
+        <div style={{ color: "var(--text-muted)" }}>no material change</div>
+        {Math.abs(p.holderStreak) >= QUADRANT_CONFIG.streak.badgeMin && (
+          <div style={{ color: "var(--text-muted)" }}>held {Math.abs(p.holderStreak)}+ quarters</div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div style={style}>
       <div style={{ fontWeight: 700 }}>
@@ -152,6 +168,7 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
             {" "}Highlighted names had a meaningful holder swing this quarter or are established top-decile-conviction positions; the rest render as context only.
             {" "}Hover a name (or toggle <em>show trails</em>) to trace its move from last quarter — travel into the crowded upper-right is the risk signal.
             {" "}Breadth is discrete — each column is one more of the {model.trackedFunds} tracked funds (quant/index-like books excluded); low-holder columns are nudged apart slightly for legibility.
+            {" "}<span style={{ color: "var(--text-secondary)" }}>Hold <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Alt</kbd> to inspect context marks.</span>
           </div>
         </div>
       )}
