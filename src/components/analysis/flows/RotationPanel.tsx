@@ -2,85 +2,132 @@
 /**
  * 5.4 Rotation flow — price-adjusted, equal-weighted active rotation.
  *
- * Bar length = shrunk net-diffusion (share of tracked funds that deliberately
- * TRADED into the bucket minus those that traded out, shrunk by k so a tiny
- * unanimous name doesn't peg 100%). A broad migration reads differently from one
- * whale's reallocation. The $ label is the net capital moved; the tooltip
- * carries the average fund's deliberate move in bps. Price drift is removed, so
- * a sector that merely rallied shows ~no flow.
+ * Display contract (all three levels):
+ *   - Bar length = shrunk net-diffusion; bar COLOR = sign of diffusion only.
+ *   - Primary label = "+64% of 14" (shrunk diffusion %, participating funds).
+ *   - Secondary chip = net $ moved, colored by ITS OWN sign (text +/−, not color
+ *     alone), because breadth and dollars can disagree.
+ *   - Divergence marker ⇄ when sign(diffusion) ≠ sign(net $) and both clear the
+ *     noise floors (|diffusion| ≥ 10%, |$| ≥ $100M).
  *
- * Stock view shows only the top-15 accumulation and bottom-15 distribution names
- * (rank-scored, never alphabetical); the long tail is reachable via the search
- * box. A size filter (all / ex-mega / mega-only) applies to the stock board.
- *
- * Falls back to the legacy holder-count flow for the earliest quarter.
+ * Diffusion is the share of tracked funds that deliberately TRADED into the
+ * bucket minus those that traded out (price drift removed, equal-weighted, one
+ * vote per fund). Stock view shows only the top-15 accumulation / bottom-15
+ * distribution (rank-scored, never alphabetical); search covers the tail.
  */
-import { useEffect, useMemo, useState } from "react";
-import { Bar, BarChart, Cell, LabelList, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { useMemo, useState } from "react";
 import type { RotationGroupBy, RotationPayload, RotationSizeFilter } from "@/server/services/institutional/institutional-query.service";
 import { Segmented, type SegmentedOption } from "@/components/analysis/factors/shared/Segmented";
 import { useFlows } from "./useFlows";
 import { PanelState, fmtBps, fmtFlowDollars } from "./flowsUi";
-import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 
 const GROUP_OPTIONS: SegmentedOption<RotationGroupBy>[] = [
   { value: "sector", label: "SECTOR" },
   { value: "subsector", label: "SUBSECTOR" },
   { value: "stock", label: "STOCK" },
 ];
-
 const SIZE_OPTIONS: SegmentedOption<RotationSizeFilter>[] = [
   { value: "all", label: "ALL CAPS" },
   { value: "ex-mega", label: "EX-MEGA" },
   { value: "mega-only", label: "MEGA ONLY" },
 ];
 
-const CAPTIONS: Record<RotationGroupBy, string> = {
-  sector:
-    "Net diffusion — share of tracked funds that deliberately TRADED into each sector minus those that traded out (price-adjusted & equal-weighted, one vote per fund; a sector that merely rallied shows no flow). Bar = diffusion %, label = net $ moved, hover for the average fund's bps move.",
-  subsector:
-    "Net diffusion by subsector — top/bottom 15 by the share of funds that deliberately traded in minus out (price-adjusted, equal-weighted). Bar = diffusion %, label = net $ moved.",
-  stock:
-    "Net diffusion per name — top-15 accumulation & bottom-15 distribution, ranked by breadth × participation × move size (shrunk so a 3-of-3 name isn't 100%). Bar = diffusion %, label = net $ moved. Search below for any other name.",
-};
-
+const SUBTITLE =
+  "bar = share of funds deliberately trading in minus out (drift-adjusted, equal-weighted, one vote/fund); chip = net dollars moved. ⇄ = breadth and dollars disagree.";
 const LEGACY_CAPTION =
   "Earliest quarter — price-adjusted rotation needs a prior quarter, so this shows raw fund add/trim counts (funds adding minus trimming).";
 
+// Divergence noise floors (Part-4 display contract).
+const DIVERGE_DIFF_PCT = 10;
+const DIVERGE_DOLLARS = 100_000_000;
+
 type Group = RotationPayload["groups"][number];
 
-/** The plotted metric: shrunk diffusion where available, else raw diffusion. */
-function barValue(g: Group): number {
-  return g.shrunkDiffusionPct ?? g.netDiffusionPct ?? 0;
+const sign = (n: number) => (n > 0 ? 1 : n < 0 ? -1 : 0);
+const diffOf = (g: Group): number => g.shrunkDiffusionPct ?? g.netDiffusionPct ?? 0;
+function isDivergent(g: Group): boolean {
+  const d = diffOf(g);
+  const dollar = g.dollarNetFlow ?? 0;
+  return sign(d) !== 0 && sign(dollar) !== 0 && sign(d) !== sign(dollar) && Math.abs(d) >= DIVERGE_DIFF_PCT && Math.abs(dollar) >= DIVERGE_DOLLARS;
 }
 
-function RotationTooltip({ active, payload, hasActiveFlow }: { active?: boolean; payload?: Array<{ payload: Group }>; hasActiveFlow?: boolean }) {
-  if (!active || !payload?.length) return null;
-  const p = payload[0]!.payload;
-  const isStock = p.companyName !== undefined;
-  const diff = p.shrunkDiffusionPct ?? p.netDiffusionPct;
+const POS = "var(--color-positive)";
+const NEG = "var(--color-negative)";
+
+/** One diverging bar row: label · bar (center-zero) · primary % · net-$ chip · ⇄. */
+function RotationRow({ g, scale, labelW, active }: { g: Group; scale: number; labelW: number; active: boolean }) {
+  const d = diffOf(g);
+  const dollar = g.dollarNetFlow ?? 0;
+  const barPct = active ? Math.min(50, (Math.abs(d) / scale) * 50) : Math.min(50, (Math.abs(g.netFundsAdding) / scale) * 50);
+  const barSign = active ? sign(d) : sign(g.netFundsAdding);
+  const color = barSign >= 0 ? POS : NEG;
+  const n = g.fundsParticipating ?? 0;
+  const primary = active ? `${d >= 0 ? "+" : "−"}${Math.abs(d).toFixed(0)}% of ${n}` : `${g.netFundsAdding >= 0 ? "+" : "−"}${Math.abs(g.netFundsAdding)} funds`;
+  const diverge = active && isDivergent(g);
+  const rowTitle = active
+    ? `${g.groupKey}${g.companyName ? ` · ${g.companyName}` : ""}\n${g.fundsIn ?? 0} of ${n} rotated in · ${g.fundsOut ?? 0} out\navg move ${fmtBps(g.activeBpsAvg)} · net flow ${fmtFlowDollars(dollar)}`
+    : `${g.groupKey}: net ${g.netFundsAdding} funds`;
+
   return (
-    <div style={{ ...bbTooltipStyle, padding: "6px 8px" }}>
-      <div style={{ fontWeight: 700 }}>{p.groupKey}</div>
-      {p.companyName ? (
-        <div style={{ color: "var(--text-muted)" }}>{p.companyName}{p.sector ? ` · ${p.sector}` : ""}</div>
-      ) : null}
-      {hasActiveFlow && diff !== null && diff !== undefined ? (
-        <>
-          <div>
-            diffusion {diff >= 0 ? "+" : "−"}{Math.abs(diff).toFixed(0)}% · avg move {fmtBps(p.activeBpsAvg)}
-          </div>
-          <div style={{ color: "var(--text-muted)" }}>
-            {p.fundsIn ?? 0} of {p.fundsParticipating ?? 0} {isStock ? "holders" : "funds"} rotated in · {p.fundsOut ?? 0} out
-          </div>
-          <div style={{ color: "var(--text-muted)" }}>net flow {fmtFlowDollars(p.dollarNetFlow)}</div>
-        </>
-      ) : (
-        <div>net {p.netFundsAdding >= 0 ? "+" : ""}{p.netFundsAdding} funds</div>
-      )}
-      <div style={{ color: "var(--text-muted)", opacity: 0.8, marginTop: 2 }}>
-        adding {p.fundsAdding} · trimming {p.fundsTrimming} · {p.nameCount} {isStock ? "holders" : "names"}
+    <div title={rowTitle} style={{ display: "flex", alignItems: "center", gap: 8, height: 26 }}>
+      <div style={{ width: labelW, textAlign: "right", fontSize: 11, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flexShrink: 0 }}>
+        {g.groupKey}
       </div>
+      <div style={{ position: "relative", flex: 1, height: 16, background: "var(--bg-base)", minWidth: 80 }}>
+        <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, background: "var(--text-muted)" }} />
+        <div
+          style={{
+            position: "absolute",
+            top: 2,
+            bottom: 2,
+            left: barSign >= 0 ? "50%" : undefined,
+            right: barSign >= 0 ? undefined : "50%",
+            width: `${barPct}%`,
+            background: color,
+            opacity: 0.85,
+          }}
+        />
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, width: 168, flexShrink: 0, fontSize: 10 }}>
+        <span style={{ color: "var(--text-primary)", width: 74, textAlign: "right" }}>{primary}</span>
+        {active && (
+          <span
+            style={{
+              color: dollar >= 0 ? POS : NEG,
+              border: `1px solid ${dollar >= 0 ? POS : NEG}`,
+              borderRadius: 0,
+              padding: "0 3px",
+              fontWeight: 700,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {fmtFlowDollars(dollar)}
+          </span>
+        )}
+        {diverge && (
+          <span
+            title={`breadth and dollars disagree: ${g.fundsIn ?? 0} funds rotated in vs net ${fmtFlowDollars(dollar)} (dollar-weighted — a few large trades dominate)`}
+            style={{ color: "var(--color-accent)", fontWeight: 700, cursor: "help" }}
+          >
+            ⇄
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RotationBars({ groups, active, isStock }: { groups: Group[]; active: boolean; isStock: boolean }) {
+  const scale = useMemo(() => {
+    const vals = groups.map((g) => (active ? Math.abs(diffOf(g)) : Math.abs(g.netFundsAdding)));
+    return Math.max(1, ...vals);
+  }, [groups, active]);
+  const labelW = isStock ? 64 : 132;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 2, padding: "8px 10px", background: "var(--bg-surface)", border: "1px solid var(--bg-border)" }}>
+      {groups.map((g) => (
+        <RotationRow key={g.groupKey} g={g} scale={scale} labelW={labelW} active={active} />
+      ))}
     </div>
   );
 }
@@ -101,22 +148,18 @@ function StockSearch({ searchable }: { searchable: Group[] }) {
         value={q}
         onChange={(e) => setQ(e.target.value)}
         placeholder="Search any name (ticker or company)…"
-        style={{
-          background: "var(--bg-base)", border: "1px solid var(--bg-border)", color: "var(--text-primary)",
-          padding: "4px 8px", fontSize: 12, borderRadius: 0, outline: "none", maxWidth: 360,
-        }}
+        style={{ background: "var(--bg-base)", border: "1px solid var(--bg-border)", color: "var(--text-primary)", padding: "4px 8px", fontSize: 12, borderRadius: 0, outline: "none", maxWidth: 360 }}
       />
       {matches.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", border: "1px solid var(--bg-border)", maxWidth: 480 }}>
+        <div style={{ display: "flex", flexDirection: "column", border: "1px solid var(--bg-border)", maxWidth: 520 }}>
           {matches.map((g) => {
-            const diff = g.shrunkDiffusionPct ?? g.netDiffusionPct ?? 0;
+            const d = diffOf(g);
+            const dollar = g.dollarNetFlow ?? 0;
             return (
               <div key={g.groupKey} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 8px", fontSize: 11, borderTop: "1px solid var(--bg-border)" }}>
                 <span style={{ fontWeight: 700, width: 60 }}>{g.groupKey}</span>
-                <span style={{ color: diff >= 0 ? "var(--color-positive)" : "var(--color-negative)", width: 54 }}>
-                  {diff >= 0 ? "+" : "−"}{Math.abs(diff).toFixed(0)}% of {g.fundsParticipating ?? 0}
-                </span>
-                <span style={{ color: "var(--text-secondary)", width: 70 }}>{fmtFlowDollars(g.dollarNetFlow)}</span>
+                <span style={{ color: d >= 0 ? POS : NEG, width: 84 }}>{d >= 0 ? "+" : "−"}{Math.abs(d).toFixed(0)}% of {g.fundsParticipating ?? 0}</span>
+                <span style={{ color: dollar >= 0 ? POS : NEG, width: 76 }}>{fmtFlowDollars(dollar)}</span>
                 {g.belowThreshold ? <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>below threshold</span> : null}
               </div>
             );
@@ -142,52 +185,23 @@ export function RotationPanel({ period }: { period: string | null }) {
 
   const active = data?.hasActiveFlow ?? false;
   const groups = data?.groups ?? [];
+  const isStock = groupBy === "stock";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <Segmented value={groupBy} onChange={setGroupBy} options={GROUP_OPTIONS} />
-        {groupBy === "stock" && <Segmented value={size} onChange={setSize} options={SIZE_OPTIONS} />}
+        {isStock && <Segmented value={size} onChange={setSize} options={SIZE_OPTIONS} />}
       </div>
       <PanelState state={state} error={error}>
         {data && (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{active ? CAPTIONS[groupBy] : LEGACY_CAPTION}</div>
-            <div style={{ width: "100%", height: Math.max(260, groups.length * 30 + 40), background: "var(--bg-surface)", border: "1px solid var(--bg-border)" }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={groups} layout="vertical" margin={{ top: 10, right: 56, bottom: 10, left: 8 }}>
-                  <XAxis
-                    type="number"
-                    domain={active ? [-100, 100] : ["auto", "auto"]}
-                    tickFormatter={active ? (v) => `${v}%` : undefined}
-                    tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <YAxis type="category" dataKey="groupKey" width={groupBy === "stock" ? 70 : 130} tick={{ fontSize: 11, fill: "var(--text-primary)" }} tickLine={false} axisLine={false} />
-                  <ReferenceLine x={0} stroke="var(--text-muted)" />
-                  <Tooltip content={<RotationTooltip hasActiveFlow={active} />} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
-                  <Bar dataKey={active ? barValue : "netFundsAdding"} barSize={16}>
-                    {groups.map((g) => {
-                      const v = active ? barValue(g) : g.netFundsAdding;
-                      return <Cell key={g.groupKey} fill={v >= 0 ? "var(--color-positive)" : "var(--color-negative)"} />;
-                    })}
-                    <LabelList
-                      dataKey={active ? "dollarNetFlow" : "netFundsAdding"}
-                      position="right"
-                      formatter={active ? (v) => fmtFlowDollars(Number(v)) : (v) => (Number(v) >= 0 ? `+${v}` : `${v}`)}
-                      style={{ fill: "var(--text-secondary)", fontSize: 10 }}
-                    />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            {groupBy === "stock" && data.searchable && data.searchable.length > 0 && (
-              <StockSearch searchable={data.searchable} />
-            )}
-            {groupBy === "stock" && data.qualifyingCount !== undefined && (
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{active ? SUBTITLE : LEGACY_CAPTION}</div>
+            {groups.length > 0 ? <RotationBars groups={groups} active={active} isStock={isStock} /> : <div style={{ fontSize: 12, color: "var(--text-muted)", padding: 12 }}>No rotation for this period.</div>}
+            {isStock && data.searchable && data.searchable.length > 0 && <StockSearch searchable={data.searchable} />}
+            {isStock && data.qualifyingCount !== undefined && (
               <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-                {data.qualifyingCount} names meet the ≥5-fund floor · showing top 15 accumulation & bottom 15 distribution
+                {data.qualifyingCount} names meet the ≥5-fund floor · showing top 15 accumulation &amp; bottom 15 distribution
               </div>
             )}
           </div>

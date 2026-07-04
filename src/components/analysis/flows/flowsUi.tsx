@@ -50,9 +50,26 @@ export function trajectoryColor(label: string | null | undefined): string {
 }
 
 // ── formatting ───────────────────────────────────────────────────────────────
+/**
+ * The single compact-USD formatter (unsigned). Rounds WITHIN a unit and carries
+ * to the next one at the boundary, so a value just under $1M reads "$1.0M" — not
+ * "$1000k" — and just under $1B reads "$1.0B", never "$1000M". Convention:
+ * B always 1dp; M is 1dp below $100M, 0dp at/above; k and units 0dp.
+ * Boundaries are unit-tested in tests/analysis/flow-format.test.ts.
+ */
+export function fmtUsdCompact(abs: number): string {
+  const a = Math.abs(abs);
+  if (a >= 999_500_000) return `$${(a / 1e9).toFixed(1)}B`; // ≥ $999.5M carries to $1.0B
+  if (a >= 999_500) {
+    const m = a / 1e6; // ≥ $999.5k carries to $1.0M
+    return m >= 100 ? `$${m.toFixed(0)}M` : `$${m.toFixed(1)}M`;
+  }
+  if (a >= 1_000) return `$${(a / 1e3).toFixed(0)}k`;
+  return `$${a.toFixed(0)}`;
+}
+/** Compact USD from a value already expressed in millions ("$282M" / "$4.4B"). */
 export function fmtMoney(m: number): string {
-  if (Math.abs(m) >= 1000) return `$${(m / 1000).toFixed(1)}B`;
-  return `$${m.toFixed(0)}M`;
+  return fmtUsdCompact(m * 1e6);
 }
 export function fmtPct(v: number | null | undefined, dp = 1): string {
   return v === null || v === undefined ? "—" : `${v.toFixed(dp)}%`;
@@ -63,12 +80,7 @@ export function fmtDelta(n: number): string {
 /** Signed compact dollars for flow annotations: "+$1.2B" / "−$340M" / "+$50k". */
 export function fmtFlowDollars(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
-  const sign = n >= 0 ? "+" : "−";
-  const abs = Math.abs(n);
-  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(1)}B`;
-  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(0)}M`;
-  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(0)}k`;
-  return `${sign}$${abs.toFixed(0)}`;
+  return `${n < 0 ? "−" : "+"}${fmtUsdCompact(n)}`;
 }
 /** Signed basis points: "+12.3 bps" / "−5.0 bps" / "—". */
 export function fmtBps(n: number | null | undefined): string {
