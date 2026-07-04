@@ -12,6 +12,7 @@ import { PanelState, QUADRANT_LABEL, fmtDelta } from "../flowsUi";
 import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
 import { buildQuadrantModel } from "./quadrantModel";
 import { QuadrantChart, type HoverState } from "./QuadrantChart";
+import { RegionInspector } from "./RegionInspector";
 import { useMeasure } from "./useMeasure";
 import { QUADRANT_CONFIG } from "./quadrantConfig";
 
@@ -93,6 +94,24 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
   const [streakOnly, setStreakOnly] = useState(false);
   // Zone overlay defaults ON for first-time viewers; the choice persists.
   const [showZones, setShowZones] = useState(true);
+  // Box-select region inspector (Part 2): the selection is a ticker set (rows
+  // are re-derived from the model, so it survives zoom); `promoted` are names
+  // pinned onto the chart from the inspector.
+  const [selection, setSelection] = useState<Set<string>>(() => new Set());
+  const [promoted, setPromoted] = useState<Set<string>>(() => new Set());
+  const togglePromote = (t: string) =>
+    setPromoted((prev) => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t);
+      else next.add(t);
+      return next;
+    });
+  // Esc clears the current selection (search box handles its own Esc).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSelection(new Set()); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   useEffect(() => {
     const saved = window.localStorage.getItem(QUADRANT_CONFIG.zones.storageKey);
     if (saved !== null) setShowZones(saved === "1");
@@ -154,21 +173,46 @@ export function QuadrantPanel({ period, onSelectTicker }: { period: string | nul
               )}
             </div>
           </div>
-          <div
-            ref={containerRef}
-            style={{ position: "relative", width: "100%", height: CHART_HEIGHT, background: "var(--bg-surface)", border: "1px solid var(--bg-border)" }}
-          >
-            {width > 0 && (
-              <QuadrantChart model={model} width={width} height={CHART_HEIGHT} search={search} showTrails={showTrails} showZones={showZones} onHover={setHover} onPinnedChange={setPinned} onClickTicker={onSelectTicker} />
+          <div style={{ display: "flex", gap: 6, alignItems: "stretch", height: CHART_HEIGHT }}>
+            <div
+              ref={containerRef}
+              style={{ position: "relative", flex: 1, minWidth: 0, height: CHART_HEIGHT, background: "var(--bg-surface)", border: "1px solid var(--bg-border)" }}
+            >
+              {width > 0 && (
+                <QuadrantChart
+                  model={model}
+                  width={width}
+                  height={CHART_HEIGHT}
+                  search={search}
+                  showTrails={showTrails}
+                  showZones={showZones}
+                  promoted={promoted}
+                  onHover={setHover}
+                  onPinnedChange={setPinned}
+                  onClickTicker={onSelectTicker}
+                  onSelectRegion={(tickers) => setSelection(new Set(tickers))}
+                />
+              )}
+              {tip && <QuadTooltip hover={tip} containerWidth={width} />}
+            </div>
+            {selection.size > 0 && (
+              <RegionInspector
+                tickers={selection}
+                model={model}
+                gutterFloorPct={QUADRANT_CONFIG.gutter.floorBps / 100}
+                promoted={promoted}
+                onTogglePromote={togglePromote}
+                onSelectTicker={onSelectTicker}
+                onClear={() => setSelection(new Set())}
+              />
             )}
-            {tip && <QuadTooltip hover={tip} containerWidth={width} />}
           </div>
           <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
             Upper-left = early conviction (edge lives here) · upper-right = crowded / late-trade risk. Click any highlighted name (cursor turns to a pointer) to open its fund ledger; gray context marks aren&apos;t clickable.
             {" "}Highlighted names had a meaningful holder swing this quarter or are established top-decile-conviction positions; the rest render as context only.
             {" "}Hover a name (or toggle <em>show trails</em>) to trace its move from last quarter — travel into the crowded upper-right is the risk signal.
             {" "}Breadth is discrete — each column is one more of the {model.trackedFunds} tracked funds (quant/index-like books excluded); low-holder columns are nudged apart slightly for legibility.
-            {" "}<span style={{ color: "var(--text-secondary)" }}>Hold <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Alt</kbd> to inspect context marks.</span>
+            {" "}<span style={{ color: "var(--text-secondary)" }}>Hold <kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Alt</kbd> to inspect context marks · drag empty space to select a region (<kbd style={{ fontFamily: "inherit", fontWeight: 700 }}>Esc</kbd> clears).</span>
           </div>
         </div>
       )}

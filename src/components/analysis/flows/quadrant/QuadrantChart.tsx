@@ -5,13 +5,14 @@
  * FOREGROUND marks (tooltips, click-through). Hit-testing is a nearest-point
  * scan over the foreground array only.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { breadthJitter, flowColor, flowRadius, makeScales, type PlottedPoint, type QuadrantModel } from "./quadrantModel";
 import { QUADRANT_CONFIG } from "./quadrantConfig";
 import { placeLabels, placeOptsFromConfig, type LabelInput } from "./labelPlacement";
 import { isBelowRange } from "./gutter";
-import { buildSpatialIndex, type IndexedPoint } from "./spatialIndex";
+import { buildSpatialIndex, type IndexedPoint, type QueryRect } from "./spatialIndex";
+import { classifyGesture, dragDistance, normalizeRect, type Gesture } from "./gesture";
 
 export interface HoverState {
   point: PlottedPoint;
@@ -37,9 +38,11 @@ export function QuadrantChart({
   search,
   showTrails,
   showZones,
+  promoted,
   onHover,
   onPinnedChange,
   onClickTicker,
+  onSelectRegion,
 }: {
   model: QuadrantModel;
   width: number;
@@ -50,10 +53,14 @@ export function QuadrantChart({
   showTrails: boolean;
   /** When on, draw the interpretation-zone overlay (p75 boundaries + labels). */
   showZones: boolean;
+  /** Tickers the user pinned from the region inspector — full-opacity + label. */
+  promoted: Set<string>;
   onHover: (h: HoverState | null) => void;
   /** Reports the single searched match (with position) for a persistent tooltip. */
   onPinnedChange: (h: HoverState | null) => void;
   onClickTicker: (ticker: string) => void;
+  /** A completed box-select reports the tickers whose centers fell inside. */
+  onSelectRegion: (tickers: string[]) => void;
 }) {
   const [hovered, setHovered] = useState<string | null>(null);
   // While Alt/Option is held, context (background) marks become hit-testable
@@ -214,7 +221,32 @@ export function QuadrantChart({
     return hit ? posByTicker.get(hit.ticker) ?? null : null;
   }
 
+  // A single mousedown-classified gesture drives hover / click / box-select so
+  // the modes don't fight over the same drag. (Brush-zoom and pan arrive in
+  // Part 3, when a zoom domain exists to target.)
+  const dragRef = useRef<{ x: number; y: number; kind: Gesture; moved: boolean } | null>(null);
+  const [selRect, setSelRect] = useState<QueryRect | null>(null);
+
+  function localXY(evt: React.MouseEvent<SVGSVGElement>): { x: number; y: number } {
+    const b = evt.currentTarget.getBoundingClientRect();
+    return { x: evt.clientX - b.left, y: evt.clientY - b.top };
+  }
+
+  function handleDown(evt: React.MouseEvent<SVGSVGElement>) {
+    const pt = localXY(evt);
+    const onMark = hitTest(evt) !== null;
+    const kind = classifyGesture({ shiftKey: evt.shiftKey, spaceKey: false, onMark, zoomed: false });
+    dragRef.current = { x: pt.x, y: pt.y, kind, moved: false };
+  }
+
   function handleMove(evt: React.MouseEvent<SVGSVGElement>) {
+    const drag = dragRef.current;
+    if (drag) {
+      const pt = localXY(evt);
+      if (!drag.moved && dragDistance(drag, pt) > QUADRANT_CONFIG.density.dragThresholdPx) drag.moved = true;
+      if (drag.kind === "select" && drag.moved) setSelRect(normalizeRect(drag, pt));
+      return; // suppress hover while a gesture is active
+    }
     const hit = hitTest(evt);
     if (hit) {
       if (hit.p.ticker !== hovered) setHovered(hit.p.ticker);
@@ -227,14 +259,29 @@ export function QuadrantChart({
     }
   }
 
-  function handleLeave() {
-    if (hovered !== null) setHovered(null);
-    onHover(null);
+  function handleUp(evt: React.MouseEvent<SVGSVGElement>) {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    if (!drag) return;
+    if (!drag.moved) {
+      // A below-threshold drag is a click.
+      const hit = hitTest(evt);
+      if (hit) onClickTicker(hit.p.ticker);
+      setSelRect(null);
+      return;
+    }
+    if (drag.kind === "select") {
+      const rect = normalizeRect(drag, localXY(evt));
+      onSelectRegion(index.within(rect).map((p) => p.ticker));
+    }
+    setSelRect(null);
   }
 
-  function handleClick(evt: React.MouseEvent<SVGSVGElement>) {
-    const hit = hitTest(evt);
-    if (hit) onClickTicker(hit.p.ticker);
+  function handleLeave() {
+    dragRef.current = null;
+    setSelRect(null);
+    if (hovered !== null) setHovered(null);
+    onHover(null);
   }
 
   const tickStyle: CSSProperties = { fontSize: 10, fill: "var(--text-secondary)" };
@@ -274,9 +321,10 @@ export function QuadrantChart({
       width={width}
       height={height}
       style={{ display: "block", cursor: hovered ? "pointer" : altHeld ? "crosshair" : "default" }}
+      onMouseDown={handleDown}
       onMouseMove={handleMove}
+      onMouseUp={handleUp}
       onMouseLeave={handleLeave}
-      onClick={handleClick}
     >
       {/* Grid */}
       {model.xTicks.map((t) => (
@@ -468,6 +516,41 @@ export function QuadrantChart({
           </text>
         )}
       </g>
+
+      {/* USER-PROMOTED — names pinned from the region inspector: full-opacity
+          outline + a persistent accent label (any layer, including the gutter). */}
+      {promoted.size > 0 && (
+        <g style={{ pointerEvents: "none" }}>
+          {[...promoted].map((t) => {
+            const pos = posByTicker.get(t);
+            if (!pos) return null;
+            const r = Math.max(pos.p.r, cfg.radius.base);
+            return (
+              <g key={`pin-${t}`}>
+                <circle cx={pos.x} cy={pos.y} r={r} fill={pos.p.fill} fillOpacity={1} stroke="var(--color-accent)" strokeWidth={1.5} />
+                <text x={pos.x + r + 4} y={pos.y + 3} textAnchor="start" style={{ fontSize: cfg.labels.fontSize, fill: "var(--color-accent)", fontWeight: 700 }}>
+                  {t}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+      )}
+
+      {/* Box-select rectangle (in progress). */}
+      {selRect && (
+        <rect
+          x={selRect.x0}
+          y={selRect.y0}
+          width={selRect.x1 - selRect.x0}
+          height={selRect.y1 - selRect.y0}
+          fill="var(--color-accent)"
+          fillOpacity={0.08}
+          stroke="var(--color-accent)"
+          strokeDasharray="3 3"
+          style={{ pointerEvents: "none" }}
+        />
+      )}
     </svg>
   );
 }
