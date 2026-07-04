@@ -320,6 +320,16 @@ export const flowsTrajectoriesQuery = z.object({
   sort: z.enum(["pattern", "delta", "holders"]).optional().default("pattern"),
 });
 
+export const flowsCoreHoldingsQuery = z.object({
+  period: periodParam,
+  limit: boundedInt(25, 5, 50),
+});
+
+export const flowsPipelineQuery = z.object({
+  period: periodParam,
+  limit: boundedInt(24, 6, 60),
+});
+
 export const flowsTrajectoryQuery = z.object({
   ticker: z.string().min(1).max(12).transform((s) => s.trim().toUpperCase()),
 });

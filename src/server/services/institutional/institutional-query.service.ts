@@ -305,6 +305,297 @@ export async function getTrajectoryGrid(
   };
 }
 
+// ── Trajectories pipeline (Part 5) ──────────────────────────────────────────
+export interface DurableCard {
+  ticker: string;
+  companyName: string | null;
+  sector: string | null;
+  marketCapTier: string | null;
+  streak: number;
+  rankScore: number;
+  holders: number;
+  deltaHolders: number;
+  breadth: number;
+  periods: string[]; // aligned window, ascending
+  accSeries: number[]; // cumulative accumulation (blue line)
+  priceIndexed: Array<number | null>; // split-adjusted close indexed to 100 at window start (dashed)
+  priceSincePeriodEnd: number | null; // % since the latest period-end
+  eliteCount: number;
+  topAdder: { fund: string; sizingMult: number; isElite: boolean } | null;
+  evidenceChips: string[];
+  actionTag: string;
+}
+export interface FormingChip {
+  ticker: string;
+  companyName: string | null;
+  streak: number;
+  eliteCount: number;
+  qualifier: string;
+}
+export interface SpikeLine {
+  ticker: string;
+  latestActiveBps: number | null;
+}
+export interface TransitionItem {
+  ticker: string;
+  from: string | null;
+  to: string | null;
+  transition: string;
+  significance: number;
+}
+export interface TrajectoryPipelinePayload {
+  filingPeriod: string;
+  census: Array<{ stage: string; count: number; deltaVsPrior: number }>;
+  transitionsCount: number;
+  durable: DurableCard[];
+  forming: FormingChip[];
+  spikes: { count: number; items: SpikeLine[] };
+  transitions: TransitionItem[];
+  baseRates: { durable: string | null; forming: string | null };
+}
+
+const PIPELINE_WINDOW = 8;
+
+/** Format a stored base-rate row into a header line (null-N-safe). */
+function baseRateLine(row: { excessReturn: number | null; hitRate: number | null; n: number } | null, label: string, horizon = "2Q"): string | null {
+  if (!row) return null;
+  if (row.n < 30 || row.excessReturn == null) return `${label}: insufficient history (n=${row.n})`;
+  const hit = row.hitRate != null ? `, ${Math.round(row.hitRate * 100)}% hit` : "";
+  return `${label}: ${row.excessReturn >= 0 ? "+" : ""}${(row.excessReturn * 100).toFixed(1)}% excess next ${horizon} (n=${row.n}${hit})`;
+}
+
+export async function getTrajectoryPipeline(period?: string, durableLimit = 24): Promise<TrajectoryPipelinePayload | null> {
+  const p = await resolvePeriod(period);
+  if (!p) return null;
+  const periods = await listPeriods(); // desc
+  const periodDate = new Date(`${p}T00:00:00.000Z`);
+  const pIdx = Math.max(0, periods.indexOf(p));
+  const priorP = periods[pIdx + 1] ?? null; // prior quarter (periods is desc)
+
+  // Names carrying a lifecycle stage this quarter.
+  const staged = await prisma.institutionalNameAggregate.findMany({
+    where: { filingPeriod: periodDate, lifecycleStage: { not: null } },
+    select: { ticker: true, companyName: true, sector: true, marketCapTier: true, fundsHolding: true, deltaHolders: true, pctOfFunds: true, netflowBps: true, lifecycleStage: true, crowded: true },
+  });
+
+  // Stage census + QoQ deltas.
+  const countBy = (rows: Array<{ lifecycleStage: string | null }>) => {
+    const m = new Map<string, number>();
+    for (const r of rows) if (r.lifecycleStage) m.set(r.lifecycleStage, (m.get(r.lifecycleStage) ?? 0) + 1);
+    return m;
+  };
+  const curCounts = countBy(staged);
+  const priorStaged = priorP
+    ? await prisma.institutionalNameAggregate.findMany({ where: { filingPeriod: new Date(`${priorP}T00:00:00.000Z`), lifecycleStage: { not: null } }, select: { lifecycleStage: true } })
+    : [];
+  const priorCounts = countBy(priorStaged);
+  const census = ["DURABLE", "FORMING", "SPIKE", "CORE", "BROKEN"].map((stage) => ({
+    stage,
+    count: curCounts.get(stage) ?? 0,
+    deltaVsPrior: (curCounts.get(stage) ?? 0) - (priorCounts.get(stage) ?? 0),
+  }));
+
+  // Window series (netflowBps + holders) for staged tickers.
+  const window = periods.slice(pIdx, pIdx + PIPELINE_WINDOW).reverse(); // oldest→newest
+  const windowDates = window.map((w) => new Date(`${w}T00:00:00.000Z`));
+  const tickers = staged.map((s) => s.ticker);
+  const series = tickers.length
+    ? await prisma.institutionalNameAggregate.findMany({ where: { ticker: { in: tickers }, filingPeriod: { in: windowDates } }, select: { ticker: true, filingPeriod: true, fundsHolding: true, netflowBps: true } })
+    : [];
+  const seriesByTicker = new Map<string, Map<string, { holders: number; bps: number }>>();
+  for (const s of series) {
+    if (!seriesByTicker.has(s.ticker)) seriesByTicker.set(s.ticker, new Map());
+    seriesByTicker.get(s.ticker)!.set(iso(s.filingPeriod), { holders: s.fundsHolding, bps: s.netflowBps ?? 0 });
+  }
+
+  const rankOf = (ticker: string, holdersNow: number) => {
+    const perQuarterBps = window.map((w) => seriesByTicker.get(ticker)?.get(w)?.bps ?? 0);
+    const accSeries = cumulativeAccSeries(perQuarterBps);
+    const streak = accumulationStreak(perQuarterBps);
+    const holdersByPeriod = window.map((w) => seriesByTicker.get(ticker)?.get(w)?.holders ?? 0);
+    const startIdx = Math.max(0, window.length - (Math.abs(streak) + 1));
+    const rank = trajectoryRankScore({ accSeries, streakLength: streak, holdersStart: holdersByPeriod[startIdx] ?? holdersByPeriod[0] ?? 0, holdersNow });
+    return { accSeries, streak, rank, holdersByPeriod, startIdx };
+  };
+
+  // ── DURABLE cards (full evidence). ──
+  const durableRows = staged.filter((s) => s.lifecycleStage === "DURABLE");
+  const durTickers = durableRows.map((r) => r.ticker);
+  // Indexed split-adjusted price over the window + top qualified initiator.
+  const priceByTicker = await indexedPriceByTicker(durTickers, window);
+  const topAdderByTicker = await topInitiatorByTicker(durTickers, p);
+  const eliteByTicker = await eliteAdderCountByTicker(durTickers, p);
+
+  const durable: DurableCard[] = durableRows
+    .map((r) => {
+      const { accSeries, streak, rank } = rankOf(r.ticker, r.fundsHolding);
+      const priceIndexed = priceByTicker.get(r.ticker) ?? window.map(() => null);
+      const firstPx = priceIndexed.find((x) => x != null) ?? null;
+      const lastPx = [...priceIndexed].reverse().find((x) => x != null) ?? null;
+      const priceSincePeriodEnd = firstPx != null && lastPx != null && firstPx > 0 ? Math.round((lastPx / firstPx - 1) * 1000) / 10 : null;
+      const streakLen = Math.abs(streak);
+      const startIdx = Math.max(0, window.length - (streakLen + 1));
+      const priceOverStreak = priceIndexed[startIdx] != null && lastPx != null && priceIndexed[startIdx]! > 0 ? (lastPx / priceIndexed[startIdx]! - 1) * 100 : null;
+      const top = topAdderByTicker.get(r.ticker) ?? null;
+      const eliteCount = eliteByTicker.get(r.ticker) ?? 0;
+      const chips = evidenceChips({ priceOverStreak, top, eliteCount, deltaHolders: r.deltaHolders, crowded: r.crowded });
+      return {
+        ticker: r.ticker,
+        companyName: r.companyName,
+        sector: r.sector,
+        marketCapTier: r.marketCapTier,
+        streak,
+        rankScore: rank,
+        holders: r.fundsHolding,
+        deltaHolders: r.deltaHolders,
+        breadth: Number(r.pctOfFunds.toFixed(2)),
+        periods: window,
+        accSeries,
+        priceIndexed,
+        priceSincePeriodEnd,
+        eliteCount,
+        topAdder: top,
+        evidenceChips: chips,
+        actionTag: r.crowded ? "crowded — confirm" : "add candidate",
+      };
+    })
+    .sort((a, b) => b.rankScore - a.rankScore)
+    .slice(0, durableLimit);
+
+  // ── FORMING chips. ──
+  const forming: FormingChip[] = staged
+    .filter((s) => s.lifecycleStage === "FORMING")
+    .map((r) => {
+      const { streak } = rankOf(r.ticker, r.fundsHolding);
+      const eliteCount = 0;
+      return {
+        ticker: r.ticker,
+        companyName: r.companyName,
+        streak,
+        eliteCount,
+        qualifier: r.deltaHolders > 0 ? `+${r.deltaHolders} holders` : `${r.fundsHolding} funds`,
+      };
+    })
+    .sort((a, b) => Math.abs(b.streak) - Math.abs(a.streak))
+    .slice(0, 60);
+
+  // ── SPIKES (collapsed). ──
+  const spikeRows = staged.filter((s) => s.lifecycleStage === "SPIKE");
+  const spikes = {
+    count: spikeRows.length,
+    items: spikeRows
+      .sort((a, b) => (b.netflowBps ?? 0) - (a.netflowBps ?? 0))
+      .slice(0, 40)
+      .map((r) => ({ ticker: r.ticker, latestActiveBps: r.netflowBps })),
+  };
+
+  // ── TRANSITIONS this quarter. ──
+  const transEvents = await prisma.institutionalEvent.findMany({ where: { kind: "stage_transition", filingPeriod: periodDate }, orderBy: { significance: "desc" }, take: 60 });
+  const transitions: TransitionItem[] = transEvents.map((e) => {
+    const pl = e.payload as { from?: string | null; to?: string | null; transition?: string } | null;
+    return { ticker: e.ticker, from: pl?.from ?? null, to: pl?.to ?? null, transition: pl?.transition ?? "", significance: e.significance };
+  });
+
+  // ── Base-rate header lines. ──
+  const [durBr, formBr] = await Promise.all([
+    prisma.institutionalBaseRate.findFirst({ where: { pattern: "DURABLE", horizon: "2Q" } }),
+    prisma.institutionalBaseRate.findFirst({ where: { pattern: "FORMING", horizon: "2Q" } }),
+  ]);
+
+  return {
+    filingPeriod: p,
+    census,
+    transitionsCount: transEvents.length,
+    durable,
+    forming,
+    spikes,
+    transitions,
+    baseRates: { durable: baseRateLine(durBr, "durable builds"), forming: baseRateLine(formBr, "forming builds") },
+  };
+}
+
+/** Indexed (=100 at window start) split-adjusted close per ticker over `window` periods. */
+async function indexedPriceByTicker(tickers: string[], window: string[]): Promise<Map<string, Array<number | null>>> {
+  const out = new Map<string, Array<number | null>>();
+  if (tickers.length === 0 || window.length === 0) return out;
+  const secs = await prisma.security.findMany({ where: { ticker: { in: tickers } }, select: { id: true, ticker: true } });
+  if (secs.length === 0) return out;
+  const tickerBySec = new Map(secs.map((s) => [s.id, s.ticker]));
+  const start = new Date(`${window[0]}T00:00:00.000Z`);
+  const rows = await prisma.priceHistory.findMany({
+    where: { securityId: { in: secs.map((s) => s.id) }, tradeDate: { gte: start } },
+    select: { securityId: true, tradeDate: true, adjClose: true },
+    orderBy: { tradeDate: "asc" },
+  });
+  const bySec = new Map<string, Array<{ t: number; px: number }>>();
+  for (const r of rows) {
+    const px = Number(r.adjClose);
+    if (!Number.isFinite(px) || px <= 0) continue;
+    (bySec.get(r.securityId) ?? bySec.set(r.securityId, []).get(r.securityId)!).push({ t: r.tradeDate.getTime(), px });
+  }
+  for (const [secId, series] of bySec) {
+    const ticker = tickerBySec.get(secId)!;
+    // price at each period-end = first close on/after that date.
+    const raw = window.map((w) => {
+      const asOf = new Date(`${w}T00:00:00.000Z`).getTime();
+      let lo = 0;
+      let hi = series.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (series[mid]!.t < asOf) lo = mid + 1;
+        else hi = mid;
+      }
+      return series[lo]?.px ?? null;
+    });
+    const base = raw.find((x) => x != null) ?? null;
+    out.set(ticker, raw.map((x) => (x != null && base != null && base > 0 ? Math.round((x / base) * 1000) / 10 : null)));
+  }
+  return out;
+}
+
+/** Top qualified initiator (by initiationStrength) per ticker this quarter. */
+async function topInitiatorByTicker(tickers: string[], period: string): Promise<Map<string, { fund: string; sizingMult: number; isElite: boolean }>> {
+  const out = new Map<string, { fund: string; sizingMult: number; isElite: boolean }>();
+  if (tickers.length === 0) return out;
+  const rows = await prisma.$queryRaw<Array<{ ticker: string; strength: number; name: string; elite: boolean }>>(Prisma.sql`
+    SELECT h.ticker, h."initiationStrength" AS strength, f.name AS name, f."isMostRespected" AS elite
+    FROM "FundHoldingSnapshot" h
+    JOIN "InstitutionalFund" f ON f.id = h."fundId"
+    WHERE h."filingPeriod" = ${period}::date AND h.ticker IN (${Prisma.join(tickers)}) AND h."initiationStrength" IS NOT NULL
+    ORDER BY h."initiationStrength" DESC`);
+  for (const r of rows) if (!out.has(r.ticker)) out.set(r.ticker, { fund: r.name, sizingMult: Math.round(r.strength * 100) / 100, isElite: r.elite });
+  return out;
+}
+
+/** Count of elite (isMostRespected) funds that added/initiated a ticker this quarter. */
+async function eliteAdderCountByTicker(tickers: string[], period: string): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (tickers.length === 0) return out;
+  const rows = await prisma.$queryRaw<Array<{ ticker: string; c: bigint }>>(Prisma.sql`
+    SELECT h.ticker, count(*) AS c
+    FROM "FundHoldingSnapshot" h
+    JOIN "InstitutionalFund" f ON f.id = h."fundId" AND f."isMostRespected" = true
+    WHERE h."filingPeriod" = ${period}::date AND h.ticker IN (${Prisma.join(tickers)}) AND h.action IN ('NEW','ADDED')
+    GROUP BY h.ticker`);
+  for (const r of rows) out.set(r.ticker, Number(r.c));
+  return out;
+}
+
+/** Auto-generated evidence chips for a durable card. */
+function evidenceChips(input: { priceOverStreak: number | null; top: { fund: string; sizingMult: number; isElite: boolean } | null; eliteCount: number; deltaHolders: number; crowded: boolean }): string[] {
+  const chips: string[] = [];
+  if (input.priceOverStreak != null) {
+    if (input.priceOverStreak <= -8) chips.push(`adding into ${input.priceOverStreak.toFixed(0)}% drawdown`);
+    else if (Math.abs(input.priceOverStreak) < 8) chips.push("built through flat tape");
+    else chips.push(`built through +${input.priceOverStreak.toFixed(0)}% rally`);
+  }
+  if (input.top) chips.push(`${input.top.fund} @ ${input.top.sizingMult}× sizing`);
+  if (input.eliteCount > 0) chips.push(`${input.eliteCount} elite ★`);
+  if (input.deltaHolders > 0) chips.push(`+${input.deltaHolders} holders`);
+  if (input.crowded) chips.push("crowded (p75 breadth)");
+  return chips.slice(0, 4);
+}
+
 // ── single-name trajectory (drill-down chart) ───────────────────────────────
 export interface SingleTrajectoryPayload {
   ticker: string;
@@ -336,6 +627,141 @@ export async function getTrajectory(ticker: string): Promise<SingleTrajectoryPay
       trajectoryLabel: r.trajectoryLabel,
     })),
   };
+}
+
+// ── Core Holdings board (Part 3/6) ──────────────────────────────────────────
+export interface CoreHoldingRow {
+  rank: number;
+  ticker: string;
+  companyName: string | null;
+  sector: string | null;
+  endorsementScore: number;
+  longHoldVoters: number;
+  distinctCategories: number;
+  eliteVoters: number;
+  medianTenure: number | null;
+  avgTenure: number | null;
+  censoredPct: number;
+  verifyData: boolean;
+  /** 12-quarter weight-stability strip (median % of book + holders), ascending. */
+  weightStrip: Array<{ period: string; medianPct: number | null; holders: number }>;
+  /** Active stasis-break this quarter (bell + red final bar), else null. */
+  stasisBreak: { significance: number; rawQuarters: number; departing: Array<{ fund: string; tenure: number; tenureMult: number; action: string }> } | null;
+  /** Endorsement decomposition for the tooltip (fund names resolved). */
+  contributions: Array<{ fund: string; contribution: number; tenureMult: number; weightBps: number; isElite: boolean }>;
+}
+export interface CoreHoldingsPayload {
+  filingPeriod: string;
+  rows: CoreHoldingRow[];
+  /** Active stasis-break alerts this quarter (alert strip above the board). */
+  alerts: Array<{ ticker: string; companyName: string | null; significance: number; rawQuarters: number; departing: Array<{ fund: string; tenureMult: number; action: string }> }>;
+  /** Base-rate line for the stasis-break pattern (Part 4), null until N≥30. */
+  stasisBaseRate: string | null;
+}
+
+const CORE_STRIP_QUARTERS = 12;
+
+export async function getCoreHoldings(period?: string, limit = 25): Promise<CoreHoldingsPayload | null> {
+  const p = await resolvePeriod(period);
+  if (!p) return null;
+  const periods = await listPeriods(); // desc
+  const periodDate = new Date(`${p}T00:00:00.000Z`);
+
+  const top = await prisma.institutionalCoreHolding.findMany({
+    where: { filingPeriod: periodDate, valid: true },
+    orderBy: { endorsementScore: "desc" },
+    take: limit,
+  });
+
+  // Stasis-break events this quarter. Only deep-tenure breaks (significance ≥ 0.75)
+  // drive the board bell + alert strip — a routine trim by a marginally-long holder
+  // is not a "first change in N quarters" moment.
+  const stasis = (await prisma.institutionalEvent.findMany({ where: { kind: "stasis_break", filingPeriod: periodDate } })).filter((e) => e.significance >= 0.75);
+  const stasisByTicker = new Map(stasis.map((e) => [e.ticker, e]));
+
+  // 12-quarter weight-stability strip for the board tickers.
+  const pIdx = Math.max(0, periods.indexOf(p));
+  const stripPeriods = periods.slice(pIdx, pIdx + CORE_STRIP_QUARTERS).reverse(); // oldest→newest
+  const stripDates = stripPeriods.map((w) => new Date(`${w}T00:00:00.000Z`));
+  const tickers = top.map((r) => r.ticker);
+  const stripRows = tickers.length
+    ? await prisma.institutionalNameAggregate.findMany({
+        where: { ticker: { in: tickers }, filingPeriod: { in: stripDates } },
+        select: { ticker: true, filingPeriod: true, medianPctOfBook: true, fundsHolding: true },
+      })
+    : [];
+  const stripByTicker = new Map<string, Map<string, { medianPct: number | null; holders: number }>>();
+  for (const s of stripRows) {
+    if (!stripByTicker.has(s.ticker)) stripByTicker.set(s.ticker, new Map());
+    stripByTicker.get(s.ticker)!.set(iso(s.filingPeriod), { medianPct: s.medianPctOfBook, holders: s.fundsHolding });
+  }
+
+  // Resolve fund names referenced in contributions / stasis payloads.
+  const fundIds = new Set<string>();
+  for (const r of top) for (const c of ((r.payload as { contributions?: Array<{ fundId: string }> } | null)?.contributions ?? [])) fundIds.add(c.fundId);
+  for (const e of stasis) for (const d of ((e.payload as { departing?: Array<{ fundId: string }> } | null)?.departing ?? [])) fundIds.add(d.fundId);
+  const fundRows = fundIds.size ? await prisma.institutionalFund.findMany({ where: { id: { in: [...fundIds] } }, select: { id: true, name: true } }) : [];
+  const fundName = new Map(fundRows.map((f) => [f.id, f.name]));
+
+  const rows: CoreHoldingRow[] = top.map((r, i) => {
+    const contribs = ((r.payload as { contributions?: Array<{ fundId: string; contribution: number; tenureMult: number; weightBps: number; isElite: boolean }> } | null)?.contributions ?? []).map((c) => ({
+      fund: fundName.get(c.fundId) ?? c.fundId,
+      contribution: c.contribution,
+      tenureMult: c.tenureMult,
+      weightBps: c.weightBps,
+      isElite: c.isElite,
+    }));
+    const ev = stasisByTicker.get(r.ticker);
+    const evP = ev?.payload as { rawQuarters?: number; departing?: Array<{ fundId: string; tenure: number; tenureMult: number; action: string }> } | null;
+    return {
+      rank: i + 1,
+      ticker: r.ticker,
+      companyName: r.companyName,
+      sector: r.sector,
+      endorsementScore: r.endorsementScore,
+      longHoldVoters: r.longHoldVoters,
+      distinctCategories: r.distinctCategories,
+      eliteVoters: r.eliteVoters,
+      medianTenure: r.medianTenure,
+      avgTenure: r.avgTenure,
+      censoredPct: r.censoredPct,
+      verifyData: r.verifyData,
+      weightStrip: stripPeriods.map((w) => ({ period: w, medianPct: stripByTicker.get(r.ticker)?.get(w)?.medianPct ?? null, holders: stripByTicker.get(r.ticker)?.get(w)?.holders ?? 0 })),
+      stasisBreak: ev
+        ? {
+            significance: ev.significance,
+            rawQuarters: evP?.rawQuarters ?? 0,
+            departing: (evP?.departing ?? []).map((d) => ({ fund: fundName.get(d.fundId) ?? d.fundId, tenure: d.tenure, tenureMult: d.tenureMult, action: d.action })),
+          }
+        : null,
+      contributions: contribs.sort((a, b) => b.contribution - a.contribution),
+    };
+  });
+
+  const alerts = stasis
+    .sort((a, b) => b.significance - a.significance)
+    .slice(0, 15)
+    .map((e) => {
+      const evP = e.payload as { rawQuarters?: number; departing?: Array<{ fundId: string; tenureMult: number; action: string }> } | null;
+      return {
+        ticker: e.ticker,
+        companyName: top.find((t) => t.ticker === e.ticker)?.companyName ?? null,
+        significance: e.significance,
+        rawQuarters: evP?.rawQuarters ?? 0,
+        departing: (evP?.departing ?? []).map((d) => ({ fund: fundName.get(d.fundId) ?? d.fundId, tenureMult: d.tenureMult, action: d.action })),
+      };
+    });
+
+  // Stasis-break base-rate line (Part 4).
+  const br = await prisma.institutionalBaseRate.findFirst({ where: { pattern: "stasis_break", horizon: "2Q" } });
+  const stasisBaseRate =
+    br && br.n >= 30 && br.excessReturn != null
+      ? `after a stasis break: ${br.excessReturn >= 0 ? "+" : ""}${(br.excessReturn * 100).toFixed(1)}% excess next 2Q (n=${br.n}${br.hitRate != null ? `, ${Math.round(br.hitRate * 100)}% hit` : ""})`
+      : br
+        ? `stasis-break base rate: insufficient history (n=${br.n})`
+        : null;
+
+  return { filingPeriod: p, rows, alerts, stasisBaseRate };
 }
 
 // ── 5.4 sector / subsector / stock rotation ─────────────────────────────────

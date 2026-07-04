@@ -18,6 +18,8 @@ import { fetchMarketCapsBatch } from "@/infrastructure/providers/fmp/institution
 import { Prisma, RevisionGroupType } from "@prisma/client";
 import { buildActiveFlowMetrics, netDiffusionPct } from "./institutional-active-flow.service";
 import { runIngredientPrecompute } from "./institutional-ingredients.service";
+import { runCoreHoldingsPrecompute } from "./institutional-core-holdings.service";
+import { runBaseRates } from "./institutional-base-rates.service";
 import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-config";
 import { cumulativeAccSeries } from "@/domain/calculations/flow-trajectory";
 import { classifyLifecycleSeries, detectTransitions, type StageInfo } from "@/domain/calculations/lifecycle";
@@ -632,6 +634,19 @@ export async function runInstitutionalAggregate(opts: {
   // Config-independent leaderboard ingredients + split detection (bumps the
   // ingredients_version that keys the leaderboard route cache).
   await runIngredientPrecompute(log);
+
+  // Core Holdings (Part 3): tenure, endorsement, stasis-break events. Runs after
+  // ingredients so it reads the diffed/split-adjusted holding history.
+  await runCoreHoldingsPrecompute(log);
+
+  // Forward-return base rates + calibration sweep (Part 4). Reads split-adjusted
+  // closes; no lookahead (entry = filing date). Best-effort — a missing price
+  // history must not fail the whole aggregate.
+  try {
+    await runBaseRates(log);
+  } catch (e) {
+    log(`[institutional-agg] base rates skipped: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   const latestPeriod = periods.length ? periods[periods.length - 1]! : null;
 
