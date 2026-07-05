@@ -24,8 +24,14 @@ function turnoverPct(t: number | null): number | null {
   return t <= 1 ? t * 100 : t;
 }
 
+type PeerMode = "MY_FUNDS" | "CATEGORY" | "STYLE_TWINS";
+
 export function FundPage({ cik, onClose, onSelectTicker }: { cik: string; onClose: () => void; onSelectTicker: (t: string) => void }) {
-  const { data, state, error } = useFlows<FundPagePayload>(["flows-fund-page", cik], `/api/analysis/flows/fund-page/${encodeURIComponent(cik)}`);
+  const [peer, setPeer] = useState<PeerMode>("MY_FUNDS");
+  const { data, state, error } = useFlows<FundPagePayload>(
+    ["flows-fund-page", cik, peer],
+    `/api/analysis/flows/fund-page/${encodeURIComponent(cik)}?peer=${peer}`,
+  );
 
   return (
     <div style={{ border: "1px solid var(--color-accent)", background: "var(--bg-base)", marginBottom: 4 }}>
@@ -48,14 +54,24 @@ export function FundPage({ cik, onClose, onSelectTicker }: { cik: string; onClos
       </div>
       <div style={{ padding: 10 }}>
         <PanelState state={state} error={error}>
-          {data && <FundPageBody data={data} onSelectTicker={onSelectTicker} />}
+          {data && <FundPageBody data={data} onSelectTicker={onSelectTicker} peer={peer} onPeerChange={setPeer} />}
         </PanelState>
       </div>
     </div>
   );
 }
 
-function FundPageBody({ data, onSelectTicker }: { data: FundPagePayload; onSelectTicker: (t: string) => void }) {
+function FundPageBody({
+  data,
+  onSelectTicker,
+  peer,
+  onPeerChange,
+}: {
+  data: FundPagePayload;
+  onSelectTicker: (t: string) => void;
+  peer: PeerMode;
+  onPeerChange: (m: PeerMode) => void;
+}) {
   const filingTell =
     data.filingDayTell != null
       ? `filed ${quarterLabel(data.filingPeriod)} on day ${data.filingDayTell} of 45${data.filingDayTell >= 35 ? " — late filer, treat entries as deliberate" : ""}`
@@ -164,7 +180,7 @@ function FundPageBody({ data, onSelectTicker }: { data: FundPagePayload; onSelec
         </div>
       </div>
 
-      {data.vsPeers && <VsPeers v={data.vsPeers} />}
+      {data.vsPeers && <VsPeers v={data.vsPeers} peer={peer} onPeerChange={onPeerChange} />}
       {data.thisQuarter.length > 0 && <ThisQuarter rows={data.thisQuarter} onSelectTicker={onSelectTicker} />}
 
       <div style={{ borderTop: "1px solid var(--bg-border)", paddingTop: 8, fontSize: 10, color: "var(--text-muted)" }}>
@@ -314,11 +330,37 @@ function ReturnsStrip({ r, onSelectTicker }: { r: FundReturnsBlock; onSelectTick
 }
 
 // ── VS PEERS (Fund Overview Part 2) ──────────────────────────────────────────
-function VsPeers({ v }: { v: FundVsPeersBlock }) {
+function VsPeers({ v, peer, onPeerChange }: { v: FundVsPeersBlock; peer: PeerMode; onPeerChange: (m: PeerMode) => void }) {
+  const modes: Array<{ key: PeerMode; label: string }> = [
+    { key: "MY_FUNDS", label: "My Funds" },
+    { key: "CATEGORY", label: "Category" },
+    { key: "STYLE_TWINS", label: "Style Twins" },
+  ];
   return (
     <div style={{ border: "1px solid var(--bg-border)" }}>
-      <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--bg-border)", background: "var(--bg-surface)", fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
-        Vs peers · {v.peerSetName} ({v.peerSetSize})
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6, padding: "8px 10px", borderBottom: "1px solid var(--bg-border)", background: "var(--bg-surface)" }}>
+        <span style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
+          Vs peers · {v.peerSetName} ({v.peerSetSize})
+        </span>
+        <span style={{ display: "flex", gap: 4 }}>
+          {modes.map((m) => (
+            <button
+              key={m.key}
+              type="button"
+              onClick={() => onPeerChange(m.key)}
+              style={{
+                background: "transparent",
+                border: `1px solid ${peer === m.key ? "var(--color-accent)" : "var(--bg-border)"}`,
+                color: peer === m.key ? "var(--color-accent)" : "var(--text-muted)",
+                fontSize: 10,
+                padding: "1px 8px",
+                cursor: "pointer",
+              }}
+            >
+              {m.label}
+            </button>
+          ))}
+        </span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0 }}>
         <div style={{ padding: 10 }}>
