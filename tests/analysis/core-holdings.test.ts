@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   fundMedianTenure,
   isQualifiedTrimOrExit,
+  isNameStasisBreak,
+  longHoldDepartureIntensity,
+  nameStasisSignificance,
   scoreEndorsement,
   stasisBreakSignificance,
+  stasisSeverity,
   tenureMult,
   tenureSeries,
   type Voter,
@@ -132,5 +136,65 @@ describe("core-holdings: stasis break (Part 3d)", () => {
     expect(stasisBreakSignificance(4)).toBe(1); // capped
     expect(stasisBreakSignificance(2)).toBe(0.5);
     expect(stasisBreakSignificance(1)).toBeLessThan(stasisBreakSignificance(3));
+  });
+});
+
+describe("core-holdings: name-level stasis break (v3 Part 0)", () => {
+  it("departure intensity = departed / known long-hold base", () => {
+    expect(longHoldDepartureIntensity({ priorLongHolders: 20, departed: 3, unknown: 0 })).toBe(0.15);
+    expect(longHoldDepartureIntensity({ priorLongHolders: 0, departed: 0, unknown: 4 })).toBeNull();
+  });
+
+  it("severity z-scores this quarter against the name's OWN trailing baseline", () => {
+    // baseline hovers ~0.30 (a name that always churns ~30% of long holders)
+    const baseline = [0.28, 0.31, 0.29, 0.3, 0.32, 0.27, 0.3, 0.31];
+    // a 0.30 quarter sits right in the baseline → ~0σ → NOT a break
+    const typical = stasisSeverity(0.3, baseline);
+    expect(typical.severity).not.toBeNull();
+    expect(Math.abs(typical.severity!)).toBeLessThan(1);
+    expect(isNameStasisBreak(0.3, typical.severity, 20, CFG)).toBe(false);
+    // a genuine spike to 0.60 is far above baseline → break
+    const spike = stasisSeverity(0.6, baseline);
+    expect(spike.severity!).toBeGreaterThanOrEqual(CFG.stasis_severity_min);
+    expect(isNameStasisBreak(0.6, spike.severity, 20, CFG)).toBe(true);
+  });
+
+  // THE Part-0 regression: the old detector fired on ANY quarter where ≥1 of many
+  // long holders trimmed. Reproduce that pattern — a widely-held name that loses a
+  // steady ~1/3 of its long holders EVERY quarter — and assert the new detector is
+  // silent on the typical quarter (it is not anomalous for THIS name).
+  it("does NOT fire on a widely-held name's normal quarterly churn (false-positive fix)", () => {
+    const baseline = Array.from({ length: 8 }, () => 0.33); // ~1/3 depart every quarter
+    const thisQ = 0.34; // 12 of 35 long holders trimmed — utterly typical for this name
+    const sev = stasisSeverity(thisQ, baseline);
+    expect(isNameStasisBreak(thisQ, sev.severity, 35, CFG)).toBe(false);
+  });
+
+  it("a big move off a near-zero baseline is noise, not a break (materiality floor)", () => {
+    const baseline = [0, 0, 0, 0, 0, 0, 0.02, 0]; // a name that essentially never breaks
+    // one holder of eight departs → intensity 0.125, huge z-score but below the frac floor
+    const sev = stasisSeverity(0.125, baseline);
+    expect(sev.severity!).toBeGreaterThan(CFG.stasis_severity_min);
+    expect(isNameStasisBreak(0.125, sev.severity, 8, CFG)).toBe(false); // < stasis_min_departure_frac
+  });
+
+  it("a tiny long-hold base (1-2 voters) is a per-fund event, not a name break", () => {
+    const baseline = [0, 0, 0, 0, 0, 0, 0, 0.02]; // essentially never breaks (tiny variance)
+    const sev = stasisSeverity(1.0, baseline); // both of 2 voters exit → intensity 1.0
+    expect(sev.severity!).toBeGreaterThan(CFG.stasis_severity_min);
+    expect(isNameStasisBreak(1.0, sev.severity, 2, CFG)).toBe(false); // base < stasis_min_base
+    expect(isNameStasisBreak(1.0, sev.severity, 3, CFG)).toBe(true); // base meets floor
+  });
+
+  it("returns null severity when the baseline is too thin (→ no break)", () => {
+    const sev = stasisSeverity(0.5, [0.3, 0.3]); // < stasis_min_baseline_n
+    expect(sev.severity).toBeNull();
+    expect(isNameStasisBreak(0.5, sev.severity, 8, CFG)).toBe(false);
+  });
+
+  it("event significance lands at 0.75 at threshold and saturates at 1", () => {
+    expect(nameStasisSignificance(CFG.stasis_severity_min)).toBe(0.75);
+    expect(nameStasisSignificance(CFG.stasis_severity_min + 2)).toBe(1);
+    expect(nameStasisSignificance(10)).toBe(1); // clamped
   });
 });

@@ -20,9 +20,13 @@ import { prisma } from "@/infrastructure/db/client";
 import { Prisma } from "@prisma/client";
 import {
   fundMedianTenure,
+  isLongHoldVote,
+  isNameStasisBreak,
   isQualifiedTrimOrExit,
+  longHoldDepartureIntensity,
+  nameStasisSignificance,
   scoreEndorsement,
-  stasisBreakSignificance,
+  stasisSeverity,
   tenureMult,
   tenureSeries,
   type TenurePoint,
@@ -189,49 +193,109 @@ export async function runCoreHoldingsPrecompute(log: (m: string) => void): Promi
     });
   }
 
-  // ── 4. Stasis-break events: a qualified trim/exit by a long-tenure holder. ──
-  const stasisByTP = new Map<string, Array<{ fundId: string; tenure: number; tenureMult: number; action: "trim" | "exit" }>>();
-  for (const [fundId, byTicker] of byFundTicker) {
-    for (const [ticker, byPeriod] of byTicker) {
-      for (let i = 1; i < periods.length; i++) {
-        const prevP = periods[i - 1]!;
-        const curP = periods[i]!;
-        const prev = byPeriod.get(prevP);
-        if (!prev) continue; // wasn't held last quarter
-        const prevTp = tenureByKey.get(`${fundId}|${ticker}|${prevP}`)!;
-        const prevMedian = fundMedianAt.get(`${fundId}|${prevP}`) ?? 0;
-        const prevMult = tenureMult(prevTp.tenure, prevMedian);
-        if (prevMult < CFG.long_hold_mult) continue; // not a long-tenure holder
-        const cur = byPeriod.get(curP);
-        const exited = !cur;
-        if (isQualifiedTrimOrExit(prev.shares, cur?.shares ?? 0, exited, CFG)) {
-          const key = `${ticker}|${curP}`;
-          (stasisByTP.get(key) ?? stasisByTP.set(key, []).get(key)!).push({
-            fundId,
-            tenure: prevTp.tenure,
-            tenureMult: prevMult,
-            action: exited ? "exit" : "trim",
-          });
-        }
-      }
-    }
+  // ── 4. Stasis-break events (v3 Part 0): a NAME-level break of its long-hold base. ──
+  // NOT one holder among many trimming — for a widely-held name ≥1 long holder trims
+  // every quarter, which fired ~490 false positives/qtr. A break is this quarter's
+  // long-hold DEPARTURE INTENSITY (fraction of the name's long-hold base that did a
+  // qualified trim/exit) being anomalous vs the name's OWN trailing baseline.
+
+  // Which funds actually FILED each period (any long-equity row) — a long holder whose
+  // fund did not file this quarter is UNKNOWN, not a reducer (stasis_unknown_skip).
+  const fundsFiledAt = new Map<string, Set<string>>();
+  for (const r of rows) (fundsFiledAt.get(r.period) ?? fundsFiledAt.set(r.period, new Set()).get(r.period)!).add(r.fundId);
+
+  // Long-hold voter set (tenure_mult ≥ long_hold_mult AND weight ≥ min_entry_bps) per (ticker,period).
+  const longHoldAt = new Map<string, Set<string>>(); // `${ticker}|${period}` → fundIds
+  for (const [key, holders] of votersByTP) {
+    const set = new Set<string>();
+    for (const v of holders) if (isLongHoldVote(v, CFG)) set.add(v.fundId);
+    if (set.size) longHoldAt.set(key, set);
+  }
+
+  const allTickers = new Set<string>();
+  for (const [, byTicker] of byFundTicker) for (const t of byTicker.keys()) allTickers.add(t);
+
+  interface QDetail {
+    intensity: number | null;
+    priorLongHolders: number;
+    departed: number;
+    unknown: number;
+    unknownFrac: number;
+    departing: Array<{ fundId: string; tenure: number; tenureMult: number; action: "trim" | "exit" }>;
   }
   const stasisEventRows: Prisma.InstitutionalEventCreateManyInput[] = [];
-  for (const [key, departing] of stasisByTP) {
-    const [ticker, period] = key.split("|");
-    const top = departing.reduce((a, b) => (b.tenureMult > a.tenureMult ? b : a));
-    stasisEventRows.push({
-      kind: "stasis_break",
-      ticker: ticker!,
-      filingPeriod: dateOf(period!),
-      significance: stasisBreakSignificance(top.tenureMult, CFG),
-      payload: {
-        departing: departing.map((d) => ({ fundId: d.fundId, tenure: d.tenure, tenureMult: d.tenureMult, action: d.action })),
-        // raw quarters for copy ("first change in N quarters") = deepest departing tenure.
-        rawQuarters: top.tenure,
-        deepestTenureMult: top.tenureMult,
-      } as Prisma.InputJsonValue,
-    });
+  for (const ticker of allTickers) {
+    const intensity: Array<number | null> = new Array(periods.length).fill(null);
+    const detail: Array<QDetail | null> = new Array(periods.length).fill(null);
+    for (let i = 1; i < periods.length; i++) {
+      const prevP = periods[i - 1]!;
+      const curP = periods[i]!;
+      const priorVoters = longHoldAt.get(`${ticker}|${prevP}`);
+      if (!priorVoters || priorVoters.size === 0) continue; // no long-hold base entering
+      const filedCur = fundsFiledAt.get(curP);
+      let departed = 0;
+      let unknown = 0;
+      let known = 0;
+      const departing: QDetail["departing"] = [];
+      for (const fundId of priorVoters) {
+        const byPeriod = byFundTicker.get(fundId)?.get(ticker);
+        const prev = byPeriod?.get(prevP);
+        if (!prev) continue;
+        const filed = filedCur?.has(fundId) ?? false;
+        if (!filed) {
+          unknown++;
+          if (CFG.stasis_unknown_skip) continue; // UNKNOWN quarter, not a reducer
+        }
+        known++;
+        const cur = byPeriod?.get(curP);
+        const exited = !cur;
+        if (isQualifiedTrimOrExit(prev.shares, cur?.shares ?? 0, exited, CFG)) {
+          departed++;
+          const prevTp = tenureByKey.get(`${fundId}|${ticker}|${prevP}`)!;
+          const prevMedian = fundMedianAt.get(`${fundId}|${prevP}`) ?? 0;
+          departing.push({ fundId, tenure: prevTp.tenure, tenureMult: tenureMult(prevTp.tenure, prevMedian), action: exited ? "exit" : "trim" });
+        }
+      }
+      const inten = longHoldDepartureIntensity({ priorLongHolders: known, departed, unknown });
+      intensity[i] = inten;
+      detail[i] = { intensity: inten, priorLongHolders: known, departed, unknown, unknownFrac: priorVoters.size ? unknown / priorVoters.size : 0, departing };
+    }
+
+    for (let i = 1; i < periods.length; i++) {
+      const d = detail[i];
+      if (!d || d.intensity == null) continue;
+      if (d.unknownFrac > CFG.stasis_unknown_max_frac) continue; // too much missing → partial, no fire
+      const baseline: number[] = [];
+      for (let j = Math.max(1, i - CFG.stasis_baseline_window); j < i; j++) {
+        const v = intensity[j];
+        if (v != null) baseline.push(v);
+      }
+      const sev = stasisSeverity(d.intensity, baseline, CFG);
+      if (!isNameStasisBreak(d.intensity, sev.severity, d.priorLongHolders, CFG)) continue;
+      const departing = [...d.departing].sort((a, b) => b.tenureMult - a.tenureMult);
+      const top = departing[0];
+      stasisEventRows.push({
+        kind: "stasis_break",
+        ticker,
+        filingPeriod: dateOf(periods[i]!),
+        significance: nameStasisSignificance(sev.severity!, CFG),
+        payload: {
+          priorLongHolders: d.priorLongHolders,
+          departed: d.departed,
+          unknown: d.unknown,
+          intensity: d.intensity,
+          severity: sev.severity,
+          baselineMean: sev.mean,
+          baselineSd: sev.sd,
+          baselineN: sev.n,
+          partialData: d.unknown > 0,
+          departing: departing.map((x) => ({ fundId: x.fundId, tenure: x.tenure, tenureMult: x.tenureMult, action: x.action })),
+          // deepest departing tenure — flavor for the drill copy, NOT the headline.
+          rawQuarters: top?.tenure ?? 0,
+          deepestTenureMult: top?.tenureMult ?? 0,
+        } as Prisma.InputJsonValue,
+      });
+    }
   }
 
   // ── Write everything (idempotent). ──

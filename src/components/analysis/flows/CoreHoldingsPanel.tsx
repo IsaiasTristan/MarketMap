@@ -31,8 +31,8 @@ export function CoreHoldingsPanel({ period, onSelectTicker }: { period: string |
               <span style={{ fontSize: 11 }}>🔔</span>
               <span style={{ fontSize: 10, fontWeight: 700, color: "var(--color-negative)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Stasis breaks</span>
               {data.alerts.map((a) => (
-                <span key={a.ticker} onClick={() => onSelectTicker(a.ticker)} title={a.departing.map((d) => `${d.fund} (${d.tenureMult}× tenure, ${d.action})`).join("\n")} className="flows-row" style={{ fontSize: 10, color: "var(--text-secondary)", cursor: "pointer", border: "1px solid var(--bg-border)", padding: "1px 5px", background: "var(--bg-base)" }}>
-                  <b style={{ color: "var(--text-primary)" }}>{a.ticker}</b> first change in {a.rawQuarters}q
+                <span key={a.ticker} onClick={() => onSelectTicker(a.ticker)} title={[`${a.departed} of ${a.priorLongHolders} long-hold voters cut/exited this quarter${a.severity != null ? ` — ${a.severity.toFixed(1)}σ vs this name's baseline` : ""}`, ...a.departing.map((d) => `  ${d.fund} (${d.tenureMult}× tenure, ${d.action})`)].join("\n")} className="flows-row" style={{ fontSize: 10, color: "var(--text-secondary)", cursor: "pointer", border: "1px solid var(--bg-border)", padding: "1px 5px", background: "var(--bg-base)" }}>
+                  <b style={{ color: "var(--text-primary)" }}>{a.ticker}</b> {a.departed}/{a.priorLongHolders} cut{a.severity != null ? ` · ${a.severity.toFixed(1)}σ` : ""}{a.partialData ? " ⚑" : ""}
                 </span>
               ))}
             </div>
@@ -96,7 +96,7 @@ function Row({ row, maxScore, onClick }: { row: CoreHoldingRow; maxScore: number
           <div style={{ position: "absolute", inset: 0, width: `${barPct}%`, background: "var(--color-accent)", opacity: 0.85 }} />
         </div>
         <span style={{ fontSize: 10, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums", minWidth: 44, textAlign: "right" }}>{Math.round(row.endorsementScore).toLocaleString()}</span>
-        {row.stasisBreak && <span title={`stasis break — a ${row.stasisBreak.rawQuarters}q holder trimmed/exited`} style={{ fontSize: 10, color: "var(--color-negative)" }}>🔔 break</span>}
+        {row.stasisBreak && <span title={`stasis break — ${row.stasisBreak.departed} of ${row.stasisBreak.priorLongHolders} long-hold voters trimmed/exited this quarter${row.stasisBreak.severity != null ? ` (${row.stasisBreak.severity.toFixed(1)}σ vs this name's own baseline)` : ""}${row.stasisBreak.partialData ? " — partial data: some voters' funds have not filed" : ""}`} style={{ fontSize: 10, color: "var(--color-negative)" }}>🔔 break{row.stasisBreak.partialData ? " ⚑" : ""}</span>}
       </div>
     </div>
   );

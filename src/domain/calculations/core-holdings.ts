@@ -46,6 +46,35 @@ export interface CoreHoldingsConfig {
   /** More than this fraction of a fund's prior-quarter book vanishing in one
    *  quarter is a suspicious full-book reset (possible CIK migration) → "verify". */
   suspicious_book_reset_pct: number;
+
+  // ── Name-level stasis-break (v3 Part 0). ────────────────────────────────────
+  // A stasis break is NOT one holder among many trimming — for a widely-held name
+  // ≥1 long holder trims every quarter, so that fires perpetually (~490/qtr). It is
+  // this quarter's long-hold DEPARTURE INTENSITY being anomalous vs the name's OWN
+  // trailing baseline (same shape as the leaderboard's Distribution-Watch severity),
+  // so it is rare (0-3/normal quarter) and name-specific.
+  /** Trailing window (quarters) for the name's own long-hold-departure baseline. */
+  stasis_baseline_window: number;
+  /** Minimum baseline observations to compute severity (else UNKNOWN → no break). */
+  stasis_min_baseline_n: number;
+  /** Fire only when this-quarter departure severity (z vs the name's own baseline)
+   *  is at/above this. */
+  stasis_severity_min: number;
+  /** ...AND at least this fraction of the name's long-hold base departed this
+   *  quarter (absolute materiality floor, so a low-baseline name can't fire on one
+   *  holder). */
+  stasis_min_departure_frac: number;
+  /** A name must have at least this many KNOWN long-hold voters entering the quarter
+   *  for a break to be a NAME-level signal (1-2 voter names departing is a per-fund
+   *  event, not the name's stasis breaking). */
+  stasis_min_base: number;
+  /** A long-hold voter whose fund did not file this quarter is UNKNOWN, not a
+   *  reducer — excluded from the intensity num/denom; the name flags "partial data"
+   *  rather than a break. */
+  stasis_unknown_skip: boolean;
+  /** If more than this fraction of the prior long-hold base is UNKNOWN (funds that
+   *  did not file), the intensity is unreliable → suppress the break, flag partial. */
+  stasis_unknown_max_frac: number;
 }
 
 export const CORE_HOLDINGS_CONFIG: CoreHoldingsConfig = {
@@ -60,6 +89,13 @@ export const CORE_HOLDINGS_CONFIG: CoreHoldingsConfig = {
   base_quality_weight: 1.0,
   censored_floor_flag_pct: 0.3,
   suspicious_book_reset_pct: 0.5,
+  stasis_baseline_window: 8,
+  stasis_min_baseline_n: 4,
+  stasis_severity_min: 2.0,
+  stasis_min_departure_frac: 0.15,
+  stasis_min_base: 3,
+  stasis_unknown_skip: true,
+  stasis_unknown_max_frac: 0.5,
 };
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -208,12 +244,93 @@ export function isQualifiedTrimOrExit(
 }
 
 /**
- * Stasis-break significance, scaled by the DEPARTING fund's tenure_mult (a deeper
- * long-term holder trimming is more notable). Normalized 0-1 against the cap.
+ * Per-holder stasis significance, scaled by the DEPARTING fund's tenure_mult.
+ * Retained for the per-fund drill copy / fund-attribution; the NAME-level event
+ * fire decision and significance are the baseline-relative functions below.
  */
 export function stasisBreakSignificance(
   departingTenureMult: number,
   config: CoreHoldingsConfig = CORE_HOLDINGS_CONFIG,
 ): number {
   return round2(Math.min(departingTenureMult, config.tenure_mult_cap) / config.tenure_mult_cap);
+}
+
+// ── Name-level stasis break (v3 Part 0). ──────────────────────────────────────
+
+/** One quarter's classification of a name's entering long-hold base. */
+export interface StasisQuarterObs {
+  /** Long-hold voters that qualified LAST quarter and whose status this quarter is
+   *  KNOWN (their fund filed). Denominator of the departure intensity. */
+  priorLongHolders: number;
+  /** Of the known base, how many did a qualified trim/exit this quarter. */
+  departed: number;
+  /** Long-hold voters whose fund did not file this quarter (UNKNOWN, skipped). */
+  unknown: number;
+}
+
+/**
+ * Fraction of the name's KNOWN long-hold base that departed this quarter (0-1), or
+ * null when there is no classifiable base (all-unknown or none entering). UNKNOWN
+ * holders are already excluded from priorLongHolders (see stasis_unknown_skip).
+ */
+export function longHoldDepartureIntensity(obs: StasisQuarterObs): number | null {
+  if (!(obs.priorLongHolders > 0)) return null;
+  return round2(obs.departed / obs.priorLongHolders);
+}
+
+export interface StasisSeverity {
+  /** z-score of current intensity vs the name's own trailing baseline; null when
+   *  the baseline is too thin or has zero variance. */
+  severity: number | null;
+  mean: number | null;
+  sd: number | null;
+  n: number;
+}
+
+/**
+ * Severity of this quarter's departure intensity vs the name's OWN trailing
+ * baseline (mirrors the Distribution-Watch churn severity). A mega-cap that churns
+ * a third of its long holders every quarter has a HIGH baseline, so a normal
+ * quarter scores ~0σ and does not fire — only a genuine spike does.
+ */
+export function stasisSeverity(
+  current: number,
+  baseline: number[],
+  config: CoreHoldingsConfig = CORE_HOLDINGS_CONFIG,
+): StasisSeverity {
+  const vals = baseline.filter((v) => Number.isFinite(v));
+  if (vals.length < config.stasis_min_baseline_n) return { severity: null, mean: null, sd: null, n: vals.length };
+  const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+  const sd = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length);
+  const severity = sd > 1e-6 ? round2((current - mean) / sd) : null;
+  return { severity, mean: round2(mean), sd: round2(sd), n: vals.length };
+}
+
+/**
+ * A NAME-level stasis break fires only when this quarter's long-hold departure is
+ * BOTH anomalous vs the name's own baseline (severity ≥ min) AND materially large
+ * (intensity ≥ floor). Either condition alone is insufficient — a 3σ move off a
+ * near-zero base is noise; a large-but-typical churn is business as usual.
+ */
+export function isNameStasisBreak(
+  intensity: number | null,
+  severity: number | null,
+  priorLongHolders: number,
+  config: CoreHoldingsConfig = CORE_HOLDINGS_CONFIG,
+): boolean {
+  if (intensity == null || severity == null) return false;
+  if (priorLongHolders < config.stasis_min_base) return false;
+  return severity >= config.stasis_severity_min && intensity >= config.stasis_min_departure_frac;
+}
+
+/**
+ * Event significance 0-1 for a fired name-level break, mapped from severity so the
+ * threshold (stasis_severity_min) lands at 0.75 and severity_min+2σ saturates at 1.
+ * Keeps the core board's "significance ≥ 0.75 = shown" contract meaningful.
+ */
+export function nameStasisSignificance(
+  severity: number,
+  config: CoreHoldingsConfig = CORE_HOLDINGS_CONFIG,
+): number {
+  return round2(Math.max(0, Math.min(1, 0.75 + (severity - config.stasis_severity_min) * 0.125)));
 }

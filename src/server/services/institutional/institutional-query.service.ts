@@ -697,21 +697,61 @@ export interface CoreHoldingRow {
   verifyData: boolean;
   /** 12-quarter weight-stability strip (median % of book + holders), ascending. */
   weightStrip: Array<{ period: string; medianPct: number | null; holders: number }>;
-  /** Active stasis-break this quarter (bell + red final bar), else null. */
-  stasisBreak: { significance: number; rawQuarters: number; departing: Array<{ fund: string; tenure: number; tenureMult: number; action: string }> } | null;
+  /** Active NAME-level stasis-break this quarter (bell + red final bar), else null.
+   *  A break = this quarter's long-hold departure intensity being anomalous vs the
+   *  name's own trailing baseline — not one holder among many trimming. */
+  stasisBreak: StasisBreakInfo | null;
   /** Endorsement decomposition for the tooltip (fund names resolved). */
   contributions: Array<{ fund: string; contribution: number; tenureMult: number; weightBps: number; isElite: boolean }>;
+}
+export interface StasisBreakInfo {
+  significance: number;
+  /** z-score of this quarter's long-hold departure intensity vs the name's baseline. */
+  severity: number | null;
+  /** Fraction of the name's long-hold base that departed this quarter (0-1). */
+  intensity: number | null;
+  /** Known long-hold base entering the quarter, and how many departed. */
+  priorLongHolders: number;
+  departed: number;
+  /** Some long-hold voters' funds had not filed — the read is partial. */
+  partialData: boolean;
+  /** Deepest departing tenure — drill flavor, not the headline. */
+  rawQuarters: number;
+  departing: Array<{ fund: string; tenure: number; tenureMult: number; action: string }>;
 }
 export interface CoreHoldingsPayload {
   filingPeriod: string;
   rows: CoreHoldingRow[];
   /** Active stasis-break alerts this quarter (alert strip above the board). */
-  alerts: Array<{ ticker: string; companyName: string | null; significance: number; rawQuarters: number; departing: Array<{ fund: string; tenureMult: number; action: string }> }>;
+  alerts: Array<{ ticker: string; companyName: string | null } & StasisBreakInfo>;
   /** Base-rate line for the stasis-break pattern (Part 4), null until N≥30. */
   stasisBaseRate: string | null;
 }
 
 const CORE_STRIP_QUARTERS = 12;
+
+interface StasisPayload {
+  severity?: number | null;
+  intensity?: number | null;
+  priorLongHolders?: number;
+  departed?: number;
+  partialData?: boolean;
+  rawQuarters?: number;
+  departing?: Array<{ fundId: string; tenure: number; tenureMult: number; action: string }>;
+}
+
+function toStasisInfo(significance: number, p: StasisPayload | null, fundName: Map<string, string>): StasisBreakInfo {
+  return {
+    significance,
+    severity: p?.severity ?? null,
+    intensity: p?.intensity ?? null,
+    priorLongHolders: p?.priorLongHolders ?? 0,
+    departed: p?.departed ?? 0,
+    partialData: p?.partialData ?? false,
+    rawQuarters: p?.rawQuarters ?? 0,
+    departing: (p?.departing ?? []).map((d) => ({ fund: fundName.get(d.fundId) ?? d.fundId, tenure: d.tenure, tenureMult: d.tenureMult, action: d.action })),
+  };
+}
 
 export async function getCoreHoldings(period?: string, limit = 25): Promise<CoreHoldingsPayload | null> {
   const p = await resolvePeriod(period);
@@ -725,9 +765,10 @@ export async function getCoreHoldings(period?: string, limit = 25): Promise<Core
     take: limit,
   });
 
-  // Stasis-break events this quarter. Only deep-tenure breaks (significance ≥ 0.75)
-  // drive the board bell + alert strip — a routine trim by a marginally-long holder
-  // is not a "first change in N quarters" moment.
+  // Name-level stasis-break events this quarter. The precompute already fires only
+  // when the departure intensity is anomalous vs the name's own baseline, so every
+  // stored event is real; significance ≥ 0.75 (= at/above the severity threshold by
+  // construction) is a defensive floor.
   const stasis = (await prisma.institutionalEvent.findMany({ where: { kind: "stasis_break", filingPeriod: periodDate } })).filter((e) => e.significance >= 0.75);
   const stasisByTicker = new Map(stasis.map((e) => [e.ticker, e]));
 
@@ -764,7 +805,7 @@ export async function getCoreHoldings(period?: string, limit = 25): Promise<Core
       isElite: c.isElite,
     }));
     const ev = stasisByTicker.get(r.ticker);
-    const evP = ev?.payload as { rawQuarters?: number; departing?: Array<{ fundId: string; tenure: number; tenureMult: number; action: string }> } | null;
+    const evP = ev?.payload as StasisPayload | null;
     return {
       rank: i + 1,
       ticker: r.ticker,
@@ -779,13 +820,7 @@ export async function getCoreHoldings(period?: string, limit = 25): Promise<Core
       censoredPct: r.censoredPct,
       verifyData: r.verifyData,
       weightStrip: stripPeriods.map((w) => ({ period: w, medianPct: stripByTicker.get(r.ticker)?.get(w)?.medianPct ?? null, holders: stripByTicker.get(r.ticker)?.get(w)?.holders ?? 0 })),
-      stasisBreak: ev
-        ? {
-            significance: ev.significance,
-            rawQuarters: evP?.rawQuarters ?? 0,
-            departing: (evP?.departing ?? []).map((d) => ({ fund: fundName.get(d.fundId) ?? d.fundId, tenure: d.tenure, tenureMult: d.tenureMult, action: d.action })),
-          }
-        : null,
+      stasisBreak: ev ? toStasisInfo(ev.significance, evP, fundName) : null,
       contributions: contribs.sort((a, b) => b.contribution - a.contribution),
     };
   });
@@ -793,16 +828,11 @@ export async function getCoreHoldings(period?: string, limit = 25): Promise<Core
   const alerts = stasis
     .sort((a, b) => b.significance - a.significance)
     .slice(0, 15)
-    .map((e) => {
-      const evP = e.payload as { rawQuarters?: number; departing?: Array<{ fundId: string; tenureMult: number; action: string }> } | null;
-      return {
-        ticker: e.ticker,
-        companyName: top.find((t) => t.ticker === e.ticker)?.companyName ?? null,
-        significance: e.significance,
-        rawQuarters: evP?.rawQuarters ?? 0,
-        departing: (evP?.departing ?? []).map((d) => ({ fund: fundName.get(d.fundId) ?? d.fundId, tenureMult: d.tenureMult, action: d.action })),
-      };
-    });
+    .map((e) => ({
+      ticker: e.ticker,
+      companyName: top.find((t) => t.ticker === e.ticker)?.companyName ?? null,
+      ...toStasisInfo(e.significance, e.payload as StasisPayload | null, fundName),
+    }));
 
   // Stasis-break base-rate line (Part 4).
   const br = await prisma.institutionalBaseRate.findFirst({ where: { pattern: "stasis_break", horizon: "2Q" } });
