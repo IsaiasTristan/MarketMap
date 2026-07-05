@@ -48,9 +48,19 @@ export function FundPage({ cik, onClose, onSelectTicker }: { cik: string; onClos
         <span style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
           Fund page — reached by clicking any fund name anywhere in the tool
         </span>
-        <button type="button" onClick={onClose} style={{ background: "transparent", border: "1px solid var(--bg-border)", color: "var(--text-secondary)", fontSize: 11, padding: "1px 8px", cursor: "pointer" }}>
-          ✕ close
-        </button>
+        <span style={{ display: "flex", gap: 6 }}>
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new Event("flows:open-fund-search"))}
+            title="Switch fund (Ctrl/Cmd+K)"
+            style={{ background: "transparent", border: "1px solid var(--bg-border)", color: "var(--text-secondary)", fontSize: 11, padding: "1px 8px", cursor: "pointer" }}
+          >
+            switch fund ▾
+          </button>
+          <button type="button" onClick={onClose} style={{ background: "transparent", border: "1px solid var(--bg-border)", color: "var(--text-secondary)", fontSize: 11, padding: "1px 8px", cursor: "pointer" }}>
+            ✕ close
+          </button>
+        </span>
       </div>
       <div style={{ padding: 10 }}>
         <PanelState state={state} error={error}>

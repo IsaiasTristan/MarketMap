@@ -21,6 +21,7 @@ import { QuadrantPanel } from "./quadrant/QuadrantPanel";
 import { TrajectoryPipelinePanel } from "./TrajectoryPipelinePanel";
 import { RotationPanel } from "./RotationPanel";
 import { FundsPanel } from "./funds/FundsPanel";
+import { FundSearchPalette } from "./funds/FundSearchPalette";
 import { WatchlistPanel } from "./WatchlistPanel";
 import { LedgerPanel } from "./LedgerPanel";
 import { LeaderboardPanel } from "./leaderboard/LeaderboardPanel";
@@ -54,6 +55,25 @@ export function FlowsClient() {
   const [ticker, setTicker] = useState<string | null>(null);
   const [ingesting, setIngesting] = useState(false);
   const [ingestMsg, setIngestMsg] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  // Global Cmd/Ctrl+K — and a custom event from the dossier's "switch fund" control —
+  // open the fund search palette from any Flows tab.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setSearchOpen((o) => !o);
+      }
+    };
+    const onOpen = () => setSearchOpen(true);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("flows:open-fund-search", onOpen);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("flows:open-fund-search", onOpen);
+    };
+  }, []);
 
   const { data: periodsData } = useFlows<{ periods: string[] }>(["flows-periods"], "/api/analysis/flows/periods");
   const periods = periodsData?.periods ?? [];
@@ -101,6 +121,7 @@ export function FlowsClient() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <FundSearchPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <div>
@@ -110,6 +131,14 @@ export function FlowsClient() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => setSearchOpen(true)}
+            title="Search funds (Ctrl/Cmd+K)"
+            style={{ background: "transparent", border: "1px solid var(--bg-border)", color: "var(--text-muted)", fontSize: 11, padding: "3px 10px", cursor: "pointer" }}
+          >
+            🔎 Search funds <span style={{ opacity: 0.6 }}>⌘K</span>
+          </button>
           {trackedFunds != null && (
             <div
               title="Active watchlist funds with a 13F filing in the selected quarter (broadly-diversified quant books excluded — matches the breadth denominator)"

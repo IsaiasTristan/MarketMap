@@ -966,10 +966,26 @@ model InstitutionalFund {
   returnSummary FundReturnSummary?
   styleVectors  FundStyleVector[]
   peerMembers   PeerSetMember[]
+  aliases       FundAlias[]
 
   @@index([isActive])
   @@index([tier])
   @@index([categorySort])
+}
+
+/// Fund search aliases (Fund Overview Part 6): common short names, manager surnames,
+/// and former/successor filer names, so "GAMCO", "Buffett", "Harris" resolve to the
+/// canonical fund. Matched case-insensitively client-side; seeded + user-extendable.
+model FundAlias {
+  id     String @id @default(cuid())
+  fundId String
+  alias  String
+  kind   String @default("short") // short | manager | former
+
+  fund InstitutionalFund @relation(fields: [fundId], references: [id], onDelete: Cascade)
+
+  @@unique([fundId, alias])
+  @@index([fundId])
 }
 
 /// Named, editable, GLOBAL peer set (single-tenant — no user FK). "My Funds" is the

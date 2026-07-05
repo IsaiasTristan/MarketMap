@@ -21,6 +21,7 @@ import { runIngredientPrecompute } from "./institutional-ingredients.service";
 import { runCoreHoldingsPrecompute } from "./institutional-core-holdings.service";
 import { runReturnsPrecompute } from "./institutional-returns.service";
 import { runStyleVectorPrecompute, seedDefaultPeerSet } from "./institutional-peers.service";
+import { seedFundAliases } from "./institutional-search.service";
 import { runBaseRates } from "./institutional-base-rates.service";
 import { normalizeShareClasses } from "./share-class-normalize.service";
 import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-config";
@@ -663,6 +664,7 @@ export async function runInstitutionalAggregate(opts: {
   try {
     await runStyleVectorPrecompute(log);
     await seedDefaultPeerSet(log);
+    await seedFundAliases(log);
   } catch (e) {
     log(`[institutional-agg] style vectors skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
