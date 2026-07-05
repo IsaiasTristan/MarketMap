@@ -99,6 +99,12 @@ export function FormingRunway({ forming, watch, onSelectTicker }: { forming: For
   const zoneX = padL + 0.55 * (W - padL - padR);
   const zoneY = padT;
   const zoneH = y(q75) - padT;
+  // Label only the standouts to keep the dense low-slope cluster legible: the 12
+  // most broadly-held names ∪ everything in the promotion zone (age 3 × top slope).
+  const labelSet = new Set(
+    [...forming].sort((a, b) => b.holders - a.holders || b.slopeBpsPerQtr - a.slopeBpsPerQtr).slice(0, 12).map((f) => f.ticker),
+  );
+  for (const f of forming) if (Math.abs(f.streak) >= 3 && f.slopeBpsPerQtr >= q75) labelSet.add(f.ticker);
 
   return (
     <div>
@@ -118,12 +124,13 @@ export function FormingRunway({ forming, watch, onSelectTicker }: { forming: For
             <title>{`${w.ticker} — below participation floor (n=${w.holders})`}</title>
           </circle>
         ))}
-        {/* forming dots */}
+        {/* forming dots — label only the standouts (elite or broadly-held) to avoid
+            clutter in the dense low-slope cluster; the rest reveal on hover. */}
         {forming.map((f, i) => {
           const cx = ageX(f.streak, i);
           const cy = y(f.slopeBpsPerQtr);
           const rad = r(f.holders);
-          const label = f.holders >= 4 || f.eliteCount > 0;
+          const label = labelSet.has(f.ticker);
           return (
             <g key={f.ticker} style={{ cursor: "pointer" }} onClick={() => onSelectTicker(f.ticker)}>
               <circle cx={cx} cy={cy} r={rad} fill="#2f6fce" opacity={0.7} stroke={f.eliteCount > 0 ? "#ffb224" : "none"} strokeWidth={f.eliteCount > 0 ? 2 : 0}>
