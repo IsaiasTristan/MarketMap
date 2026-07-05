@@ -11,8 +11,9 @@
 import { useState } from "react";
 import type { DurableCard, SpikesPayload, TrajectoryPipelinePayload } from "@/server/services/institutional/institutional-query.service";
 import { useFlows } from "./useFlows";
-import { CapTag, FlagBadges, PanelState, fmtDelta } from "./flowsUi";
+import { CapTag, FlagBadges, PanelState } from "./flowsUi";
 import { CoreHoldingsPanel } from "./CoreHoldingsPanel";
+import { PipelineFunnel, FormingRunway, TransitionsView, type FunnelSeg } from "./TrajectoryVisuals";
 
 const STAGE_COLOR: Record<string, string> = {
   DURABLE: "var(--color-positive)",
@@ -25,100 +26,103 @@ const STAGE_COLOR: Record<string, string> = {
 
 export function TrajectoryPipelinePanel({ period, onSelectTicker }: { period: string | null; onSelectTicker: (t: string) => void }) {
   const [includeMega, setIncludeMega] = useState(false);
+  const [stageFilter, setStageFilter] = useState<string | null>(null);
   const cap = includeMega ? "all" : "ex-mega";
   const qs = new URLSearchParams();
   if (period) qs.set("period", period);
   qs.set("cap", cap);
   const { data, state, error } = useFlows<TrajectoryPipelinePayload>(["flows-pipeline", period, cap], `/api/analysis/flows/pipeline?${qs.toString()}`);
+  const show = (s: string) => stageFilter == null || stageFilter === s;
 
   return (
     <PanelState state={state} error={error}>
       {data && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {/* Stage census header — scarcity up front. */}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-            {data.census.map((c) => (
-              <div key={c.stage} style={{ display: "flex", alignItems: "baseline", gap: 6, padding: "4px 10px", background: "var(--bg-surface)", border: "1px solid var(--bg-border)" }}>
-                <span style={{ fontSize: 16, fontWeight: 700, color: STAGE_COLOR[c.stage], fontVariantNumeric: "tabular-nums" }}>{c.count}</span>
-                <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-secondary)" }}>{c.stage.toLowerCase()}</span>
-                {c.deltaVsPrior !== 0 && (
-                  <span style={{ fontSize: 10, color: c.deltaVsPrior > 0 ? "var(--color-positive)" : "var(--color-negative)" }}>{fmtDelta(c.deltaVsPrior)} vs last Q</span>
-                )}
-              </div>
-            ))}
-            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
-              <label style={{ fontSize: 10, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }} title="Mega-caps are excluded from durable cards by default; toggle to include them (dimmed, informational only).">
-                <input type="checkbox" checked={includeMega} onChange={(e) => setIncludeMega(e.target.checked)} style={{ cursor: "pointer" }} />
-                include mega
-              </label>
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{data.transitionsCount} stage change{data.transitionsCount === 1 ? "" : "s"} this quarter</span>
-            </div>
-          </div>
-
-          {/* DURABLE — full evidence cards. */}
-          <Section title="Durable builds" color={STAGE_COLOR.DURABLE!} baseRate={data.baseRates.durable} count={data.durable.length}>
-            {data.durable.length === 0 ? (
-              <Empty>No durable builds this quarter — scarcity is the signal.</Empty>
-            ) : (
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
-                {data.durable.map((c) => <DurableCardView key={c.ticker} card={c} onClick={() => onSelectTicker(c.ticker)} />)}
-              </div>
-            )}
-          </Section>
-
-          {/* FORMING — compact chips. */}
-          <Section title="Forming" color={STAGE_COLOR.FORMING!} baseRate={data.baseRates.forming} count={data.forming.length} subtitle="confirm next filing">
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {data.forming.map((f) => (
-                <div key={f.ticker} onClick={() => onSelectTicker(f.ticker)} className="flows-row" style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 8px", background: "var(--bg-surface)", border: "1px solid var(--bg-border)", cursor: "pointer" }}>
-                  <span style={{ fontWeight: 700, color: "var(--color-info)", fontSize: 12 }}>{f.ticker}</span>
-                  <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{Math.abs(f.streak)}q · {f.qualifier}</span>
-                  {f.eliteCount > 0 && <span style={{ fontSize: 10, color: "var(--color-accent)" }}>★{f.eliteCount}</span>}
-                  <FlagBadges flags={f.flags} />
+          {/* PIPELINE FUNNEL (6a) — proportional segments, QoQ deltas, click-to-filter. */}
+          {(() => {
+            const cm = new Map(data.census.map((c) => [c.stage, c]));
+            const segFor = (stage: string, label = stage, count?: number, delta?: number, fallingIsGood?: boolean): FunnelSeg => ({
+              stage: label,
+              count: count ?? cm.get(stage)?.count ?? 0,
+              delta: delta ?? cm.get(stage)?.deltaVsPrior ?? 0,
+              fallingIsGood,
+            });
+            const segs: FunnelSeg[] = [
+              segFor("SPIKE"),
+              segFor("FORMING"),
+              segFor("DURABLE"),
+              segFor("CORE", "CORE", data.coreCount, data.coreDeltaVsPrior),
+              segFor("BROKEN", "STREAK ENDED", undefined, undefined, true),
+            ];
+            return (
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 2 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.05em", color: "var(--text-primary)" }}>PIPELINE</span>
+                  <label style={{ fontSize: 10, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }} title="Mega-caps are excluded from durable cards by default; toggle to include them (dimmed, informational only).">
+                    <input type="checkbox" checked={includeMega} onChange={(e) => setIncludeMega(e.target.checked)} style={{ cursor: "pointer" }} />
+                    include mega
+                  </label>
                 </div>
-              ))}
-              {data.forming.length === 0 && <Empty>None.</Empty>}
-            </div>
-          </Section>
-
-          {/* WATCH — below participation floor (Part 2a): durable-shaped, too few funds. */}
-          {data.watch.length > 0 && (
-            <Section title="Watch" color={STAGE_COLOR.WATCH!} count={data.watch.length} subtitle="durable-shaped but below the 3-fund floor — one fund's adds, not a build">
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {data.watch.map((w) => (
-                  <div key={w.ticker} onClick={() => onSelectTicker(w.ticker)} className="flows-row" style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 8px", background: "var(--bg-surface)", border: "1px dashed var(--bg-border)", cursor: "pointer", opacity: 0.8 }}>
-                    <span style={{ fontWeight: 700, color: "var(--text-secondary)", fontSize: 12 }}>{w.ticker}</span>
-                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{Math.abs(w.streak)}q · n={w.holders}</span>
-                    <FlagBadges flags={w.flags} />
-                  </div>
-                ))}
+                <PipelineFunnel segs={segs} active={stageFilter} onToggle={(s) => setStageFilter((cur) => (cur === s ? null : s))} />
               </div>
+            );
+          })()}
+
+          {/* DURABLE — full evidence cards (2a floor, 2c ex-mega). */}
+          {show("DURABLE") && (
+            <Section title="Durable builds" color={STAGE_COLOR.DURABLE!} baseRate={data.baseRates.durable} count={data.durable.length}>
+              {data.durable.length === 0 ? (
+                <Empty>No durable builds this quarter — scarcity is the signal.</Empty>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
+                  {data.durable.map((c) => <DurableCardView key={c.ticker} card={c} onClick={() => onSelectTicker(c.ticker)} />)}
+                </div>
+              )}
+              {/* WATCH strip — below participation floor (Part 2a). */}
+              {data.watch.length > 0 && (
+                <div style={{ marginTop: 8, padding: "6px 8px", background: "var(--bg-surface)", borderTop: "1px solid var(--bg-border)", fontSize: 11, color: "var(--text-muted)" }}>
+                  ⚠ {data.watch.length} single-fund staircase{data.watch.length === 1 ? "" : "s"} below the participation floor —{" "}
+                  {data.watch.slice(0, 8).map((w, i) => (
+                    <span key={w.ticker}>{i > 0 ? " " : ""}<span onClick={() => onSelectTicker(w.ticker)} className="flows-row" style={{ color: "var(--color-info)", cursor: "pointer" }}>{w.ticker}</span> (n={w.holders})</span>
+                  ))}{" "}— rendered as WATCH, not staged
+                </div>
+              )}
+            </Section>
+          )}
+
+          {/* FORMING — confirmation runway scatter (6b). */}
+          {show("FORMING") && (
+            <Section title="Forming — confirmation runway" color={STAGE_COLOR.FORMING!} baseRate={data.baseRates.forming} count={data.forming.length} subtitle="x = streak age · y = accumulation slope (bps/qtr, cohort) · size = funds · amber ring = elite">
+              {data.forming.length === 0 ? <Empty>None.</Empty> : <FormingRunway forming={data.forming} watch={data.watch} onSelectTicker={onSelectTicker} />}
             </Section>
           )}
 
           {/* SPIKES — magnitude-sorted lollipop by cohort bps (Part 5). */}
-          <Section title="Spikes" color={STAGE_COLOR.SPIKE!} count={data.spikes.count} subtitle="one-quarter moves — discount unless they persist; auto-promote to Forming next quarter if they hold">
-            <SpikeLollipop spikes={data.spikes} onSelectTicker={onSelectTicker} />
-          </Section>
-
-          {/* TRANSITIONS panel. */}
-          {data.transitions.length > 0 && (
-            <Section title="Transitions this quarter" color="var(--text-secondary)" count={data.transitions.length}>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {data.transitions.map((t, i) => (
-                  <div key={`${t.ticker}-${i}`} onClick={() => onSelectTicker(t.ticker)} className="flows-row" style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 8px", background: "var(--bg-surface)", border: `1px solid ${t.significance >= 1 ? STAGE_COLOR[t.to ?? ""] ?? "var(--bg-border)" : "var(--bg-border)"}`, cursor: "pointer" }}>
-                    <span style={{ fontWeight: 700, fontSize: 12, color: "var(--text-primary)" }}>{t.ticker}</span>
-                    <span style={{ fontSize: 10, color: STAGE_COLOR[t.to ?? ""] ?? "var(--text-secondary)" }}>{t.from ?? "—"} → {t.to ?? "—"}</span>
-                    {t.significance >= 1 && <span title="high-significance transition" style={{ fontSize: 10 }}>⚑</span>}
-                  </div>
-                ))}
-              </div>
+          {show("SPIKE") && (
+            <Section title="Spikes" color={STAGE_COLOR.SPIKE!} count={data.spikes.count} subtitle="one-quarter moves — discount unless they persist; auto-promote to Forming next quarter if they hold">
+              <SpikeLollipop spikes={data.spikes} onSelectTicker={onSelectTicker} />
             </Section>
           )}
 
-          {/* Core Holdings board (Part 6) — section below the pipeline. */}
-          <div style={{ height: 1, background: "var(--bg-border)", margin: "4px 0" }} />
-          <CoreHoldingsPanel period={period} onSelectTicker={onSelectTicker} />
+          {/* TRANSITIONS — adaptive strand (≤30 events) / Sankey (6c). */}
+          {show("STREAK ENDED") && data.transitions.length > 0 && (
+            <Section title="Transitions this quarter" color="var(--text-secondary)" count={data.transitionsCount} subtitle="only actual stage changes — no X→X, no —→X">
+              <TransitionsView
+                transitions={data.transitions}
+                formingTotal={data.census.find((c) => c.stage === "FORMING")?.count ?? 0}
+                durableTotal={data.census.find((c) => c.stage === "DURABLE")?.count ?? 0}
+                onSelectTicker={onSelectTicker}
+              />
+            </Section>
+          )}
+
+          {/* Core Holdings board — section below the pipeline (funnel CORE segment). */}
+          {show("CORE") && (
+            <>
+              <div style={{ height: 1, background: "var(--bg-border)", margin: "4px 0" }} />
+              <CoreHoldingsPanel period={period} onSelectTicker={onSelectTicker} />
+            </>
+          )}
         </div>
       )}
     </PanelState>

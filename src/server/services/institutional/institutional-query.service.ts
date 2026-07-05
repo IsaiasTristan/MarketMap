@@ -389,6 +389,7 @@ export interface WatchItem {
   companyName: string | null;
   streak: number;
   holders: number;
+  slopeBpsPerQtr: number;
   flags?: FlowFlagId[];
 }
 export interface FormingChip {
@@ -397,6 +398,9 @@ export interface FormingChip {
   streak: number;
   eliteCount: number;
   qualifier: string;
+  /** Runway scatter (6b): holders (dot size) + accumulation slope bps/qtr (y, cohort). */
+  holders: number;
+  slopeBpsPerQtr: number;
   flags?: FlowFlagId[];
 }
 export interface SpikeLine {
@@ -427,10 +431,15 @@ export interface TransitionItem {
   to: string | null;
   transition: string;
   significance: number;
+  /** Elite funds hold/added this quarter (★ on the strand). */
+  elite: boolean;
 }
 export interface TrajectoryPipelinePayload {
   filingPeriod: string;
   census: Array<{ stage: string; count: number; deltaVsPrior: number }>;
+  /** Core-holdings endorsement board size this quarter + QoQ (funnel CORE segment). */
+  coreCount: number;
+  coreDeltaVsPrior: number;
   transitionsCount: number;
   durable: DurableCard[];
   forming: FormingChip[];
@@ -569,18 +578,28 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24, 
     .sort((a, b) => b.rankScore - a.rankScore)
     .slice(0, durableLimit);
 
-  // ── FORMING chips. ──
+  // Accumulation slope (bps/qtr, cohort basis) over the trailing streak window.
+  const slopeOf = (accSeries: number[], streak: number): number => {
+    const len = Math.abs(streak);
+    if (len < 1 || accSeries.length === 0) return 0;
+    const end = accSeries[accSeries.length - 1] ?? 0;
+    const start = accSeries[Math.max(0, accSeries.length - 1 - len)] ?? 0;
+    return Math.round(((end - start) / len) * 10) / 10;
+  };
+
+  // ── FORMING chips + runway (6b). ──
   const forming: FormingChip[] = staged
     .filter((s) => s.lifecycleStage === "FORMING")
     .map((r) => {
-      const { streak } = rankOf(r.ticker, r.fundsHolding);
-      const eliteCount = 0;
+      const { streak, accSeries } = rankOf(r.ticker, r.fundsHolding);
       return {
         ticker: r.ticker,
         companyName: r.companyName,
         streak,
-        eliteCount,
+        eliteCount: eliteByTicker.get(r.ticker) ?? 0,
         qualifier: r.deltaHolders > 0 ? `+${r.deltaHolders} holders` : `${r.fundsHolding} funds`,
+        holders: r.fundsHolding,
+        slopeBpsPerQtr: slopeOf(accSeries, streak),
         flags: flagsFor(r.ticker),
       };
     })
@@ -589,7 +608,10 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24, 
   // ── WATCH (Part 2a): below-participation-floor durable-shaped builds, n=1 style. ──
   const watch: WatchItem[] = staged
     .filter((s) => s.lifecycleStage === "WATCH")
-    .map((r) => ({ ticker: r.ticker, companyName: r.companyName, streak: rankOf(r.ticker, r.fundsHolding).streak, holders: r.fundsHolding, flags: flagsFor(r.ticker) }))
+    .map((r) => {
+      const { streak, accSeries } = rankOf(r.ticker, r.fundsHolding);
+      return { ticker: r.ticker, companyName: r.companyName, streak, holders: r.fundsHolding, slopeBpsPerQtr: slopeOf(accSeries, streak), flags: flagsFor(r.ticker) };
+    })
     .sort((a, b) => Math.abs(b.streak) - Math.abs(a.streak));
 
   // ── SPIKES (Part 5): magnitude-sorted lollipop by COHORT bps (the bar), top N,
@@ -623,8 +645,14 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24, 
   const transEvents = await prisma.institutionalEvent.findMany({ where: { kind: "stage_transition", filingPeriod: periodDate }, orderBy: { significance: "desc" }, take: 60 });
   const transitions: TransitionItem[] = transEvents.map((e) => {
     const pl = e.payload as { from?: string | null; to?: string | null; transition?: string } | null;
-    return { ticker: e.ticker, from: pl?.from ?? null, to: pl?.to ?? null, transition: pl?.transition ?? "", significance: e.significance };
+    return { ticker: e.ticker, from: pl?.from ?? null, to: pl?.to ?? null, transition: pl?.transition ?? "", significance: e.significance, elite: (eliteByTicker.get(e.ticker) ?? 0) > 0 };
   });
+
+  // ── Core-holdings endorsement board size this quarter + prior (funnel CORE segment). ──
+  const [coreCount, corePriorCount] = await Promise.all([
+    prisma.institutionalCoreHolding.count({ where: { filingPeriod: periodDate, valid: true } }),
+    priorP ? prisma.institutionalCoreHolding.count({ where: { filingPeriod: new Date(`${priorP}T00:00:00.000Z`), valid: true } }) : Promise.resolve(0),
+  ]);
 
   // ── Base-rate header lines. ──
   const [durBr, formBr] = await Promise.all([
@@ -635,6 +663,8 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24, 
   return {
     filingPeriod: p,
     census,
+    coreCount,
+    coreDeltaVsPrior: coreCount - corePriorCount,
     transitionsCount: transEvents.length,
     durable,
     forming,
