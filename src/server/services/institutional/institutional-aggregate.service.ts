@@ -645,19 +645,20 @@ export async function runInstitutionalAggregate(opts: {
   // ingredients_version that keys the leaderboard route cache).
   await runIngredientPrecompute(log);
 
-  // Core Holdings (Part 3): tenure, endorsement, stasis-break events. Runs after
-  // ingredients so it reads the diffed/split-adjusted holding history. Also persists
-  // per-(fund,quarter) medianBookTenure onto FundBookSnapshot.
-  await runCoreHoldingsPrecompute(log);
-
   // Fund returns / clone engine (Fund Overview Part 1): per-(fund,quarter) estimated
-  // long-book + clone returns, chained clone alpha, fund_quality_weight. Reads the
-  // adjusted price series; best-effort — missing prices must not fail the aggregate.
+  // long-book + clone returns, chained clone alpha, fund_quality_weight. Reads only
+  // holdings + adjusted prices + turnover, so it runs BEFORE core-holdings — whose
+  // endorsement score now consumes the computed fund_quality_weight. Best-effort.
   try {
     await runReturnsPrecompute(log);
   } catch (e) {
     log(`[institutional-agg] returns skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
+
+  // Core Holdings (Part 3): tenure, endorsement, stasis-break events. Runs after
+  // ingredients (reads the split-adjusted history) and after returns (reads the
+  // computed fund_quality_weight). Also persists per-(fund,quarter) medianBookTenure.
+  await runCoreHoldingsPrecompute(log);
 
   // Peer style vectors + twins (Fund Overview Part 2). Runs after core-holdings so it
   // reads the persisted medianBookTenure. Also seeds the default "My Funds" peer set.

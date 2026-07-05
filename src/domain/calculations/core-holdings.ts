@@ -131,6 +131,10 @@ export interface Voter {
   weightBps: number;
   isElite: boolean;
   category: string;
+  /** fund_quality_weight = f(clone_alpha) (Fund Overview Part 1). When provided, it
+   *  REPLACES the interim elite-binary weight; a neutral 1.0 (new/insufficient-history
+   *  funds) is a no-op. Absent → fall back to the elite-binary weight. */
+  qualityWeight?: number;
 }
 
 /** A holder qualifies as a long-hold voter. */
@@ -156,7 +160,9 @@ export interface EndorsementResult {
 
 /**
  * Endorsement score for one name from all its current holders (only long-hold
- * voters contribute). fund_quality_weight is elite-binary (Part 3c decision).
+ * voters contribute). fund_quality_weight prefers the computed clone-alpha weight
+ * (Fund Overview Part 1) when a voter carries one, else falls back to the interim
+ * elite-binary weight (Part 3c decision).
  */
 export function scoreEndorsement(
   holders: Voter[],
@@ -164,7 +170,7 @@ export function scoreEndorsement(
 ): EndorsementResult {
   const voters = holders.filter((h) => isLongHoldVote(h, config));
   const contributions = voters.map((v) => {
-    const qualityWeight = v.isElite ? config.elite_quality_weight : config.base_quality_weight;
+    const qualityWeight = v.qualityWeight ?? (v.isElite ? config.elite_quality_weight : config.base_quality_weight);
     const contribution = round2(Math.min(v.tenureMult, config.tenure_mult_cap) * v.weightBps * qualityWeight);
     return { fundId: v.fundId, contribution, tenureMult: v.tenureMult, weightBps: v.weightBps, isElite: v.isElite };
   });

@@ -58,6 +58,12 @@ export async function runCoreHoldingsPrecompute(log: (m: string) => void): Promi
     JOIN "InstitutionalFund" f ON f.id = h."fundId" AND f."isActive" = true AND f."tier" = 'signal'
     WHERE h.shares > 0`);
 
+  // Computed clone-alpha fund_quality_weight (Fund Overview Part 1), replacing the
+  // interim elite-binary weight in endorsement scoring. Populated by runReturnsPrecompute,
+  // which now runs BEFORE this pass; empty map → scoreEndorsement falls back to binary.
+  const qwRows = await prisma.fundReturnSummary.findMany({ select: { fundId: true, fundQualityWeight: true } });
+  const qualityWeightByFund = new Map(qwRows.map((r) => [r.fundId, r.fundQualityWeight]));
+
   // fund → ticker → period → row
   const byFundTicker = new Map<string, Map<string, Map<string, HoldRow>>>();
   const fundMeta = new Map<string, { elite: boolean; category: string }>();
@@ -140,6 +146,7 @@ export async function runCoreHoldingsPrecompute(log: (m: string) => void): Promi
           weightBps: (row.pct ?? 0) * 100,
           isElite: meta.elite,
           category: meta.category,
+          qualityWeight: qualityWeightByFund.get(fundId),
         };
         const key = `${ticker}|${p}`;
         (votersByTP.get(key) ?? votersByTP.set(key, []).get(key)!).push(v);
