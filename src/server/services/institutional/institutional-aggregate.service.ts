@@ -19,6 +19,8 @@ import { Prisma, RevisionGroupType } from "@prisma/client";
 import { buildActiveFlowMetrics, netDiffusionPct } from "./institutional-active-flow.service";
 import { runIngredientPrecompute } from "./institutional-ingredients.service";
 import { runCoreHoldingsPrecompute } from "./institutional-core-holdings.service";
+import { runReturnsPrecompute } from "./institutional-returns.service";
+import { runStyleVectorPrecompute, seedDefaultPeerSet } from "./institutional-peers.service";
 import { runBaseRates } from "./institutional-base-rates.service";
 import { normalizeShareClasses } from "./share-class-normalize.service";
 import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-config";
@@ -643,8 +645,27 @@ export async function runInstitutionalAggregate(opts: {
   await runIngredientPrecompute(log);
 
   // Core Holdings (Part 3): tenure, endorsement, stasis-break events. Runs after
-  // ingredients so it reads the diffed/split-adjusted holding history.
+  // ingredients so it reads the diffed/split-adjusted holding history. Also persists
+  // per-(fund,quarter) medianBookTenure onto FundBookSnapshot.
   await runCoreHoldingsPrecompute(log);
+
+  // Fund returns / clone engine (Fund Overview Part 1): per-(fund,quarter) estimated
+  // long-book + clone returns, chained clone alpha, fund_quality_weight. Reads the
+  // adjusted price series; best-effort — missing prices must not fail the aggregate.
+  try {
+    await runReturnsPrecompute(log);
+  } catch (e) {
+    log(`[institutional-agg] returns skipped: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Peer style vectors + twins (Fund Overview Part 2). Runs after core-holdings so it
+  // reads the persisted medianBookTenure. Also seeds the default "My Funds" peer set.
+  try {
+    await runStyleVectorPrecompute(log);
+    await seedDefaultPeerSet(log);
+  } catch (e) {
+    log(`[institutional-agg] style vectors skipped: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   // Forward-return base rates + calibration sweep (Part 4). Reads split-adjusted
   // closes; no lookahead (entry = filing date). Best-effort — a missing price

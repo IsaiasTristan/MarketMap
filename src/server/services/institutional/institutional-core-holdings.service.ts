@@ -247,6 +247,30 @@ export async function runCoreHoldingsPrecompute(log: (m: string) => void): Promi
       WHERE h."fundId" = v.fund_id AND h.ticker = v.ticker AND h."filingPeriod" = v.period::date`;
   }
 
+  // Persist per-(fund,period) median book tenure + suspicious-reset onto FundBookSnapshot
+  // (already computed above as fundMedianAt/suspiciousReset — consumed by the Fund
+  // Overview style vector + dossier). Idempotent per-key update.
+  const tenureBook: Array<{ fundId: string; period: string; median: number; suspicious: boolean }> = [];
+  for (const [key, median] of fundMedianAt) {
+    const [fundId, period] = key.split("|");
+    tenureBook.push({ fundId: fundId!, period: period!, median, suspicious: suspiciousReset.has(key) });
+  }
+  for (let i = 0; i < tenureBook.length; i += CHUNK) {
+    const s = tenureBook.slice(i, i + CHUNK);
+    await prisma.$executeRaw`
+      UPDATE "FundBookSnapshot" AS b
+      SET "medianBookTenure" = v.median, "suspiciousReset" = v.suspicious
+      FROM (
+        SELECT * FROM unnest(
+          ${s.map((u) => u.fundId)}::text[],
+          ${s.map((u) => u.period)}::text[],
+          ${s.map((u) => u.median)}::float8[],
+          ${s.map((u) => u.suspicious)}::boolean[]
+        ) AS t(fund_id, period, median, suspicious)
+      ) AS v
+      WHERE b."fundId" = v.fund_id AND b."filingPeriod" = v.period::date`;
+  }
+
   await prisma.$transaction([
     prisma.institutionalCoreHolding.deleteMany({}),
     ...chunk(coreRows, 5000).map((c) => prisma.institutionalCoreHolding.createMany({ data: c })),

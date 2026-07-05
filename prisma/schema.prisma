@@ -960,12 +960,65 @@ model InstitutionalFund {
   addedAt         DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  holdings FundHoldingSnapshot[]
-  books    FundBookSnapshot[]
+  holdings      FundHoldingSnapshot[]
+  books         FundBookSnapshot[]
+  returns       FundReturnSnapshot[]
+  returnSummary FundReturnSummary?
+  styleVectors  FundStyleVector[]
+  peerMembers   PeerSetMember[]
 
   @@index([isActive])
   @@index([tier])
   @@index([categorySort])
+}
+
+/// Named, editable, GLOBAL peer set (single-tenant — no user FK). "My Funds" is the
+/// seeded default (all signal-tier funds); users add custom sets. The CATEGORY and
+/// STYLE_TWINS peer modes are COMPUTED at read time and never stored as rows.
+model PeerSet {
+  id        String          @id @default(cuid())
+  name      String          @unique
+  kind      String          @default("custom") // custom | default
+  isDefault Boolean         @default(false) // the seeded "My Funds"
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  members   PeerSetMember[]
+}
+
+model PeerSetMember {
+  id        String   @id @default(cuid())
+  peerSetId String
+  fundId    String
+  addedAt   DateTime @default(now())
+
+  peerSet PeerSet           @relation(fields: [peerSetId], references: [id], onDelete: Cascade)
+  fund    InstitutionalFund @relation(fields: [fundId], references: [id], onDelete: Cascade)
+
+  @@unique([peerSetId, fundId])
+  @@index([fundId])
+}
+
+/// Per-(fund, quarter) style vector for peer twins (Fund Overview Part 2b). Recomputed
+/// quarterly by the job. The z-scored, group-weighted vector actually used for cosine
+/// lives in zVectorJson; the top twins_k neighbors (excl. self) are cached in twinsJson
+/// (as [{ fundId, similarity }]) to avoid a k×funds×quarters twin-row explosion.
+model FundStyleVector {
+  id                 String   @id @default(cuid())
+  fundId             String
+  filingPeriod       DateTime @db.Date
+  sectorMixJson      Json // partition weights by canonical sector
+  sizeBandMixJson    Json // weights by marketCapTier band
+  top10Concentration Float
+  turnover           Float?
+  medianTenure       Float?
+  zVectorJson        Json // z-scored, group-weighted vector used for cosine
+  twinsJson          Json // [{ fundId, similarity }] top twins_k, excl. self
+  computedAt         DateTime @default(now())
+
+  fund InstitutionalFund @relation(fields: [fundId], references: [id], onDelete: Cascade)
+
+  @@unique([fundId, filingPeriod])
+  @@index([filingPeriod])
 }
 
 /// Fact table: one aggregated long-equity position per (fund, ticker, period).
@@ -1025,6 +1078,11 @@ model FundBookSnapshot {
   securitiesAdded   Int?
   securitiesRemoved Int?
   turnover          Float?
+  // Median tenure (quarters) over the fund's book this quarter (Part 3a style vector +
+  // dossier). Computed by the core-holdings pass (fundMedianAt), persisted here.
+  medianBookTenure  Float?
+  // Possible CIK migration / full-book reset this quarter → dossier renders "verify".
+  suspiciousReset   Boolean?
   rawJson           Json?
   createdAt         DateTime @default(now())
 
@@ -1032,6 +1090,52 @@ model FundBookSnapshot {
 
   @@unique([fundId, filingPeriod])
   @@index([filingPeriod])
+}
+
+/// Per-fund per-quarter ESTIMATED long-book return (Fund Overview Part 1), computed
+/// (not ingested) — kept off FundBookSnapshot so its write-once provider provenance
+/// stays clean. SNAPSHOT = reported book frozen at period end, value-weighted adjusted
+/// return to next period end. CLONE = same book entered at the FILING date, held to the
+/// next filing date (what a copier could achieve). Weights from reported values (levels),
+/// returns from adjusted closes (returns) — never mixed. Full wipe+rewrite per run.
+model FundReturnSnapshot {
+  id                  String   @id @default(cuid())
+  fundId              String
+  cik                 String
+  filingPeriod        DateTime @db.Date
+  snapshotReturn      Float? // value-weighted book return over period-end→next period-end
+  cloneReturn         Float? // same book, filing-date→next filing-date entry
+  benchReturnSnapshot Float? // benchmark TR over the snapshot window
+  benchReturnClone    Float? // benchmark TR over the clone window
+  coveragePct         Float // % of reported book value with usable return data
+  excludedWeightBps   Float // reported weight dropped (uncovered/delisted), disclosed
+  positionsCovered    Int
+  positionsTotal      Int
+  lowCoverage         Boolean  @default(false) // coveragePct < coverage_min(85)
+  trailing4qTurnover  Float?
+  confidence          String? // HIGH | MED | LOW (null when turnover unknown)
+  contributionsJson   Json // [{ ticker, weight, ret, contribBps }] over covered names
+  isTerminal          Boolean  @default(false) // fund's final filing → chained series ends here
+  computedAt          DateTime @default(now())
+
+  fund InstitutionalFund @relation(fields: [fundId], references: [id], onDelete: Cascade)
+
+  @@unique([fundId, filingPeriod])
+  @@index([filingPeriod])
+}
+
+/// Per-fund full-history return rollups (Fund Overview Part 1). Pre-rolled here (not
+/// chained at read time) because the job pipeline — leaderboard per-fund vote weighting —
+/// consumes fundQualityWeight and cannot chain. One row per fund.
+model FundReturnSummary {
+  fundId             String   @id
+  cloneAlpha         Float? // annualized excess of chained clone series vs benchmark TR
+  cloneAlphaQuarters Int      @default(0) // quarters backing cloneAlpha (null-N-safe display)
+  fundQualityWeight  Float    @default(1) // f(cloneAlpha); 1.0 neutral (new funds never penalized)
+  benchmark          String   @default("SPY")
+  computedAt         DateTime @default(now())
+
+  fund InstitutionalFund @relation(fields: [fundId], references: [id], onDelete: Cascade)
 }
 
 /// Per-name × quarter aggregate over the tracked watchlist — powers the overview,
