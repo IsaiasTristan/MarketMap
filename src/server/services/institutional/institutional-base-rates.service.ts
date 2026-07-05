@@ -16,6 +16,7 @@ import { Prisma } from "@prisma/client";
 import {
   forwardExcessReturn,
   priceAsOf,
+  stageEntryEpisodes,
   summarizeCohort,
   type CohortSummary,
   type PricePoint,
@@ -54,12 +55,28 @@ export async function runBaseRates(log: (m: string) => void): Promise<{ patterns
   // ── Price series: securities for every ticker we will need + the benchmark. ──
   const entries: CohortEntry[] = [];
 
-  // Lifecycle stage cohorts.
+  // Lifecycle stage cohorts — EVENT-based (Part 4): one entry per ENTRY EPISODE into
+  // a stage, NOT one per quarter the name sits in it (which inflates N and serially-
+  // correlates the cohort). WATCH is a sub-scale pre-stage, not a cohort.
+  const periodRows0 = await prisma.$queryRaw<Array<{ p: Date }>>(Prisma.sql`
+    SELECT DISTINCT "filingPeriod" AS p FROM "InstitutionalNameAggregate" ORDER BY p ASC`);
+  const allPeriods = periodRows0.map((r) => iso(r.p));
   const stageRows = await prisma.institutionalNameAggregate.findMany({
-    where: { lifecycleStage: { not: null } },
+    where: { lifecycleStage: { notIn: ["WATCH"] } },
     select: { ticker: true, filingPeriod: true, lifecycleStage: true },
   });
-  for (const r of stageRows) entries.push({ pattern: r.lifecycleStage!, ticker: r.ticker, entryMs: availabilityMs(iso(r.filingPeriod)) });
+  const stageByTicker = new Map<string, Map<string, string>>();
+  for (const r of stageRows) {
+    if (!r.lifecycleStage) continue;
+    const byP = stageByTicker.get(r.ticker) ?? stageByTicker.set(r.ticker, new Map()).get(r.ticker)!;
+    byP.set(iso(r.filingPeriod), r.lifecycleStage);
+  }
+  for (const [ticker, byP] of stageByTicker) {
+    const series = allPeriods.map((p) => byP.get(p) ?? null);
+    for (const ep of stageEntryEpisodes(series)) {
+      entries.push({ pattern: ep.stage, ticker, entryMs: availabilityMs(allPeriods[ep.index]!) });
+    }
+  }
 
   // Stasis-break cohort.
   const stasisRows = await prisma.institutionalEvent.findMany({

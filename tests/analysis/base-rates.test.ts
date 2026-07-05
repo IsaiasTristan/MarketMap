@@ -3,6 +3,7 @@ import {
   baseRateLabel,
   forwardExcessReturn,
   priceAsOf,
+  stageEntryEpisodes,
   summarizeCohort,
   BASE_RATE_MIN_N,
 } from "@/domain/calculations/base-rates";
@@ -45,6 +46,30 @@ describe("base-rates: cohort summary (N gating)", () => {
     expect(BASE_RATE_MIN_N).toBe(30);
     expect(summarizeCohort(Array(29).fill(0.01)).sufficient).toBe(false);
     expect(summarizeCohort(Array(30).fill(0.01)).sufficient).toBe(true);
+  });
+});
+
+describe("base-rates: event-based cohort episodes (Part 4)", () => {
+  it("a name FORMING for 3 consecutive quarters is ONE episode, not three", () => {
+    const eps = stageEntryEpisodes([null, "FORMING", "FORMING", "FORMING", null]);
+    expect(eps).toEqual([{ index: 1, stage: "FORMING" }]);
+  });
+  it("re-entry into the same stage after leaving is a NEW episode", () => {
+    const eps = stageEntryEpisodes(["FORMING", null, "FORMING"]);
+    expect(eps).toEqual([
+      { index: 0, stage: "FORMING" },
+      { index: 2, stage: "FORMING" },
+    ]);
+  });
+  it("each distinct stage transition is its own entry (DURABLE then BROKEN)", () => {
+    const eps = stageEntryEpisodes(["DURABLE", "DURABLE", "BROKEN"]);
+    expect(eps).toEqual([
+      { index: 0, stage: "DURABLE" },
+      { index: 2, stage: "BROKEN" },
+    ]);
+  });
+  it("ignores null gaps entirely", () => {
+    expect(stageEntryEpisodes([null, null, null])).toEqual([]);
   });
 });
 

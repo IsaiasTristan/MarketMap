@@ -43,6 +43,24 @@ export function summarizeCohort(excess: Array<number | null>, minN: number = BAS
   return { excessReturn: round4(mean), hitRate: round4(hit), n, sufficient: true };
 }
 
+/**
+ * Event-based cohort membership (Part 4): the indices at which a name ENTERS a
+ * stage — stage[i] != null and != stage[i-1] — one per contiguous EPISODE. A name
+ * FORMING for three consecutive quarters is ONE episode (not three); a later
+ * re-entry into the same stage is a NEW episode. This replaces state-membership
+ * cohorts (a name counted every quarter it sits in a stage), which inflate N and
+ * serially-correlate the sample.
+ */
+export function stageEntryEpisodes(stages: Array<string | null>): Array<{ index: number; stage: string }> {
+  const out: Array<{ index: number; stage: string }> = [];
+  for (let i = 0; i < stages.length; i++) {
+    const s = stages[i];
+    if (s == null) continue;
+    if (i === 0 || stages[i - 1] !== s) out.push({ index: i, stage: s });
+  }
+  return out;
+}
+
 export interface PricePoint {
   t: number; // trade date, ms since epoch
   px: number; // split-adjusted close
