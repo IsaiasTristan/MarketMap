@@ -11,7 +11,7 @@ import { prisma } from "@/infrastructure/db/client";
 import { Prisma } from "@prisma/client";
 import { FUNDS_ATTRIBUTION_CONFIG, type FundsAttributionConfig } from "@/domain/calculations/funds-attribution-config";
 import { FUND_OVERVIEW_CONFIG } from "@/domain/calculations/fund-overview-config";
-import { trailingWindow, windowExcess, WINDOW_QUARTERS, type QuarterReturn } from "@/domain/calculations/return-series";
+import { trailingWindow, windowExcess, WINDOW_QUARTERS, priceAsOfOnOrBefore, type QuarterReturn } from "@/domain/calculations/return-series";
 import { overlapScore, percentileInSet, differentiatedIdeas, type WeightedHolding } from "@/domain/calculations/peer-comparison";
 import { resolvePeerSet, type PeerSelector } from "./institutional-peers.service";
 import { getFollowScoreboard } from "./institutional-follow.service";
@@ -80,7 +80,167 @@ async function computeReturnsBlock(fundId: string, benchmark: string): Promise<F
   };
 }
 
+/** One current-period holding row as selected in getFundPage. */
+interface HoldingRow {
+  ticker: string;
+  value: Prisma.Decimal;
+  pctOfBook: number | null;
+  tenureQuarters: number | null;
+  tenureCensored: boolean | null;
+  action: string;
+  adjShareDeltaPct: number | null;
+  initiationStrength: number | null;
+}
+
+/** Split-adjusted return from quarter end to the latest close, per ticker. */
+async function loadPxSince(tickers: string[], periodDate: Date): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (tickers.length === 0) return out;
+  const secs = await prisma.security.findMany({ where: { ticker: { in: [...new Set(tickers)] } }, select: { id: true, ticker: true } });
+  if (secs.length === 0) return out;
+  const tickerBySec = new Map(secs.map((s) => [s.id, s.ticker]));
+  const from = new Date(periodDate.getTime() - 7 * DAY); // just before quarter end → latest
+  const prices = await prisma.priceHistory.findMany({
+    where: { securityId: { in: secs.map((s) => s.id) }, tradeDate: { gte: from } },
+    select: { securityId: true, tradeDate: true, adjClose: true },
+    orderBy: { tradeDate: "asc" },
+  });
+  const bySec = new Map<string, Array<{ t: number; px: number }>>();
+  for (const p of prices) {
+    const px = Number(p.adjClose);
+    if (!Number.isFinite(px) || px <= 0) continue;
+    (bySec.get(p.securityId) ?? bySec.set(p.securityId, []).get(p.securityId)!).push({ t: p.tradeDate.getTime(), px });
+  }
+  for (const [secId, series] of bySec) {
+    const entry = priceAsOfOnOrBefore(series, periodDate.getTime());
+    const exit = series[series.length - 1]?.px;
+    if (entry != null && exit != null && entry > 0) out.set(tickerBySec.get(secId)!, exit / entry - 1);
+  }
+  return out;
+}
+
+const ACTION_LABEL: Record<string, string> = { NEW: "NEW", ADDED: "added", HELD: "held", TRIMMED: "trimmed", EXITED: "exit" };
+
+/** BOOK SNAPSHOT: top rows covering book_pct_cap% (≤ book_rows_max), then a tail summary. */
+function buildBookSnapshot(
+  holdings: HoldingRow[],
+  peersHold: Map<string, number>,
+  peersTotal: number,
+  pxSince: Map<string, number>,
+): BookSnapshotBlock | null {
+  if (holdings.length === 0) return null;
+  const cfg = FUND_OVERVIEW_CONFIG;
+  const sorted = holdings.slice().sort((a, b) => (b.pctOfBook ?? 0) - (a.pctOfBook ?? 0));
+  const medianPct = median(sorted.map((h) => h.pctOfBook ?? 0)) ?? 0;
+
+  const rows: BookRow[] = [];
+  let cum = 0;
+  let i = 0;
+  for (; i < sorted.length; i++) {
+    if (rows.length >= cfg.book_rows_max || (rows.length > 0 && cum >= cfg.book_pct_cap)) break;
+    const h = sorted[i]!;
+    const pct = h.pctOfBook ?? 0;
+    cum += pct;
+    rows.push({
+      ticker: h.ticker,
+      pctOfBook: Math.round(pct * 100) / 100,
+      action: ACTION_LABEL[h.action] ?? h.action.toLowerCase(),
+      shareDeltaPct: h.adjShareDeltaPct,
+      sizingMult: h.action === "NEW" && medianPct > 0 ? Math.round((pct / medianPct) * 10) / 10 : null,
+      tenureQuarters: h.tenureQuarters,
+      tenureCensored: h.tenureCensored ?? false,
+      peersHold: peersHold.get(h.ticker) ?? 0,
+      peersTotal,
+      pxSince: pxSince.get(h.ticker) ?? null,
+    });
+  }
+  const tailRows = sorted.slice(i);
+  const tail =
+    tailRows.length > 0
+      ? {
+          count: tailRows.length,
+          weightPct: Math.round(tailRows.reduce((a, h) => a + (h.pctOfBook ?? 0), 0) * 10) / 10,
+          medianPct: Math.round((median(tailRows.map((h) => h.pctOfBook ?? 0)) ?? 0) * 100) / 100,
+          added: tailRows.filter((h) => h.action === "ADDED").length,
+          trimmed: tailRows.filter((h) => h.action === "TRIMMED").length,
+          initiated: tailRows.filter((h) => h.action === "NEW").length,
+        }
+      : null;
+  return { rows, shownPct: Math.round(cum * 10) / 10, peersTotal, tail };
+}
+
+/** STYLE OVER TIME: historical style series (from FundStyleVector) + a templated verdict. */
+async function computeStyleOverTime(fundId: string): Promise<StyleOverTimeBlock | null> {
+  const rows = await prisma.fundStyleVector.findMany({
+    where: { fundId },
+    orderBy: { filingPeriod: "asc" },
+    select: { filingPeriod: true, top10Concentration: true, medianTenure: true, turnover: true },
+  });
+  if (rows.length < 2) return null;
+  const quarters = rows.map((r) => iso(r.filingPeriod));
+  const concentration = rows.map((r) => Math.round(r.top10Concentration * 1000) / 10); // fraction → %
+  const medianTenure = rows.map((r) => Math.round((r.medianTenure ?? 0) * 10) / 10);
+  const turnover = rows.map((r) => {
+    const t = r.turnover ?? 0;
+    return Math.round((t <= 1 ? t * 100 : t) * 10) / 10;
+  });
+
+  const first = (a: number[]) => a[0]!;
+  const last = (a: number[]) => a[a.length - 1]!;
+  const parts: string[] = [];
+  const dCon = last(concentration) - first(concentration);
+  const dTen = last(medianTenure) - first(medianTenure);
+  const dTurn = last(turnover) - first(turnover);
+  if (dCon > 3 && dTen > 0.3) parts.push("concentrating into fewer, longer holds — conviction rising");
+  else if (dCon < -3) parts.push("diversifying — spreading capital wider");
+  else if (dTen > 0.5) parts.push("lengthening holding periods");
+  if (dTurn < -3) parts.push(`turnover slowing (${first(turnover).toFixed(0)}% → ${last(turnover).toFixed(0)}%/q)`);
+  else if (dTurn > 3) parts.push(`turnover rising (${first(turnover).toFixed(0)}% → ${last(turnover).toFixed(0)}%/q)`);
+  const verdict = parts.length ? parts.join(" · ") : "style broadly stable over the window";
+  return { quarters, concentration, medianTenure, turnover, verdict };
+}
+
+/** THIS QUARTER: significance-ranked NEW/ADDED/TRIMMED actions with templated notes. */
+function buildThisQuarter(holdings: HoldingRow[], pxSince: Map<string, number>): ThisQuarterRow[] {
+  const acted = holdings.filter((h) => h.action === "NEW" || h.action === "ADDED" || h.action === "TRIMMED");
+  const score = (h: HoldingRow) => {
+    const size = h.pctOfBook ?? 0;
+    if (h.action === "NEW") return size * 2 + (h.initiationStrength ?? 0);
+    return size * (0.5 + Math.abs(h.adjShareDeltaPct ?? 0) / 100);
+  };
+  return acted
+    .slice()
+    .sort((a, b) => score(b) - score(a))
+    .slice(0, 6)
+    .map((h) => {
+      const pct = h.pctOfBook ?? 0;
+      const delta = h.adjShareDeltaPct;
+      let note: string;
+      if (h.action === "NEW") {
+        note = `initiated at ${pct.toFixed(1)}% of book${h.initiationStrength ? `, ${h.initiationStrength.toFixed(1)}× typical size` : ""}`;
+      } else if (h.action === "ADDED") {
+        note = `added${delta != null ? ` +${Math.round(delta)}%` : ""} · now ${pct.toFixed(1)}% of book`;
+      } else {
+        note = `trimmed${delta != null ? ` ${Math.round(delta)}%` : ""} · now ${pct.toFixed(1)}% of book`;
+      }
+      return {
+        ticker: h.ticker,
+        action: ACTION_LABEL[h.action] ?? h.action.toLowerCase(),
+        pctOfBook: Math.round(pct * 100) / 100,
+        shareDeltaPct: delta,
+        pxSince: pxSince.get(h.ticker) ?? null,
+        note,
+      };
+    });
+}
+
 /** VS PEERS: percentiles, overlap, differentiated ideas, twins against the selected set. */
+interface PeerContext {
+  block: FundVsPeersBlock;
+  peersHold: Map<string, number>; // ticker → # peer-set funds holding ≥ floor
+  peerCount: number;
+}
+
 async function computeVsPeers(
   fundId: string,
   category: string,
@@ -88,7 +248,7 @@ async function computeVsPeers(
   periodDate: Date,
   self: WeightedHolding[],
   peerSel?: PeerSelector,
-): Promise<FundVsPeersBlock | null> {
+): Promise<PeerContext> {
   // Resolve the selector; default to the seeded "My Funds" set, else CATEGORY.
   let sel: PeerSelector;
   let peerSetName: string;
@@ -196,7 +356,25 @@ async function computeVsPeers(
     .map((t) => ({ cik: twinName.get(t.fundId)?.cik ?? null, name: twinName.get(t.fundId)?.name ?? "?", similarity: t.similarity }))
     .filter((t) => t.name !== "?");
 
-  return { peerSetName, peerSetSize: peerIds.length, mode: sel.mode, percentiles, overlaps, differentiatedIdeas: differentiated, twins };
+  // Per-ticker peer-hold counts (funds in the set holding ≥ diff_ideas_min_bps).
+  const floor = FUND_OVERVIEW_CONFIG.diff_ideas_min_bps / 10_000;
+  const peersHold = new Map<string, number>();
+  for (const pid of peerIds) {
+    for (const hld of bookByFund.get(pid) ?? []) {
+      if (hld.weight >= floor) peersHold.set(hld.ticker, (peersHold.get(hld.ticker) ?? 0) + 1);
+    }
+  }
+
+  const block: FundVsPeersBlock = {
+    peerSetName,
+    peerSetSize: peerIds.length,
+    mode: sel.mode,
+    percentiles,
+    overlaps,
+    differentiatedIdeas: differentiated,
+    twins,
+  };
+  return { block, peersHold, peerCount: peerIds.length };
 }
 
 export interface FundInitiationOutcome {
@@ -243,6 +421,40 @@ export interface FundVsPeersBlock {
   twins: Array<{ cik: string | null; name: string; similarity: number }>;
 }
 
+export interface BookRow {
+  ticker: string;
+  pctOfBook: number;
+  action: string; // NEW | ADDED | HELD | TRIMMED | EXITED (from the diff layer)
+  shareDeltaPct: number | null; // split-adjusted QoQ share change %
+  sizingMult: number | null; // for NEW rows: entry size vs the fund's median position
+  tenureQuarters: number | null;
+  tenureCensored: boolean;
+  peersHold: number; // peer-set funds holding this name ≥ diff_ideas_min_bps
+  peersTotal: number;
+  pxSince: number | null; // split-adjusted return since quarter end (fraction)
+}
+export interface BookSnapshotBlock {
+  rows: BookRow[]; // top rows covering book_pct_cap% (≤ book_rows_max)
+  shownPct: number; // cumulative % of book the shown rows cover
+  peersTotal: number;
+  tail: { count: number; weightPct: number; medianPct: number; added: number; trimmed: number; initiated: number } | null;
+}
+export interface StyleOverTimeBlock {
+  quarters: string[];
+  concentration: number[]; // top-10 % of book per quarter
+  medianTenure: number[];
+  turnover: number[]; // %/q
+  verdict: string;
+}
+export interface ThisQuarterRow {
+  ticker: string;
+  action: string;
+  pctOfBook: number;
+  shareDeltaPct: number | null;
+  pxSince: number | null;
+  note: string;
+}
+
 export interface FundPagePayload {
   cik: string;
   fundId: string;
@@ -270,6 +482,12 @@ export interface FundPagePayload {
   returns: FundReturnsBlock | null;
   /** VS PEERS (Fund Overview Part 2) against the selected peer set. */
   vsPeers: FundVsPeersBlock | null;
+  /** BOOK SNAPSHOT — top positions covering book_pct_cap% + a tail summary. */
+  bookSnapshot: BookSnapshotBlock | null;
+  /** STYLE OVER TIME — historical style series + a templated drift verdict. */
+  styleOverTime: StyleOverTimeBlock | null;
+  /** THIS QUARTER — significance-ranked actions. */
+  thisQuarter: ThisQuarterRow[];
   signalProfile: {
     followRate: number | null;
     followN: number;
@@ -309,7 +527,17 @@ export async function getFundPage(
     prisma.fundBookSnapshot.findUnique({ where: { fundId_filingPeriod: { fundId: fund.id, filingPeriod: periodDate } } }),
     prisma.fundHoldingSnapshot.findMany({
       where: { fundId: fund.id, filingPeriod: periodDate, shares: { gt: 0 } },
-      select: { ticker: true, value: true, pctOfBook: true, tenureQuarters: true, tenureCensored: true, filingDate: true },
+      select: {
+        ticker: true,
+        value: true,
+        pctOfBook: true,
+        tenureQuarters: true,
+        tenureCensored: true,
+        filingDate: true,
+        action: true,
+        adjShareDeltaPct: true,
+        initiationStrength: true,
+      },
     }),
     prisma.fundHoldingSnapshot.findFirst({
       where: { fundId: fund.id, filingPeriod: periodDate, filingDate: { not: null } },
@@ -359,8 +587,17 @@ export async function getFundPage(
   const summary = await prisma.fundReturnSummary.findUnique({ where: { fundId: fund.id } });
   const returns = await computeReturnsBlock(fund.id, summary?.benchmark ?? FUND_OVERVIEW_CONFIG.benchmark_symbol);
 
-  // ── VS PEERS (Fund Overview Part 2). ──
-  const vsPeers = await computeVsPeers(fund.id, fund.category, filingPeriod, periodDate, selfWeighted, peerSel);
+  // ── VS PEERS (Fund Overview Part 2) + peer-hold counts for the book snapshot. ──
+  const peerCtx = await computeVsPeers(fund.id, fund.category, filingPeriod, periodDate, selfWeighted, peerSel);
+  const vsPeers = peerCtx.block;
+
+  // ── px-since (split-adjusted return from quarter end to latest close) per held ticker. ──
+  const pxSince = await loadPxSince(holdings.map((h) => h.ticker), periodDate);
+
+  // ── BOOK SNAPSHOT + STYLE OVER TIME + THIS QUARTER. ──
+  const bookSnapshot = buildBookSnapshot(holdings, peerCtx.peersHold, peerCtx.peerCount, pxSince);
+  const styleOverTime = await computeStyleOverTime(fund.id);
+  const thisQuarter = buildThisQuarter(holdings, pxSince);
 
   return {
     cik: fund.cik,
@@ -383,6 +620,9 @@ export async function getFundPage(
     },
     returns,
     vsPeers,
+    bookSnapshot,
+    styleOverTime,
+    thisQuarter,
     signalProfile: {
       followRate: followRow?.followRate ?? null,
       followN: followRow?.n ?? 0,

@@ -4,7 +4,16 @@
  * clicking any fund name anywhere in the tool (FundLink) or via the deep-link
  * `/flows?tab=funds&fund=<cik>`. Mirrors the mockup's `.fp` section.
  */
-import type { FundPagePayload, FundInitiationOutcome, FundReturnsBlock, FundVsPeersBlock } from "@/server/services/institutional/institutional-fund-page.service";
+import { useState } from "react";
+import type {
+  FundPagePayload,
+  FundInitiationOutcome,
+  FundReturnsBlock,
+  FundVsPeersBlock,
+  BookSnapshotBlock,
+  StyleOverTimeBlock,
+  ThisQuarterRow,
+} from "@/server/services/institutional/institutional-fund-page.service";
 import { useFlows } from "../useFlows";
 import { PanelState, fmtUsdCompact, quarterLabel } from "../flowsUi";
 import { MetricTooltip } from "../MetricTooltip";
@@ -89,6 +98,8 @@ function FundPageBody({ data, onSelectTicker }: { data: FundPagePayload; onSelec
       </div>
 
       {data.returns && <ReturnsStrip r={data.returns} onSelectTicker={onSelectTicker} />}
+      {data.bookSnapshot && <BookSnapshot b={data.bookSnapshot} onSelectTicker={onSelectTicker} />}
+      {data.styleOverTime && <StyleOverTime s={data.styleOverTime} />}
 
       <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 0, border: "1px solid var(--bg-border)" }}>
         <div style={{ padding: 10 }}>
@@ -154,6 +165,7 @@ function FundPageBody({ data, onSelectTicker }: { data: FundPagePayload; onSelec
       </div>
 
       {data.vsPeers && <VsPeers v={data.vsPeers} />}
+      {data.thisQuarter.length > 0 && <ThisQuarter rows={data.thisQuarter} onSelectTicker={onSelectTicker} />}
 
       <div style={{ borderTop: "1px solid var(--bg-border)", paddingTop: 8, fontSize: 10, color: "var(--text-muted)" }}>
         current fresh calls: <b style={{ color: "var(--text-primary)" }}>{data.reverseIndex.freshCalls}</b> · led exits:{" "}
@@ -385,6 +397,129 @@ function ordinal(n: number): string {
   const s = ["th", "st", "nd", "rd"];
   const v = n % 100;
   return n + (s[(v - 20) % 10] ?? s[v] ?? s[0]!);
+}
+
+// ── BOOK SNAPSHOT (Fund Overview Part 4) ─────────────────────────────────────
+const ACTION_COLOR: Record<string, string> = {
+  NEW: "var(--color-accent)",
+  added: "var(--color-positive)",
+  held: "var(--text-muted)",
+  trimmed: "var(--color-negative)",
+  exit: "var(--color-negative)",
+};
+function BookSnapshot({ b, onSelectTicker }: { b: BookSnapshotBlock; onSelectTicker: (t: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const cols = "minmax(70px,1fr) 60px 90px 60px 70px 60px";
+  const pxCell = (v: number | null) =>
+    v == null ? "—" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(0)}%`;
+  return (
+    <div style={{ border: "1px solid var(--bg-border)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "8px 10px", borderBottom: "1px solid var(--bg-border)", background: "var(--bg-surface)" }}>
+        <span style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
+          Book snapshot — top {b.rows.length} · {b.shownPct.toFixed(0)}% of book
+        </span>
+        {b.tail && (
+          <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} style={{ background: "transparent", border: "1px solid var(--bg-border)", color: "var(--text-secondary)", fontSize: 10, padding: "1px 8px", cursor: "pointer" }}>
+            {open ? "hide tail" : `show all ${b.rows.length + b.tail.count}`}
+          </button>
+        )}
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <div style={{ minWidth: 460 }}>
+          <div style={{ display: "grid", gridTemplateColumns: cols, gap: 8, padding: "5px 10px", fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid var(--bg-border)" }}>
+            <span>Pos</span>
+            <span style={{ textAlign: "right" }}><MetricTooltip id="pctBook">% book</MetricTooltip></span>
+            <span><MetricTooltip id="qAction">Q action</MetricTooltip></span>
+            <span style={{ textAlign: "right" }}><MetricTooltip id="tenure">Tenure</MetricTooltip></span>
+            <span style={{ textAlign: "right" }}><MetricTooltip id="peersHold">Peers</MetricTooltip></span>
+            <span style={{ textAlign: "right" }}><MetricTooltip id="pxSince">Px since</MetricTooltip></span>
+          </div>
+          {b.rows.map((r) => (
+            <div key={r.ticker} className="flows-row" style={{ display: "grid", gridTemplateColumns: cols, gap: 8, alignItems: "center", padding: "5px 10px", fontSize: 11, borderBottom: "1px solid var(--bg-border)" }}>
+              <span onClick={() => onSelectTicker(r.ticker)} style={{ color: "var(--color-info)", fontWeight: 700, cursor: "pointer" }}>{r.ticker}</span>
+              <span style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{r.pctOfBook.toFixed(1)}%</span>
+              <span style={{ color: ACTION_COLOR[r.action] ?? "var(--text-secondary)", fontSize: 10 }}>
+                {r.action}
+                {r.action === "NEW" && r.sizingMult ? ` ${r.sizingMult.toFixed(1)}×` : ""}
+                {(r.action === "added" || r.action === "trimmed") && r.shareDeltaPct != null && Math.abs(r.shareDeltaPct) < 1000 ? ` ${r.shareDeltaPct >= 0 ? "+" : ""}${Math.round(r.shareDeltaPct)}%` : ""}
+              </span>
+              <span style={{ textAlign: "right", color: "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}>{r.tenureCensored ? "≥" : ""}{r.tenureQuarters ?? "—"}q</span>
+              <span style={{ textAlign: "right", color: "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}>{r.peersHold} / {r.peersTotal}</span>
+              <span style={{ textAlign: "right", color: r.pxSince == null ? "var(--text-muted)" : r.pxSince >= 0 ? "var(--color-positive)" : "var(--color-negative)", fontVariantNumeric: "tabular-nums" }}>{pxCell(r.pxSince)}</span>
+            </div>
+          ))}
+          {b.tail && !open && (
+            <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-muted)", background: "var(--bg-surface)" }}>
+              <MetricTooltip id="tailShape">tail</MetricTooltip>: positions {b.rows.length + 1}–{b.rows.length + b.tail.count} · {b.tail.weightPct.toFixed(0)}% of book · median {b.tail.medianPct.toFixed(1)}% · this qtr {b.tail.added} added, {b.tail.trimmed} trimmed, {b.tail.initiated} new
+            </div>
+          )}
+          {b.tail && open && (
+            <div style={{ padding: "8px 10px", fontSize: 10, color: "var(--text-muted)", background: "var(--bg-surface)" }}>
+              (full sortable tail table pending — {b.tail.count} names, {b.tail.weightPct.toFixed(0)}% of book)
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── STYLE OVER TIME (Fund Overview Part 4) ───────────────────────────────────
+function Spark({ label, metricId, values, suffix }: { label: string; metricId: import("@/lib/institutional/metric-registry").MetricId; values: number[]; suffix: string }) {
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const pts = values
+    .map((v, i) => `${(i / (values.length - 1)) * 100},${34 - ((v - min) / span) * 30 - 2}`)
+    .join(" ");
+  const rising = values[values.length - 1]! >= values[0]!;
+  return (
+    <div style={{ padding: "10px 12px", borderLeft: "1px solid var(--bg-border)" }}>
+      <div style={{ fontSize: 10, color: "var(--text-muted)" }}><MetricTooltip id={metricId}>{label}</MetricTooltip></div>
+      <div style={{ fontSize: 12, fontWeight: 700, margin: "2px 0" }}>{values[0]!.toFixed(values[0]! < 10 ? 1 : 0)}{suffix} → {values[values.length - 1]!.toFixed(values[values.length - 1]! < 10 ? 1 : 0)}{suffix}</div>
+      <svg viewBox="0 0 100 34" preserveAspectRatio="none" style={{ width: "100%", height: 30, display: "block" }} aria-label={`${label} ${values[0]} to ${values[values.length - 1]}`}>
+        <polyline points={pts} fill="none" stroke={rising ? "#2f6fce" : "#ffb224"} strokeWidth={2} vectorEffect="non-scaling-stroke" />
+      </svg>
+    </div>
+  );
+}
+function StyleOverTime({ s }: { s: StyleOverTimeBlock }) {
+  return (
+    <div style={{ border: "1px solid var(--bg-border)" }}>
+      <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--bg-border)", background: "var(--bg-surface)", fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
+        Style over time — {s.quarters.length} quarters
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)" }}>
+        <Spark label="concentration (top-10 %)" metricId="concentration" values={s.concentration} suffix="%" />
+        <Spark label="median tenure (q)" metricId="medianTenure" values={s.medianTenure} suffix="q" />
+        <Spark label="turnover (%/q)" metricId="turnover" values={s.turnover} suffix="%" />
+      </div>
+      <div style={{ borderTop: "1px solid var(--bg-border)", padding: "8px 12px", fontSize: 11, color: "var(--text-secondary)" }}>
+        <b style={{ color: "var(--text-primary)" }}>drift read:</b> {s.verdict}
+      </div>
+    </div>
+  );
+}
+
+// ── THIS QUARTER (Fund Overview Part 4) ──────────────────────────────────────
+function ThisQuarter({ rows, onSelectTicker }: { rows: ThisQuarterRow[]; onSelectTicker: (t: string) => void }) {
+  return (
+    <div style={{ border: "1px solid var(--bg-border)" }}>
+      <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--bg-border)", background: "var(--bg-surface)", fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
+        This quarter — actions ranked by significance
+      </div>
+      {rows.map((t) => (
+        <div key={t.ticker} className="flows-row" style={{ display: "grid", gridTemplateColumns: "80px 70px 1fr 60px", gap: 8, alignItems: "center", padding: "6px 10px", fontSize: 11, borderBottom: "1px solid var(--bg-border)" }}>
+          <span onClick={() => onSelectTicker(t.ticker)} style={{ color: "var(--color-info)", fontWeight: 700, cursor: "pointer" }}>{t.ticker}</span>
+          <span style={{ color: ACTION_COLOR[t.action] ?? "var(--text-secondary)", fontSize: 10 }}>{t.action}</span>
+          <span style={{ color: "var(--text-secondary)" }}>{t.note}</span>
+          <span style={{ textAlign: "right", color: t.pxSince == null ? "var(--text-muted)" : t.pxSince >= 0 ? "var(--color-positive)" : "var(--color-negative)", fontVariantNumeric: "tabular-nums" }}>
+            {t.pxSince != null ? `${t.pxSince >= 0 ? "+" : ""}${(t.pxSince * 100).toFixed(0)}%` : "—"}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function ColLabel({ children }: { children: React.ReactNode }) {
