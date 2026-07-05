@@ -63,6 +63,11 @@ export interface FollowScoreboard {
   /** Cohort median follow rate across funds with a sufficient rate (sanity check). */
   cohortMedianRate: number | null;
   outcomesByFund: Map<string, InitiationOutcome[]>;
+  /** Ascending global period list (index = quarter). */
+  periods: string[];
+  /** The assembled qualified initiations (with fwd returns) — reused by the fresh
+   *  calls feed's base-rate header and the fund page. */
+  initiations: Initiation[];
 }
 
 /** Global ascending quarter index for a period string. */
@@ -176,7 +181,8 @@ export async function getFollowScoreboard(
   const latestPeriod = periods[asOf]!;
 
   const rawInits = await loadInitiationRows();
-  if (rawInits.length === 0) return { filingPeriod: latestPeriod, rows: [], cohortMedianRate: null, outcomesByFund: new Map() };
+  if (rawInits.length === 0)
+    return { filingPeriod: latestPeriod, rows: [], cohortMedianRate: null, outcomesByFund: new Map(), periods, initiations: [] };
 
   const fwd = await forwardReturns(rawInits.map((r) => ({ ticker: r.ticker, period: r.period })));
   const initiations: Initiation[] = rawInits
@@ -250,5 +256,5 @@ export async function getFollowScoreboard(
 
   const cohortMedianRate = median(rows.filter((r) => r.rateSufficient && r.followRate != null).map((r) => r.followRate!));
 
-  return { filingPeriod: latestPeriod, rows, cohortMedianRate, outcomesByFund };
+  return { filingPeriod: latestPeriod, rows, cohortMedianRate, outcomesByFund, periods, initiations };
 }
