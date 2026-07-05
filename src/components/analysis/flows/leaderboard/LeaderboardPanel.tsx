@@ -14,10 +14,20 @@ import type { GatedOutRow, HeatCell } from "@/domain/calculations/flow-leaderboa
 import type { DistributionChurn, EnrichedRow, LeaderboardResult } from "@/server/services/institutional/institutional-leaderboard.service";
 import { pickTextColor } from "@/components/analysis/factors/shared/bloomberg-grid";
 import { useFlows } from "../useFlows";
-import { PanelState, Sparkline, quarterLabel } from "../flowsUi";
+import { PanelState, Sparkline, FlagBadges, quarterLabel } from "../flowsUi";
+import type { FlowFlagId } from "@/lib/institutional/flow-flags";
 import { LedgerPanel } from "../LedgerPanel";
 import { FundLink } from "../funds/FundLink";
 import { flowHeatColor, heatCellDisplay, FLOW_BLUE, FLOW_RED } from "./flowHeat";
+
+/** Map a leaderboard row's data-quality booleans to shared-registry flag ids
+ *  (Part 5) so the badges render identically to the rotation board. */
+function leaderboardFlags(r: { verifyData?: boolean; partialData?: boolean }): FlowFlagId[] {
+  const out: FlowFlagId[] = [];
+  if (r.verifyData) out.push("verify-weights");
+  if (r.partialData) out.push("partial-data");
+  return out;
+}
 
 const HEAT_SPAN = 25; // diverging fill saturates at |25| net funds (per spec)
 const BPS_SPAN = 30; // bps micro-strip saturates at |30| bps
@@ -233,12 +243,7 @@ function Row({
                 {r.streak > 0 ? "▲" : "▼"}{Math.abs(r.streak)}
               </span>
             )}
-            {r.verifyData && (
-              <span title="Median holder weight implausibly high or a suspected reported-value unit error — conviction not counted pending review" style={{ fontSize: 8, fontWeight: 700, padding: "0 3px", height: 14, lineHeight: "14px", color: "var(--color-negative)", border: "1px solid var(--color-negative)" }}>VERIFY</span>
-            )}
-            {r.partialData && (
-              <span title="Some holders' filings are missing this quarter — score may be incomplete" style={{ fontSize: 8, fontWeight: 700, padding: "0 3px", height: 14, lineHeight: "14px", color: "var(--color-accent)", border: "1px solid var(--color-accent)" }}>PARTIAL</span>
-            )}
+            <FlagBadges flags={leaderboardFlags(r)} />
             {r.companyName && <span style={{ fontSize: 9, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.companyName}</span>}
           </div>
           <div style={{ fontSize: 9, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.reason}</div>

@@ -33,7 +33,25 @@ const VEHICLE_SUBTHEMES = new Set(["LEVERED ETFS"]);
 /** Duplicate/legacy FMP sector strings folded into their canonical market-map name. */
 const SECTOR_ALIASES = new Map<string, string>([["FINANCIAL SERVICES", "Financials"]]);
 
+/**
+ * Near-synonym sub-theme labels folded to one canonical label (Part 2 label
+ * hygiene), so the subsector board doesn't split one theme across two rows.
+ * Keyed by the UPPER-cased raw label. Add pairs here as they surface; the value
+ * is the canonical label shown on the board. NOTE: these MUST be genuine synonyms
+ * within a single parent sector — never use this to merge two real subsectors.
+ */
+const SUBSECTOR_ALIASES = new Map<string, string>([
+  ["MINERALS", "Miners"], // user taxonomy uses both "Miners" and "Minerals" for the same theme
+]);
+
 const norm = (s: string | null | undefined): string => (s ?? "").trim().toUpperCase();
+
+/** Canonicalize a sub-theme label: trim, then fold known synonyms. Null-safe. */
+export function canonicalSubsector(subTheme: string | null): string | null {
+  const t = subTheme?.trim();
+  if (!t) return null;
+  return SUBSECTOR_ALIASES.get(t.toUpperCase()) ?? t;
+}
 
 export interface Classified {
   securityClass: SecurityClass;
@@ -60,7 +78,7 @@ export function classifySecurity(sector: string | null, subTheme: string | null)
   return {
     securityClass: "equity",
     groupSector: canonical,
-    groupSubsector: subTheme && subTheme.trim() ? subTheme.trim() : null,
+    groupSubsector: canonicalSubsector(subTheme),
   };
 }
 

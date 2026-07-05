@@ -50,6 +50,37 @@ export function stockRankScore(sd: number, participating: number, netBps: number
 }
 
 /**
+ * Rotation v3 Part 1a — participation-weighted mean of a set of diffusion values.
+ * Rotation is inherently relative ("where is money going vs the average sector"),
+ * so each sector's diffusion is reported as a deviation from this mean. Weighting
+ * by participating funds keeps a thin sector from swinging the baseline. The
+ * participation-weighted sum of `value − mean` is 0 by construction.
+ */
+export function participationWeightedMean(rows: Array<{ value: number; weight: number }>): number {
+  let sw = 0;
+  let swv = 0;
+  for (const r of rows) {
+    const w = Math.max(0, r.weight);
+    sw += w;
+    swv += r.value * w;
+  }
+  return sw > 0 ? swv / sw : 0;
+}
+
+/**
+ * Rotation v3 Part 3 — rescale scores to a 0–100 board-relative index (leaderboard
+ * convention) so the sort key is VISIBLE. Preserves order; the max |score| maps to
+ * 100, everything else scales linearly by magnitude. Sign is dropped (accumulation
+ * and distribution boards are separate), so a distribution row's 100 means "most
+ * extreme outflow on the board". Returns 0 for an all-zero board.
+ */
+export function rescaleScore0to100(scores: number[]): number[] {
+  const max = Math.max(0, ...scores.map((s) => Math.abs(s)));
+  if (max <= 0) return scores.map(() => 0);
+  return scores.map((s) => Math.round((Math.abs(s) / max) * 1000) / 10);
+}
+
+/**
  * Diffusion context for a bucket from its own quarterly series (ascending by
  * period): last quarter's value (ghost tick), the trailing 4-quarter history
  * (tooltip), and the percentile of the current |diffusion| within its trailing
@@ -71,6 +102,32 @@ export function diffusionContext(series: Array<{ period: string; value: number }
   const pct =
     trailing.length >= 4 ? Math.round((trailing.filter((v) => v <= cur).length / trailing.length) * 100) : null;
   return { prior, history, percentile: pct };
+}
+
+/**
+ * Part 4 — concentration flag: the single name carrying the largest share of a
+ * bucket's |net $|, when that share meets the threshold. Returns null when the
+ * bucket is empty/flat or no name dominates. (One dominant name means the bucket's
+ * "diffusion" is really one trade, not a migration.)
+ */
+export function dominantConcentration(items: Array<{ ticker: string; dollarNetFlow: number | null }>, thresholdPct: number): { ticker: string; pct: number } | null {
+  const total = items.reduce((s, r) => s + Math.abs(r.dollarNetFlow ?? 0), 0);
+  if (total <= 0) return null;
+  const top = items.reduce((a, b) => (Math.abs(b.dollarNetFlow ?? 0) > Math.abs(a.dollarNetFlow ?? 0) ? b : a));
+  const pct = Math.round((Math.abs(top.dollarNetFlow ?? 0) / total) * 100);
+  return pct >= thresholdPct ? { ticker: top.ticker, pct } : null;
+}
+
+/**
+ * Part 5 — divergence marker: breadth (diffusion) and dollars disagree, and BOTH
+ * clear their noise floors. A broad migration whose dollars are dominated by one
+ * whale's opposite trade (or vice-versa) — the ⇄ marker. Below either floor there
+ * is no marker (rounding noise shouldn't flag).
+ */
+export function diffusionDollarsDiverge(diffusionPct: number, dollarNetFlow: number, minDiffPct: number, minDollars: number): boolean {
+  const sd = Math.sign(diffusionPct);
+  const dd = Math.sign(dollarNetFlow);
+  return sd !== 0 && dd !== 0 && sd !== dd && Math.abs(diffusionPct) >= minDiffPct && Math.abs(dollarNetFlow) >= minDollars;
 }
 
 function passesSize(tier: string | null, filter: SizeFilter): boolean {

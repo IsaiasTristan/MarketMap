@@ -239,6 +239,56 @@ describe("diffusion vote materiality floor (Part 1)", () => {
   });
 });
 
+describe("fund-relative vote floor (Part 1b)", () => {
+  // 10 funds each make a +4 bp deliberate add to SectorA, funded by a −4 bp trim of
+  // SectorB in their own $20k book. A flat 5-bp sector floor silences all ten adds
+  // (the all-red-board mechanic: diffuse small adds fall below a flat floor while a
+  // concentrated sell would clear it); a fund-relative floor of
+  // max(2, 0.5·median|move|) = max(2, 0.5·4) = 2 bp lets every add vote.
+  function buildQuarter(): { prev: FundHoldingsByPeriod; cur: FundHoldingsByPeriod } {
+    const prev: FundHoldingsByPeriod = new Map();
+    const cur: FundHoldingsByPeriod = new Map();
+    for (let i = 0; i < 10; i++) {
+      const p = new Map<string, { shares: number; value: number }>();
+      p.set("AAA", { shares: 1000, value: 10000 });
+      p.set("BBB", { shares: 1000, value: 10000 });
+      prev.set(`S${i}`, p);
+      const c = new Map<string, { shares: number; value: number }>();
+      c.set("AAA", { shares: 1000.8, value: 10008 }); // +4 bps of a $20k book
+      c.set("BBB", { shares: 999.2, value: 9992 }); // −4 bps
+      cur.set(`S${i}`, c);
+    }
+    return { prev, cur };
+  }
+  const m = meta({ AAA: ["SectorA", null], BBB: ["SectorB", null] });
+  const FLOORS = { name: 2, sector: 5, subsector: 3 };
+
+  it("the flat 5-bp sector floor silences the diffuse 4-bp adds (the bug)", () => {
+    const { prev, cur } = buildQuarter();
+    const a = computeActiveFlowPair(prev, cur, m, FLOORS).byGroup.get("SECTOR|SectorA")!;
+    expect(a.fundsIn).toBe(0);
+    expect(netDiffusionPct(a)).toBe(0);
+  });
+
+  it("the fund-relative floor lets the 4-bp adds vote in", () => {
+    const { prev, cur } = buildQuarter();
+    const a = computeActiveFlowPair(prev, cur, m, FLOORS, { fundRelativeFloor: true, minVoteBpsFloor: 2, voteFrac: 0.5 }).byGroup.get("SECTOR|SectorA")!;
+    expect(a.fundsIn).toBe(10);
+    expect(a.fundsOut).toBe(0);
+    expect(netDiffusionPct(a)).toBe(100);
+    // …and SectorB, symmetrically, votes out.
+    expect(computeActiveFlowPair(prev, cur, m, FLOORS, { fundRelativeFloor: true, minVoteBpsFloor: 2, voteFrac: 0.5 }).byGroup.get("SECTOR|SectorB")!.fundsOut).toBe(10);
+  });
+
+  it("never drops below minVoteBpsFloor for a barely-active fund", () => {
+    // A fund whose only moves are ~1 bp: 0.5·median = 0.5 bp, floored to 2 ⇒ no vote.
+    const prev = holdings({ F1: { AAA: [1000, 10000], BBB: [1000, 10000] } });
+    const cur = holdings({ F1: { AAA: [1000.2, 10002], BBB: [999.8, 9998] } }); // ±1 bp
+    const a = computeActiveFlowPair(prev, cur, m, FLOORS, { fundRelativeFloor: true, minVoteBpsFloor: 2, voteFrac: 0.5 }).byGroup.get("SECTOR|SectorA")!;
+    expect(a.fundsIn).toBe(0);
+  });
+});
+
 describe("netDiffusionPct", () => {
   it("is signed and bounded, 0 when nobody participates", () => {
     expect(netDiffusionPct({ fundsIn: 6, fundsOut: 2, fundsParticipating: 10 })).toBe(40);

@@ -121,6 +121,10 @@ export interface Leaderboard {
    *  variance) this quarter, so the score runs on capital flow alone. Surfaced
    *  as a banner rather than silently reweighting. */
   countFlowUnavailable: boolean;
+  /** Part 5 — per-ticker data-quality flags for the WHOLE scored universe (incl.
+   *  gated-out / quarantined names), so other Flows views (rotation) render the
+   *  SAME flags. Only names with at least one active flag appear. */
+  flagsByTicker: Record<string, { verifyData: boolean; partialData: boolean }>;
 }
 
 const DISPLAY_QUARTERS = 5;
@@ -392,6 +396,15 @@ function rescale(mags: number[]): number[] {
 export function computeLeaderboard(tickers: TickerIngredients[], config: FlowLeaderboardConfig): Leaderboard {
   const calcs = tickers.map((t) => computeTickerCalc(t, config)).filter((c): c is TickerCalc => c !== null);
 
+  // Part 5 — data-quality flags for EVERY scored ticker (before gating, so a
+  // quarantined name still carries its flag). Same computation the scored rows use;
+  // only names with an active flag are kept. Fanned out to other Flows views.
+  const flagsByTicker: Record<string, { verifyData: boolean; partialData: boolean }> = {};
+  for (const c of calcs) {
+    const verifyData = (c.medianWeight != null && c.medianWeight > config.verify_weight_median_pct) || unitErrorSuspected(c.latest.funds, config.unit_error_ratio);
+    if (verifyData || c.partialData) flagsByTicker[c.t.ticker] = { verifyData, partialData: c.partialData };
+  }
+
   // ── Mega-cap gate: exclude the top-N names by point-in-time market cap. ──
   const withMcap = calcs.filter((c) => c.latest.marketCapUsd != null && Number.isFinite(c.latest.marketCapUsd));
   const megaCapExcluded = new Set(
@@ -417,7 +430,7 @@ export function computeLeaderboard(tickers: TickerIngredients[], config: FlowLea
     else gatedOut.push({ ticker: c.t.ticker, companyName: c.t.companyName ?? null, holders: c.holders, wflow: c.wflow, wflowBps: c.wflowBps, reason: reasons.join("; ") });
   }
 
-  if (gated.length === 0) return { accumulation: [], distribution: [], gatedOut, countFlowUnavailable: false };
+  if (gated.length === 0) return { accumulation: [], distribution: [], gatedOut, countFlowUnavailable: false, flagsByTicker };
 
   // ── Cross-sectional z-scores over the GATED set this quarter. ──
   // Degenerate-component guard: if a component has no cross-sectional variance,
@@ -543,5 +556,6 @@ export function computeLeaderboard(tickers: TickerIngredients[], config: FlowLea
     distribution: finalize(disRaw, config.board_size.distribution),
     gatedOut,
     countFlowUnavailable,
+    flagsByTicker,
   };
 }

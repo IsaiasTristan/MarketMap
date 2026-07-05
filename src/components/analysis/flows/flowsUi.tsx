@@ -4,6 +4,7 @@
  * encodings only: split bars, sparklines, cap tags, action pills. No scores.
  */
 import type { CSSProperties, ReactNode } from "react";
+import { FLOW_FLAGS, flowFlagColor, type FlowFlagId } from "@/lib/institutional/flow-flags";
 
 // ── color maps ───────────────────────────────────────────────────────────────
 /** Market-cap tag colors — small-caps are BRIGHT so unfamiliar names stand out. */
@@ -125,6 +126,28 @@ export function ActionPill({ action }: { action: string }) {
     >
       {action.toLowerCase()}
     </span>
+  );
+}
+
+/**
+ * Data-quality flag badges (Part 5) — rendered from the SHARED flow-flags registry
+ * so a name shows the same glyph + tooltip on every Flows view. Pass either the
+ * registry flag ids (rotation) or the leaderboard's boolean shorthands.
+ */
+export function FlagBadges({ flags, size = 8 }: { flags: FlowFlagId[] | null | undefined; size?: number }) {
+  if (!flags || flags.length === 0) return null;
+  return (
+    <>
+      {flags.map((id) => {
+        const def = FLOW_FLAGS[id];
+        const color = flowFlagColor(def);
+        return (
+          <span key={id} title={def.tooltip} style={{ fontSize: size, fontWeight: 700, padding: "0 3px", height: 14, lineHeight: "14px", color, border: `1px solid ${color}`, cursor: "help", whiteSpace: "nowrap" }}>
+            {def.glyph}
+          </span>
+        );
+      })}
+    </>
   );
 }
 

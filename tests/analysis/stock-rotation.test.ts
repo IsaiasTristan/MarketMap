@@ -4,6 +4,10 @@ import {
   shrunkDiffusionPct,
   stockRankScore,
   diffusionContext,
+  participationWeightedMean,
+  rescaleScore0to100,
+  dominantConcentration,
+  diffusionDollarsDiverge,
   type StockRotationInput,
 } from "@/lib/institutional/stock-rotation";
 
@@ -102,6 +106,83 @@ describe("rankStockRotation", () => {
     expect(stockRankScore(50, 10, 100)).toBeGreaterThan(0);
     expect(stockRankScore(-50, 10, 100)).toBeLessThan(0);
     expect(stockRankScore(50, 10, 0)).toBe(0); // no magnitude → no score
+  });
+});
+
+describe("participationWeightedMean + demeaning (Part 1a)", () => {
+  it("weights by participation, and the weighted Σ of deviations is ~0", () => {
+    const rows = [
+      { value: -20, weight: 100 },
+      { value: 10, weight: 50 },
+      { value: 40, weight: 10 },
+    ];
+    const mean = participationWeightedMean(rows);
+    // (−20·100 + 10·50 + 40·10) / 160 = (−2000 + 500 + 400)/160 = −6.875
+    expect(mean).toBeCloseTo(-6.875, 3);
+    const weightedSumDev = rows.reduce((s, r) => s + (r.value - mean) * r.weight, 0);
+    expect(weightedSumDev).toBeCloseTo(0, 6);
+  });
+  it("is 0 for an empty or zero-weight set", () => {
+    expect(participationWeightedMean([])).toBe(0);
+    expect(participationWeightedMean([{ value: 5, weight: 0 }])).toBe(0);
+  });
+  it("demeaning flips an all-negative board to a mix of signs", () => {
+    // Every raw sector is negative (the all-red board) but they differ; demeaning
+    // makes the least-negative sectors read positive relative to the average.
+    const raw = [-30, -20, -10].map((v, i) => ({ value: v, weight: 10 * (i + 1) }));
+    const mean = participationWeightedMean(raw);
+    const demeaned = raw.map((r) => r.value - mean);
+    expect(demeaned.some((v) => v > 0)).toBe(true);
+    expect(demeaned.some((v) => v < 0)).toBe(true);
+  });
+});
+
+describe("rescaleScore0to100 (Part 3)", () => {
+  it("maps the most extreme |score| to 100 and preserves magnitude order", () => {
+    expect(rescaleScore0to100([50, -100, 25])).toEqual([50, 100, 25]);
+  });
+  it("returns all-zero for an all-zero board", () => {
+    expect(rescaleScore0to100([0, 0])).toEqual([0, 0]);
+  });
+  it("the rendered board order matches the visible score column (never sorts by a hidden key)", () => {
+    // Sort by rank score (the accumulation board's key), then rescale for display.
+    // The visible score column must be non-increasing down the board.
+    const rows = ["AAA", "BBB", "CCC", "DDD"].map((t, i) => row(t, { fundsIn: 4 + i, fundsOut: 0, fundsParticipating: 12, activeBpsAvg: 80 }));
+    const { accumulation } = rankStockRotation(rows, { minParticipants: 5, k: 4, boardSize: 15, sizeFilter: "all" });
+    const scores = rescaleScore0to100(accumulation.map((r) => r.rankScore));
+    for (let i = 1; i < scores.length; i++) expect(scores[i - 1]!).toBeGreaterThanOrEqual(scores[i]!);
+    expect(scores[0]).toBe(100); // top of the board reads 100
+  });
+});
+
+describe("dominantConcentration (Part 4)", () => {
+  const items = (spec: Array<[string, number]>) => spec.map(([ticker, dollarNetFlow]) => ({ ticker, dollarNetFlow }));
+  it("flags the dominant name when its |$| share ≥ threshold", () => {
+    // NVDA = 82% of the |$| of a 4-name subsector.
+    const c = dominantConcentration(items([["NVDA", 8200], ["AMD", 1000], ["AVGO", 500], ["MU", 300]]), 60);
+    expect(c).toEqual({ ticker: "NVDA", pct: 82 });
+  });
+  it("does not flag a well-spread bucket", () => {
+    expect(dominantConcentration(items([["A", 100], ["B", 100], ["C", 100]]), 60)).toBeNull();
+  });
+  it("returns null for an empty or flat bucket", () => {
+    expect(dominantConcentration([], 60)).toBeNull();
+    expect(dominantConcentration(items([["A", 0], ["B", 0]]), 60)).toBeNull();
+  });
+});
+
+describe("diffusionDollarsDiverge (Part 5 marker regression)", () => {
+  const MIN_DIFF = 10;
+  const MIN_$ = 100_000_000;
+  it("fires when breadth is positive but dollars negative, both above floors", () => {
+    expect(diffusionDollarsDiverge(33, -200_000_000, MIN_DIFF, MIN_$)).toBe(true);
+  });
+  it("does NOT fire when either side is below its floor", () => {
+    expect(diffusionDollarsDiverge(5, -200_000_000, MIN_DIFF, MIN_$)).toBe(false); // diffusion below floor
+    expect(diffusionDollarsDiverge(33, -50_000_000, MIN_DIFF, MIN_$)).toBe(false); // dollars below floor
+  });
+  it("does NOT fire when signs agree", () => {
+    expect(diffusionDollarsDiverge(33, 200_000_000, MIN_DIFF, MIN_$)).toBe(false);
   });
 });
 

@@ -86,6 +86,9 @@ export interface LeaderboardResult {
   countFlowUnavailable: boolean;
   filingPeriod: string;
   ingredientsVersion: number;
+  /** Part 5 — per-ticker data-quality flags for the whole scored universe, so the
+   *  rotation board renders the SAME flags (shared source). */
+  flagsByTicker: Leaderboard["flagsByTicker"];
 }
 
 // Small in-process cache. Key-based invalidation only (TTL irrelevant).
@@ -355,6 +358,7 @@ export async function getLeaderboard(period?: string, config: FlowLeaderboardCon
     countFlowUnavailable: board.countFlowUnavailable,
     filingPeriod: target,
     ingredientsVersion: version,
+    flagsByTicker: board.flagsByTicker,
   };
   cache.set(key, result);
   return result;

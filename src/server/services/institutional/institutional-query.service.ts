@@ -10,7 +10,8 @@ import { CROWDED_BREADTH_PCT, signalFundFilter } from "./institutional-aggregate
 import { CATEGORY_TIER, type FundCategory } from "./watchlist";
 import { getLeaderboard } from "./institutional-leaderboard.service";
 import { UNCLASSIFIED_SECTOR } from "@/lib/institutional/security-class";
-import { rankStockRotation, shrunkDiffusionPct, diffusionContext, type RankedStockRow, type StockRotationInput } from "@/lib/institutional/stock-rotation";
+import { activeFlowFlags, type FlowFlagId } from "@/lib/institutional/flow-flags";
+import { rankStockRotation, shrunkDiffusionPct, stockRankScore, diffusionContext, participationWeightedMean, rescaleScore0to100, dominantConcentration, type RankedStockRow, type StockRotationInput } from "@/lib/institutional/stock-rotation";
 import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-config";
 import { accumulationStreak, cumulativeAccSeries, trajectoryRankScore } from "@/domain/calculations/flow-trajectory";
 
@@ -832,9 +833,17 @@ export interface RotationGroup {
   marketCapTier?: string | null; // stock view only
   // Price-adjusted active-rotation metric (null before the first prior quarter).
   netDiffusionPct: number | null; // (in−out)/participating × 100 (raw)
-  shrunkDiffusionPct?: number | null; // stock view bar length: (in−out)/(n+k) × 100
-  rankScore?: number | null; // stock view ordering score
+  shrunkDiffusionPct?: number | null; // bar length: (in−out)/(n+k) × 100 (demeaned when on)
+  rawDiffusionPct?: number | null; // Part 1a: pre-demean shrunk diffusion (tooltip)
+  demeaned?: boolean; // Part 1a: true when shrunkDiffusionPct is relative to the cross-bucket mean
+  rankScore?: number | null; // stock view ordering score (raw composite)
+  score?: number | null; // Part 3: 0–100 board-rescaled, VISIBLE sort key (stock + subsector)
   belowThreshold?: boolean; // stock view: below the participation floor (search-only)
+  flags?: FlowFlagId[]; // Part 5: data-quality flags from the shared registry (same as leaderboard)
+  isUnclassified?: boolean; // Part 2: data-quality meter row, rendered last & dimmed
+  belowFloor?: boolean; // Part 4: the synthetic "below participation floor" collapse row
+  collapsedCount?: number; // Part 4: how many subsectors the collapse row hides
+  children?: RotationGroup[]; // Part 4: the collapsed below-floor subsectors (expand to view)
   activeBpsAvg: number | null; // avg deliberate move in bps of book
   dollarNetFlow: number | null; // $ net capital moved (annotation)
   fundsIn: number | null;
@@ -857,6 +866,8 @@ export interface RotationPayload {
   searchable?: RotationGroup[];
   qualifyingCount?: number;
   sizeFilter?: RotationSizeFilter;
+  // Part 4 — drill-down header flag when a single name dominates the bucket's |$|.
+  concentration?: { ticker: string; pct: number } | null;
 }
 
 type StoredActiveFlow = {
@@ -867,6 +878,13 @@ type StoredActiveFlow = {
   fundsParticipating: number;
   fundsEvaluated: number;
 };
+
+/** Tickers on an UNRESOLVED_SPLIT data hold this quarter (split-detect couldn't
+ *  resolve a share-count jump) — Part 5 quarantine flag, same source as elsewhere. */
+async function unresolvedSplitTickers(periodDate: Date): Promise<Set<string>> {
+  const rows = await prisma.dataQualityEvent.findMany({ where: { kind: "unresolved_split", period: periodDate }, select: { ticker: true } });
+  return new Set(rows.map((r) => r.ticker).filter((t): t is string => t != null));
+}
 
 /** (in−out)/participating × 100, signed −100..+100; null if no participants. */
 function diffusionOf(inN: number | null, outN: number | null, part: number | null): number | null {
@@ -942,17 +960,35 @@ export async function getRotation(
       },
       select: STOCK_SELECT,
     })) as StockRow[];
-    const ranked = rankStockRotation(rows.map(toStockInput), {
-      minParticipants: 1,
-      k: cfg.diffusion_shrink_k,
-      boardSize: 5,
-      sizeFilter: "all",
-    });
+    const inputs = rows.map(toStockInput);
+    // Part 4 — concentration flag: does one name carry most of the bucket's |$|?
+    const concentration = dominantConcentration(inputs, cfg.drilldown_concentration_flag);
+    // Part 4 — names with < 3 participating funds are shown dimmed with explicit
+    // vote counts (not a diffusion %) and never set the board's sort position: rank
+    // only the ≥3-fund names, then append a few low-n names by |$|.
+    const DRILL_MIN_N = 3;
+    const ranked = rankStockRotation(
+      inputs.filter((r) => (r.fundsParticipating ?? 0) >= DRILL_MIN_N),
+      { minParticipants: DRILL_MIN_N, k: cfg.diffusion_shrink_k, boardSize: 5, sizeFilter: "all" },
+    );
+    const lowN = inputs
+      .filter((r) => (r.fundsParticipating ?? 0) > 0 && (r.fundsParticipating ?? 0) < DRILL_MIN_N)
+      .sort((a, b) => Math.abs(b.dollarNetFlow ?? 0) - Math.abs(a.dollarNetFlow ?? 0))
+      .slice(0, 5)
+      .map((r) => stockGroup(r, null, true)); // belowThreshold ⇒ UI renders vote counts
+    const drillFlags = (await getLeaderboard(p))?.flagsByTicker ?? {};
+    const drillSplits = await unresolvedSplitTickers(periodDate);
+    const withDrillFlags = (g: RotationGroup): RotationGroup => {
+      const ids = activeFlowFlags({ ...drillFlags[g.groupKey], unresolvedSplit: drillSplits.has(g.groupKey) }).map((d) => d.id);
+      if (ids.length) g.flags = ids;
+      return g;
+    };
     const groups = [
-      ...ranked.accumulation.map((r) => stockGroup(r, r)),
-      ...ranked.distribution.map((r) => stockGroup(r, r)),
+      ...ranked.accumulation.map((r) => withDrillFlags(stockGroup(r, r))),
+      ...ranked.distribution.map((r) => withDrillFlags(stockGroup(r, r))),
+      ...lowN.map(withDrillFlags),
     ];
-    return { filingPeriod: p, groupBy, hasActiveFlow: rows.some((r) => r.activeBpsAvg !== null), groups };
+    return { filingPeriod: p, groupBy, hasActiveFlow: rows.some((r) => r.activeBpsAvg !== null), groups, concentration };
   }
 
   if (groupBy === "stock") {
@@ -983,14 +1019,27 @@ export async function getRotation(
       boardSize: 15,
       sizeFilter,
     });
-    const groups = [
-      ...ranked.accumulation.map((r) => stockGroup(r, r)),
-      ...ranked.distribution.map((r) => stockGroup(r, r)),
-    ];
+    const boardRows = [...ranked.accumulation, ...ranked.distribution];
+    // Part 3 — 0–100 board-rescaled VISIBLE score (the composite rank score, made
+    // legible). One scale across both sub-boards; the most extreme row reads 100.
+    const rescaled = rescaleScore0to100(boardRows.map((r) => r.rankScore));
+    // Part 5 — shared data-quality flags (same source & glyphs as the leaderboard):
+    // verify-weights / partial-data from the leaderboard core, unresolved-split from
+    // the split-detect data holds. A quarantined name badges here, no longer silent.
+    const flagMap = (await getLeaderboard(p))?.flagsByTicker ?? {};
+    const splitHolds = await unresolvedSplitTickers(periodDate);
+    const withFlags = (g: RotationGroup): RotationGroup => {
+      const ids = activeFlowFlags({ ...flagMap[g.groupKey], unresolvedSplit: splitHolds.has(g.groupKey) }).map((d) => d.id);
+      if (ids.length) g.flags = ids;
+      return g;
+    };
+    const groups = boardRows.map((r, i) => {
+      const g = stockGroup(r, r);
+      g.score = rescaled[i]!;
+      return withFlags(g);
+    });
     await attachStockHistory(groups, periodDate, p, cfg.diffusion_shrink_k);
-    const searchable = ranked.searchable.map((r) =>
-      stockGroup(r, r, (r.fundsParticipating ?? 0) < cfg.min_participants_stock),
-    );
+    const searchable = ranked.searchable.map((r) => withFlags(stockGroup(r, r, (r.fundsParticipating ?? 0) < cfg.min_participants_stock)));
     return { filingPeriod: p, groupBy, hasActiveFlow, groups, searchable, qualifyingCount: ranked.qualifying, sizeFilter };
   }
 
@@ -1017,19 +1066,71 @@ export async function getRotation(
     };
   });
   const hasActiveFlow = mapped.some((m) => m.netDiffusionPct !== null);
-  // Pull the data-quality "Unclassified" bucket out of the ranking so it always
-  // renders last, never competing with real sectors for the top/bottom slots.
+  // Part 2 — "Unclassified" is a data-quality meter, not a sector: pulled out of the
+  // ranking, the demeaning baseline, and percentile history; rendered last & dimmed.
   const unclassified = mapped.filter((m) => m.groupKey === UNCLASSIFIED_SECTOR);
-  const ranked = mapped.filter((m) => m.groupKey !== UNCLASSIFIED_SECTOR);
+  for (const u of unclassified) u.isUnclassified = true;
+  let ranked = mapped.filter((m) => m.groupKey !== UNCLASSIFIED_SECTOR);
+
+  // Part 1a — report each bucket's diffusion relative to the cross-bucket,
+  // participation-weighted mean this quarter (rotation is inherently relative — the
+  // read is "vs the average bucket"). Raw value kept for the tooltip; the
+  // participation-weighted Σ of the deviations is 0 by construction.
+  if (hasActiveFlow && cfg.demeaned_diffusion) {
+    const mean = participationWeightedMean(
+      ranked.filter((m) => m.shrunkDiffusionPct != null).map((m) => ({ value: m.shrunkDiffusionPct as number, weight: m.fundsParticipating ?? 0 })),
+    );
+    for (const m of ranked) {
+      if (m.shrunkDiffusionPct == null) continue;
+      m.rawDiffusionPct = m.shrunkDiffusionPct;
+      m.shrunkDiffusionPct = Math.round((m.shrunkDiffusionPct - mean) * 100) / 100;
+      m.demeaned = true;
+    }
+  }
+
+  // Displayed diffusion (drives the bar + the sort): shrunk (demeaned when on),
+  // falling back to raw netDiffusion, then the legacy holder count pre-active-flow.
+  const displayed = (m: RotationGroup): number => (hasActiveFlow ? m.shrunkDiffusionPct ?? m.netDiffusionPct ?? 0 : m.netFundsAdding);
+
+  // Part 4 — subsector participation floor: below-floor subsectors collapse into one
+  // dimmed, expandable row rather than competing on tiny-n noise.
+  let belowFloorRow: RotationGroup | null = null;
+  if (groupBy === "subsector" && hasActiveFlow) {
+    const below = ranked.filter((m) => (m.fundsParticipating ?? 0) < cfg.min_participants_subsector);
+    ranked = ranked.filter((m) => (m.fundsParticipating ?? 0) >= cfg.min_participants_subsector);
+    if (below.length > 0) {
+      belowFloorRow = {
+        groupKey: `below participation floor (${below.length} subsectors)`,
+        netFundsAdding: 0, fundsAdding: 0, fundsTrimming: 0, nameCount: below.length,
+        netDiffusionPct: null, shrunkDiffusionPct: null, activeBpsAvg: null,
+        dollarNetFlow: below.reduce((s, m) => s + (m.dollarNetFlow ?? 0), 0),
+        fundsIn: null, fundsOut: null, fundsParticipating: null,
+        belowFloor: true, collapsedCount: below.length,
+        children: below.slice().sort((a, b) => displayed(b) - displayed(a)),
+      };
+    }
+  }
+
+  // Part 3 — sort by the DISPLAYED diffusion (unrounded, so two rows that round to
+  // the same label order correctly), tiebreak on |net $|.
   const sorted = hasActiveFlow
-    ? ranked.slice().sort((a, b) => (b.netDiffusionPct ?? 0) - (a.netDiffusionPct ?? 0))
+    ? ranked.slice().sort((a, b) => displayed(b) - displayed(a) || Math.abs(b.dollarNetFlow ?? 0) - Math.abs(a.dollarNetFlow ?? 0))
     : ranked.slice().sort((a, b) => b.netFundsAdding - a.netFundsAdding);
-  const trimmed =
-    groupBy === "subsector" && sorted.length > SUBSECTOR_LIMIT * 2
-      ? [...sorted.slice(0, SUBSECTOR_LIMIT), ...sorted.slice(-SUBSECTOR_LIMIT)]
-      : sorted;
-  const groups = [...trimmed, ...unclassified];
-  await attachSectorHistory(groups, groupBy === "subsector" ? "SUBSECTOR" : "SECTOR", periodDate, p, cfg.diffusion_shrink_k);
+  const trimmed = groupBy === "subsector" && sorted.length > SUBSECTOR_LIMIT * 2 ? [...sorted.slice(0, SUBSECTOR_LIMIT), ...sorted.slice(-SUBSECTOR_LIMIT)] : sorted;
+
+  // Part 3 — 0–100 board-rescaled VISIBLE score for the subsector view (composite
+  // rank score = displayed diffusion · ln(1+n) · √|bps|; stock scores set below).
+  if (groupBy === "subsector") {
+    const scores = trimmed.map((m) => stockRankScore(displayed(m), m.fundsParticipating ?? 0, m.activeBpsAvg ?? 0));
+    const rescaled = rescaleScore0to100(scores);
+    trimmed.forEach((m, i) => {
+      m.rankScore = scores[i]!;
+      m.score = rescaled[i]!;
+    });
+  }
+
+  const groups = [...trimmed, ...(belowFloorRow ? [belowFloorRow] : []), ...unclassified];
+  await attachSectorHistory(groups, groupBy === "subsector" ? "SUBSECTOR" : "SECTOR", periodDate, p, cfg.diffusion_shrink_k, cfg.demeaned_diffusion);
   return { filingPeriod: p, groupBy, hasActiveFlow, groups };
 }
 
@@ -1041,6 +1142,7 @@ async function attachSectorHistory(
   periodDate: Date,
   currentIso: string,
   k: number,
+  demean: boolean,
 ): Promise<void> {
   if (groups.length === 0) return;
   const periods = await prisma.institutionalSectorAggregate.findMany({
@@ -1054,14 +1156,32 @@ async function attachSectorHistory(
     where: { groupType, filingPeriod: { in: periods.map((r) => r.filingPeriod) } },
     select: { groupKey: true, filingPeriod: true, aggregatesJson: true },
   });
-  const series = new Map<string, Array<{ period: string; value: number }>>();
+  type Pt = { groupKey: string; period: string; value: number; weight: number };
+  const pts: Pt[] = [];
   for (const r of rows) {
     const af = (r.aggregatesJson as unknown as { activeFlow?: StoredActiveFlow } | null)?.activeFlow;
     if (!af) continue;
-    const value = shrunkDiffusionPct(af.fundsIn, af.fundsOut, af.fundsParticipating, k);
-    (series.get(r.groupKey) ?? series.set(r.groupKey, []).get(r.groupKey)!).push({ period: iso(r.filingPeriod), value });
+    pts.push({ groupKey: r.groupKey, period: iso(r.filingPeriod), value: shrunkDiffusionPct(af.fundsIn, af.fundsOut, af.fundsParticipating, k), weight: af.fundsParticipating });
   }
+  // Part 1a — demean each historical quarter by its cross-bucket participation-
+  // weighted mean (real buckets only), so ghost ticks & percentiles compare the
+  // bucket to its own past under the SAME (demeaned) definition it renders with.
+  if (demean) {
+    const meanByPeriod = new Map<string, number>();
+    const byPeriod = new Map<string, Pt[]>();
+    for (const pt of pts) if (pt.groupKey !== UNCLASSIFIED_SECTOR) (byPeriod.get(pt.period) ?? byPeriod.set(pt.period, []).get(pt.period)!).push(pt);
+    for (const [per, arr] of byPeriod) meanByPeriod.set(per, participationWeightedMean(arr.map((x) => ({ value: x.value, weight: x.weight }))));
+    for (const pt of pts) {
+      if (pt.groupKey === UNCLASSIFIED_SECTOR) continue;
+      pt.value = Math.round((pt.value - (meanByPeriod.get(pt.period) ?? 0)) * 100) / 100;
+    }
+  }
+  const series = new Map<string, Array<{ period: string; value: number }>>();
+  for (const pt of pts) (series.get(pt.groupKey) ?? series.set(pt.groupKey, []).get(pt.groupKey)!).push({ period: pt.period, value: pt.value });
   for (const g of groups) {
+    // Unclassified (data meter) and the below-floor collapse row are excluded from
+    // percentile ranking / ghost ticks.
+    if (g.isUnclassified || g.belowFloor) continue;
     const ctx = diffusionContext(series.get(g.groupKey) ?? [], currentIso);
     g.priorDiffusionPct = ctx.prior;
     g.diffusionHistory = ctx.history;

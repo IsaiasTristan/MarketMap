@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifySecurity, UNCLASSIFIED_SECTOR } from "@/lib/institutional/security-class";
+import { classifySecurity, canonicalSubsector, UNCLASSIFIED_SECTOR } from "@/lib/institutional/security-class";
 import {
   computeActiveFlowPair,
   type FundHoldingsByPeriod,
@@ -35,6 +35,42 @@ describe("classifySecurity", () => {
     const c = classifySecurity(null, null);
     expect(c.securityClass).toBe("unclassified");
     expect(c.groupSector).toBe(UNCLASSIFIED_SECTOR);
+  });
+});
+
+describe("subsector label hygiene (Part 2)", () => {
+  it("folds the near-synonym 'Minerals' into canonical 'Miners'", () => {
+    expect(canonicalSubsector("Minerals")).toBe("Miners");
+    expect(canonicalSubsector("minerals")).toBe("Miners"); // case-insensitive
+    expect(canonicalSubsector("Miners")).toBe("Miners"); // canonical unchanged
+    // classifySecurity applies the fold so both land in one subsector row.
+    expect(classifySecurity("Materials", "Minerals").groupSubsector).toBe("Miners");
+    expect(classifySecurity("Materials", "Miners").groupSubsector).toBe("Miners");
+  });
+  it("trims and null-guards sub-themes", () => {
+    expect(canonicalSubsector("  Banks ")).toBe("Banks");
+    expect(canonicalSubsector("")).toBeNull();
+    expect(canonicalSubsector(null)).toBeNull();
+  });
+  it("every canonical subsector maps to exactly one parent sector in a clean taxonomy", () => {
+    // Invariant the board relies on: a subsector label is owned by one sector. This
+    // fixture is a clean taxonomy; the live-data 'Platforms' collision (Mega Cap +
+    // Software) is reported separately as a data-quality finding to resolve upstream.
+    const taxonomy: Array<[string, string]> = [
+      ["Financials", "Banks"],
+      ["Financials", "Insurance"],
+      ["Semis & AI", "AI/Compute"],
+      ["Healthcare", "Biotech"],
+      ["Materials", "Miners"],
+      ["Materials", "Minerals"], // folds to Miners under the same parent → no conflict
+    ];
+    const parents = new Map<string, Set<string>>();
+    for (const [sector, sub] of taxonomy) {
+      const c = classifySecurity(sector, sub);
+      const key = c.groupSubsector!;
+      (parents.get(key) ?? parents.set(key, new Set()).get(key)!).add(c.groupSector!);
+    }
+    for (const [sub, sectors] of parents) expect(sectors.size, `subsector ${sub} has multiple parents`).toBe(1);
   });
 });
 

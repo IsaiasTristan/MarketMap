@@ -36,6 +36,34 @@ export interface FlowLeaderboardConfig {
   recency_weights: readonly number[];
   /** Deliberate-rotation vote floor, per rollup level (bps of book). */
   min_vote_bps: MinVoteBpsConfig;
+  // ── Rotation v3 (Part 1 asymmetry fix — config-gated, default-off until the
+  //    Part 0 diagnostic confirms structural asymmetry) ──────────────────────
+  /** Report each sector's diffusion relative to the cross-sector,
+   *  participation-weighted mean that quarter (rotation is inherently relative).
+   *  Raw diffusion moves to the tooltip. Unclassified is excluded from the mean. */
+  demeaned_diffusion: boolean;
+  /** Replace the flat per-fund vote floor with a fund-relative one so diffuse
+   *  adders aren't disenfranchised: a fund's own activity level sets its bar. */
+  fund_relative_floor: boolean;
+  /** Absolute minimum (bps) for the fund-relative floor — floor never drops below
+   *  this even for a barely-active fund. Distinct from per-level `min_vote_bps`. */
+  min_vote_bps_floor: number;
+  /** Fund-relative floor = max(min_vote_bps_floor, vote_frac × fund's median
+   *  |active change| across sectors that quarter). */
+  vote_frac: number;
+  // ──────────────────────────────────────────────────────────────────────────
+  /** Subsector-rotation view: minimum participating funds for a subsector to rank
+   *  on its own row (below-floor subsectors collapse into one dimmed row). */
+  min_participants_subsector: number;
+  /** Unclassified (data-quality meter) is a problem above this % of total |flow| —
+   *  the [LIVE] mapping pass drives the residual below it. */
+  unclassified_max_pct: number;
+  /** Drill-down header flags concentration when one name exceeds this % of the
+   *  subsector's |$|. */
+  drilldown_concentration_flag: number;
+  /** Default cap filter on the rotation stock view (matches the leaderboard's
+   *  ex-mega gate philosophy). ALL CAPS / MEGA ONLY remain one click away. */
+  default_cap_filter: "all" | "ex-mega" | "mega-only";
   /** Stock-rotation view: minimum participating funds for a name to be ranked. */
   min_participants_stock: number;
   /** Stock-rotation view: shrinkage added to the diffusion denominator so a
@@ -83,6 +111,27 @@ export const FLOW_LEADERBOARD_CONFIG: FlowLeaderboardConfig = {
    *  merely drifts weights up shows sub-floor moves and votes 0, so a green
    *  diffusion bar means funds actually rotated in, not that the sector rallied. */
   min_vote_bps: { sector: 5, subsector: 3, stock: 2 },
+
+  /** Part 1 asymmetry fix — ENABLED: the Part 0 diagnostic confirmed structural
+   *  negative bias (11/12 quarters majority-red, cross-sector vote sum strongly
+   *  negative while per-fund active weight is ~zero-sum). Demeaning + a
+   *  fund-relative floor remove the mechanical bias. Flip either to false to A/B. */
+  demeaned_diffusion: true,
+  fund_relative_floor: true,
+  /** Never disenfranchise a barely-active fund below a 2 bps deliberate move. */
+  min_vote_bps_floor: 2,
+  /** Half of a fund's own median sector activity is its materiality bar. */
+  vote_frac: 0.5,
+
+  /** A subsector needs at least this many participating funds to hold its own row;
+   *  below-floor subsectors collapse into one dimmed, expandable row. */
+  min_participants_subsector: 5,
+  /** The [LIVE] mapping pass drives residual Unclassified below this % of |flow|. */
+  unclassified_max_pct: 3,
+  /** Drill-down "N% of subsector $ is one name" flag threshold. */
+  drilldown_concentration_flag: 60,
+  /** Rotation stock view defaults to ex-mega (mega-cap flow is noise). */
+  default_cap_filter: "ex-mega",
 
   /** A single-name bar needs at least this many participating funds, or a 2–3
    *  holder 100% bar would dominate the board on noise. */

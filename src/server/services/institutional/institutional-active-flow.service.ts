@@ -51,6 +51,21 @@ export const DEFAULT_VOTE_FLOORS: VoteFloorsBps = {
   subsector: ACTIVE_FLOW_EPS_BPS,
 };
 
+/**
+ * Rotation v3 Part 1b — fund-relative vote floor. When enabled, a fund's SECTOR /
+ * SUBSECTOR vote threshold is `max(minVoteBpsFloor, voteFrac × median |bucket move|)`
+ * for THAT fund that quarter, instead of the flat per-level floor. A fund's own
+ * activity level sets its materiality bar, so a manager making ten small 4-bps adds
+ * funded by one 40-bps sell no longer has all ten adds silenced by a flat floor
+ * while the one sell clears it — the mechanic behind the all-red sector board.
+ * Off ⇒ the flat `VoteFloorsBps` behaviour (name-level always uses the flat floor).
+ */
+export interface ActiveFlowOpts {
+  fundRelativeFloor?: boolean;
+  minVoteBpsFloor?: number;
+  voteFrac?: number;
+}
+
 export type HoldingLite = { shares: number; value: number };
 /** fundId → (ticker → { shares, value }) for a single quarter. */
 export type FundHoldingsByPeriod = Map<string, Map<string, HoldingLite>>;
@@ -105,6 +120,7 @@ export function computeActiveFlowPair(
   cur: FundHoldingsByPeriod,
   meta: SectorMeta,
   floors: VoteFloorsBps = DEFAULT_VOTE_FLOORS,
+  opts: ActiveFlowOpts = {},
 ): { byName: Map<string, ActiveFlowStat>; byGroup: Map<string, ActiveFlowStat>; skippedPrices: number } {
   // ── implied price per ticker at t: median(value/shares); fall back to t−1. ──
   const curPx = new Map<string, number[]>();
@@ -205,7 +221,17 @@ export function computeActiveFlowPair(
     // Diffusion is counted on the fund's TOTAL move in the bucket, not per name, and
     // the vote is cast on net dollars TRADED in the bucket (as bps of book), so a
     // fund that raised cash can't paint every held sector green.
-    const rollGroup = (per: Map<string, { delta: number; dollar: number }>, prefix: string, floor: number) => {
+    const rollGroup = (per: Map<string, { delta: number; dollar: number }>, prefix: string, flatFloor: number) => {
+      // Part 1b: a fund's own median |bucket move| sets its vote bar (never below
+      // minVoteBpsFloor); else the flat per-level floor. Computed once per fund per
+      // level from this fund's bucket moves this quarter.
+      let floor = flatFloor;
+      if (opts.fundRelativeFloor) {
+        const moves: number[] = [];
+        for (const { dollar } of per.values()) moves.push(Math.abs((dollar / book) * 10000));
+        const med = median(moves) ?? 0;
+        floor = Math.max(opts.minVoteBpsFloor ?? ACTIVE_FLOW_EPS_BPS, (opts.voteFrac ?? 0) * med);
+      }
       for (const [key, { delta, dollar }] of per) {
         const a = bump(groupAcc, `${prefix}|${key}`);
         a.sumDelta += delta;
@@ -343,6 +369,7 @@ export async function buildActiveFlowMetrics(
   meta: SectorMeta,
   log: (m: string) => void,
   floors: VoteFloorsBps = DEFAULT_VOTE_FLOORS,
+  opts: ActiveFlowOpts = {},
 ): Promise<{ byNamePeriod: Map<string, ActiveFlowStat>; byGroupPeriod: Map<string, ActiveFlowStat> }> {
   const byNamePeriod = new Map<string, ActiveFlowStat>();
   const byGroupPeriod = new Map<string, ActiveFlowStat>();
@@ -352,7 +379,7 @@ export async function buildActiveFlowMetrics(
   for (const p of periods) {
     const cur = await loadPeriod(p);
     if (prev) {
-      const { byName, byGroup, skippedPrices } = computeActiveFlowPair(prev, cur, meta, floors);
+      const { byName, byGroup, skippedPrices } = computeActiveFlowPair(prev, cur, meta, floors, opts);
       for (const [ticker, stat] of byName) byNamePeriod.set(`${ticker}|${p}`, stat);
       for (const [gk, stat] of byGroup) byGroupPeriod.set(`${gk}|${p}`, stat);
       totalSkipped += skippedPrices;

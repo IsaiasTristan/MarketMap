@@ -396,11 +396,18 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
   // (groupType|groupKey|period). Reuses the sector/subsector taxonomy in `meta`.
   // Per-level materiality floors so rally-drift dust doesn't cast rotation votes.
   const mv = FLOW_LEADERBOARD_CONFIG.min_vote_bps;
-  const activeFlow = await buildActiveFlowMetrics(periods, meta, log, {
-    name: mv.stock,
-    sector: mv.sector,
-    subsector: mv.subsector,
-  });
+  const activeFlow = await buildActiveFlowMetrics(
+    periods,
+    meta,
+    log,
+    { name: mv.stock, sector: mv.sector, subsector: mv.subsector },
+    {
+      // Part 1b — fund-relative sector/subsector vote floor (config-gated).
+      fundRelativeFloor: FLOW_LEADERBOARD_CONFIG.fund_relative_floor,
+      minVoteBpsFloor: FLOW_LEADERBOARD_CONFIG.min_vote_bps_floor,
+      voteFrac: FLOW_LEADERBOARD_CONFIG.vote_frac,
+    },
+  );
 
   // Market-cap tiers for the held universe (current cap; tags are stable enough).
   const tickers = Array.from(meta.keys());
