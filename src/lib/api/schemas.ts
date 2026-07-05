@@ -328,6 +328,7 @@ export const flowsCoreHoldingsQuery = z.object({
 export const flowsPipelineQuery = z.object({
   period: periodParam,
   limit: boundedInt(24, 6, 60),
+  cap: z.enum(["all", "ex-mega", "mega-only"]).optional().default("ex-mega"),
 });
 
 export const flowsTrajectoryQuery = z.object({

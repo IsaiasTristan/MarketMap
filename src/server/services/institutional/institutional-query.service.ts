@@ -378,6 +378,18 @@ export interface DurableCard {
   actionTag: string;
   /** Data-quality flags from the shared registry (same glyphs as leaderboard/rotation). */
   flags?: FlowFlagId[];
+  /** Mega-cap shown only because the cap filter includes mega — render dimmed
+   *  "informational only" (Part 2c). */
+  informational?: boolean;
+}
+/** A DURABLE/CORE-shaped build below the participation floor (n < min_participants) —
+ *  a watch item, not a durable card (Part 2a). */
+export interface WatchItem {
+  ticker: string;
+  companyName: string | null;
+  streak: number;
+  holders: number;
+  flags?: FlowFlagId[];
 }
 export interface FormingChip {
   ticker: string;
@@ -405,6 +417,8 @@ export interface TrajectoryPipelinePayload {
   transitionsCount: number;
   durable: DurableCard[];
   forming: FormingChip[];
+  /** Below-participation-floor builds (Part 2a) — surfaced as watch, never durable. */
+  watch: WatchItem[];
   spikes: { count: number; items: SpikeLine[] };
   transitions: TransitionItem[];
   baseRates: { durable: string | null; forming: string | null };
@@ -420,7 +434,8 @@ function baseRateLine(row: { excessReturn: number | null; hitRate: number | null
   return `${label}: ${row.excessReturn >= 0 ? "+" : ""}${(row.excessReturn * 100).toFixed(1)}% excess next ${horizon} (n=${row.n}${hit})`;
 }
 
-export async function getTrajectoryPipeline(period?: string, durableLimit = 24): Promise<TrajectoryPipelinePayload | null> {
+export async function getTrajectoryPipeline(period?: string, durableLimit = 24, capFilter: RotationSizeFilter = "ex-mega"): Promise<TrajectoryPipelinePayload | null> {
+  const includeMega = capFilter !== "ex-mega"; // Part 2c: mega-caps are ex'd from durable cards by default
   const p = await resolvePeriod(period);
   if (!p) return null;
   const periods = await listPeriods(); // desc
@@ -434,18 +449,22 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24):
     select: { ticker: true, companyName: true, sector: true, marketCapTier: true, fundsHolding: true, deltaHolders: true, pctOfFunds: true, netflowBps: true, lifecycleStage: true, crowded: true },
   });
 
-  // Stage census + QoQ deltas.
-  const countBy = (rows: Array<{ lifecycleStage: string | null }>) => {
+  // Stage census + QoQ deltas (Part 2d): counts come from the SAME filtered set the
+  // sections render — DURABLE is ex-mega by default (Part 2c), so the chip equals the
+  // number of cards shown. Mega durable names only count when includeMega.
+  const shownInStage = (r: { lifecycleStage: string | null; marketCapTier: string | null }): boolean =>
+    r.lifecycleStage != null && (r.lifecycleStage !== "DURABLE" || includeMega || r.marketCapTier !== "mega");
+  const countBy = (rows: Array<{ lifecycleStage: string | null; marketCapTier: string | null }>) => {
     const m = new Map<string, number>();
-    for (const r of rows) if (r.lifecycleStage) m.set(r.lifecycleStage, (m.get(r.lifecycleStage) ?? 0) + 1);
+    for (const r of rows) if (shownInStage(r)) m.set(r.lifecycleStage!, (m.get(r.lifecycleStage!) ?? 0) + 1);
     return m;
   };
   const curCounts = countBy(staged);
   const priorStaged = priorP
-    ? await prisma.institutionalNameAggregate.findMany({ where: { filingPeriod: new Date(`${priorP}T00:00:00.000Z`), lifecycleStage: { not: null } }, select: { lifecycleStage: true } })
+    ? await prisma.institutionalNameAggregate.findMany({ where: { filingPeriod: new Date(`${priorP}T00:00:00.000Z`), lifecycleStage: { not: null } }, select: { lifecycleStage: true, marketCapTier: true } })
     : [];
   const priorCounts = countBy(priorStaged);
-  const census = ["DURABLE", "FORMING", "SPIKE", "CORE", "BROKEN"].map((stage) => ({
+  const census = ["DURABLE", "FORMING", "SPIKE", "WATCH", "CORE", "BROKEN"].map((stage) => ({
     stage,
     count: curCounts.get(stage) ?? 0,
     deltaVsPrior: (curCounts.get(stage) ?? 0) - (priorCounts.get(stage) ?? 0),
@@ -482,8 +501,8 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24):
     return ids.length ? ids : undefined;
   };
 
-  // ── DURABLE cards (full evidence). ──
-  const durableRows = staged.filter((s) => s.lifecycleStage === "DURABLE");
+  // ── DURABLE cards (full evidence). ── ex-mega by default (Part 2c).
+  const durableRows = staged.filter((s) => s.lifecycleStage === "DURABLE" && (includeMega || s.marketCapTier !== "mega"));
   const durTickers = durableRows.map((r) => r.ticker);
   // Indexed split-adjusted price over the window + top qualified initiator.
   const priceByTicker = await indexedPriceByTicker(durTickers, window);
@@ -524,6 +543,7 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24):
         evidenceChips: chips,
         actionTag: r.crowded ? "crowded — confirm" : "add candidate",
         flags: flagsFor(r.ticker),
+        informational: r.marketCapTier === "mega",
       };
     })
     .sort((a, b) => b.rankScore - a.rankScore)
@@ -544,8 +564,13 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24):
         flags: flagsFor(r.ticker),
       };
     })
-    .sort((a, b) => Math.abs(b.streak) - Math.abs(a.streak))
-    .slice(0, 60);
+    .sort((a, b) => Math.abs(b.streak) - Math.abs(a.streak));
+
+  // ── WATCH (Part 2a): below-participation-floor durable-shaped builds, n=1 style. ──
+  const watch: WatchItem[] = staged
+    .filter((s) => s.lifecycleStage === "WATCH")
+    .map((r) => ({ ticker: r.ticker, companyName: r.companyName, streak: rankOf(r.ticker, r.fundsHolding).streak, holders: r.fundsHolding, flags: flagsFor(r.ticker) }))
+    .sort((a, b) => Math.abs(b.streak) - Math.abs(a.streak));
 
   // ── SPIKES (collapsed). ──
   const spikeRows = staged.filter((s) => s.lifecycleStage === "SPIKE");
@@ -576,6 +601,7 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24):
     transitionsCount: transEvents.length,
     durable,
     forming,
+    watch,
     spikes,
     transitions,
     baseRates: { durable: baseRateLine(durBr, "durable builds"), forming: baseRateLine(formBr, "forming builds") },

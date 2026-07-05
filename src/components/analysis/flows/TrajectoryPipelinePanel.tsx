@@ -18,13 +18,19 @@ const STAGE_COLOR: Record<string, string> = {
   DURABLE: "var(--color-positive)",
   FORMING: "var(--color-info)",
   SPIKE: "var(--text-muted)",
+  WATCH: "var(--text-muted)",
   CORE: "var(--color-accent)",
   BROKEN: "var(--color-negative)",
 };
 
 export function TrajectoryPipelinePanel({ period, onSelectTicker }: { period: string | null; onSelectTicker: (t: string) => void }) {
-  const { data, state, error } = useFlows<TrajectoryPipelinePayload>(["flows-pipeline", period], `/api/analysis/flows/pipeline${period ? `?period=${period}` : ""}`);
   const [spikesOpen, setSpikesOpen] = useState(false);
+  const [includeMega, setIncludeMega] = useState(false);
+  const cap = includeMega ? "all" : "ex-mega";
+  const qs = new URLSearchParams();
+  if (period) qs.set("period", period);
+  qs.set("cap", cap);
+  const { data, state, error } = useFlows<TrajectoryPipelinePayload>(["flows-pipeline", period, cap], `/api/analysis/flows/pipeline?${qs.toString()}`);
 
   return (
     <PanelState state={state} error={error}>
@@ -41,7 +47,13 @@ export function TrajectoryPipelinePanel({ period, onSelectTicker }: { period: st
                 )}
               </div>
             ))}
-            <div style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)" }}>{data.transitionsCount} stage change{data.transitionsCount === 1 ? "" : "s"} this quarter</div>
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+              <label style={{ fontSize: 10, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }} title="Mega-caps are excluded from durable cards by default; toggle to include them (dimmed, informational only).">
+                <input type="checkbox" checked={includeMega} onChange={(e) => setIncludeMega(e.target.checked)} style={{ cursor: "pointer" }} />
+                include mega
+              </label>
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{data.transitionsCount} stage change{data.transitionsCount === 1 ? "" : "s"} this quarter</span>
+            </div>
           </div>
 
           {/* DURABLE — full evidence cards. */}
@@ -69,6 +81,21 @@ export function TrajectoryPipelinePanel({ period, onSelectTicker }: { period: st
               {data.forming.length === 0 && <Empty>None.</Empty>}
             </div>
           </Section>
+
+          {/* WATCH — below participation floor (Part 2a): durable-shaped, too few funds. */}
+          {data.watch.length > 0 && (
+            <Section title="Watch" color={STAGE_COLOR.WATCH!} count={data.watch.length} subtitle="durable-shaped but below the 3-fund floor — one fund's adds, not a build">
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {data.watch.map((w) => (
+                  <div key={w.ticker} onClick={() => onSelectTicker(w.ticker)} className="flows-row" style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 8px", background: "var(--bg-surface)", border: "1px dashed var(--bg-border)", cursor: "pointer", opacity: 0.8 }}>
+                    <span style={{ fontWeight: 700, color: "var(--text-secondary)", fontSize: 12 }}>{w.ticker}</span>
+                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{Math.abs(w.streak)}q · n={w.holders}</span>
+                    <FlagBadges flags={w.flags} />
+                  </div>
+                ))}
+              </div>
+            </Section>
+          )}
 
           {/* SPIKES — collapsed. */}
           <div style={{ padding: "6px 10px", background: "var(--bg-surface)", border: "1px solid var(--bg-border)" }}>
@@ -160,12 +187,13 @@ function AccPriceChart({ acc, price, width = 280, height = 70 }: { acc: number[]
 
 function DurableCardView({ card, onClick }: { card: DurableCard; onClick: () => void }) {
   return (
-    <div onClick={onClick} className="flows-row" style={{ background: "var(--bg-surface)", border: "1px solid var(--bg-border)", padding: "8px 10px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 6 }}>
+    <div onClick={onClick} className="flows-row" style={{ background: "var(--bg-surface)", border: "1px solid var(--bg-border)", padding: "8px 10px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 6, opacity: card.informational ? 0.55 : 1 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontWeight: 700, color: "var(--color-positive)", fontSize: 14 }}>{card.ticker}</span>
           <CapTag tier={card.marketCapTier} />
           <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{Math.abs(card.streak)}q streak</span>
+          {card.informational && <span title="mega-cap — informational only" style={{ fontSize: 8, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--text-muted)", border: "1px solid var(--bg-border)", padding: "0 3px" }}>info</span>}
           <FlagBadges flags={card.flags} />
         </div>
         <span style={{ fontSize: 10, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" }}>{card.holders} funds · {card.breadth.toFixed(1)}%</span>

@@ -478,7 +478,11 @@ async function buildNameAndSectorAggregates(log: (m: string) => void): Promise<{
       const breadth = (holders / (denom.get(p) ?? 1)) * 100;
       return holders >= 2 && breadth >= (p75Breadth.get(p) ?? Infinity);
     });
-    const stages = classifyLifecycleSeries(perQuarterBps, crowdedFlags);
+    // Participation floor (Part 2a): DURABLE/CORE require ≥ min_participants_stage
+    // holders — a single fund's steady adds move the all-funds mean but are WATCH,
+    // not a durable build. Holders per quarter drive the floor.
+    const participants = periods.map((p) => series.get(p) ?? 0);
+    const stages = classifyLifecycleSeries(perQuarterBps, crowdedFlags, undefined, participants);
     lifecycleByTicker.set(ticker, new Map(periods.map((p, i) => [p, stages[i]!])));
     for (const ev of detectTransitions(stages)) {
       eventRows.push({

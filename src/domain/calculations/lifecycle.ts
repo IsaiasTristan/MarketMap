@@ -25,7 +25,10 @@
  */
 import { accumulationStreak, cumulativeAccSeries, rSquared, FLOW_TRAJECTORY_CONFIG } from "./flow-trajectory";
 
-export type LifecycleStage = "SPIKE" | "FORMING" | "DURABLE" | "CORE" | "BROKEN";
+// WATCH = a DURABLE/CORE-shaped build carried by fewer than min_participants_stage
+// funds (e.g. one fund's steady adds moving the all-funds mean). Not a real durable —
+// surfaced as an "n=1 watch" item, never a durable card, and not transition-worthy.
+export type LifecycleStage = "SPIKE" | "FORMING" | "DURABLE" | "CORE" | "BROKEN" | "WATCH";
 
 export interface LifecycleConfig {
   /** |latest move| (bps) a lone-quarter build must clear to read as a SPIKE. */
@@ -42,6 +45,9 @@ export interface LifecycleConfig {
   core_retained_pct: number;
   /** Prior positive streak length required for a negative quarter to be BROKEN. */
   broken_min_streak: number;
+  /** Minimum participating funds (holders) for a build to qualify as DURABLE/CORE.
+   *  Below this it is WATCH (a single fund's adds are not a durable build). */
+  min_participants_stage: number;
 }
 
 export const LIFECYCLE_CONFIG: LifecycleConfig = {
@@ -52,6 +58,7 @@ export const LIFECYCLE_CONFIG: LifecycleConfig = {
   core_min_plateau_qtrs: 2,
   core_retained_pct: 0.8,
   broken_min_streak: 3,
+  min_participants_stage: 3,
 };
 
 export interface StageInfo {
@@ -72,6 +79,10 @@ export function classifyLifecycleAt(
   perQuarterNetBps: number[],
   breadthAtP75 = false,
   config: LifecycleConfig = LIFECYCLE_CONFIG,
+  /** Participating funds (holders) at this quarter — DURABLE/CORE require
+   *  ≥ min_participants_stage, else the shape downgrades to WATCH. Defaults to
+   *  Infinity (no floor) so series without participant data are unaffected. */
+  participantsAt = Infinity,
 ): StageInfo {
   const n = perQuarterNetBps.length;
   const acc = cumulativeAccSeries(perQuarterNetBps);
@@ -80,6 +91,7 @@ export function classifyLifecycleAt(
   const streakCfg = { ...FLOW_TRAJECTORY_CONFIG, noise_floor_bps: config.core_deadzone_bps };
   const streak = accumulationStreak(perQuarterNetBps, streakCfg);
   const info = (stage: LifecycleStage | null): StageInfo => ({ stage, crowded: breadthAtP75, streak });
+  const belowFloor = participantsAt < config.min_participants_stage;
   if (n === 0) return info(null);
 
   const latest = perQuarterNetBps[n - 1] ?? 0;
@@ -99,11 +111,14 @@ export function classifyLifecycleAt(
     if (priorBuild >= config.broken_min_streak) return info("BROKEN");
   }
 
-  // CORE: a plateau of ≥ core_min_plateau_qtrs trailing flat quarters sitting on
-  // top of a qualifying DURABLE build, with the acc level retained ≥ pct of peak.
+  // A trailing plateau (flat quarters) sitting on top of a qualifying DURABLE build.
+  // Once the plateau reaches core_min_plateau_qtrs the build graduates to CORE; a
+  // SHORTER plateau (a durable build that merely paused a quarter) stays DURABLE
+  // rather than flickering to null — so DURABLE → CORE is a contiguous, drawable
+  // transition instead of DURABLE → null → CORE.
   let plateauLen = 0;
   for (let i = n - 1; i >= 0 && Math.abs(perQuarterNetBps[i] ?? 0) <= floor; i--) plateauLen++;
-  if (plateauLen >= config.core_min_plateau_qtrs) {
+  if (plateauLen >= 1) {
     const buildEnd = n - 1 - plateauLen; // last active-build index before the plateau
     if (buildEnd >= 0) {
       const buildStreak = accumulationStreak(perQuarterNetBps.slice(0, buildEnd + 1), streakCfg);
@@ -112,7 +127,8 @@ export function classifyLifecycleAt(
       const peak = Math.max(...acc);
       const retained = peak > 0 ? (acc[n - 1] ?? 0) / peak : 0;
       if (buildStreak >= config.durable_min_streak && slope >= config.durable_min_r2 && retained >= config.core_retained_pct) {
-        return info("CORE");
+        if (belowFloor) return info("WATCH");
+        return info(plateauLen >= config.core_min_plateau_qtrs ? "CORE" : "DURABLE");
       }
     }
   }
@@ -121,7 +137,7 @@ export function classifyLifecycleAt(
   if (streak >= config.durable_min_streak) {
     const start = Math.max(0, n - streak);
     const slope = rSquared(acc, start, n - 1);
-    if (slope >= config.durable_min_r2) return info("DURABLE");
+    if (slope >= config.durable_min_r2) return info(belowFloor ? "WATCH" : "DURABLE");
   }
   if (streak >= 2 && streak <= 3) return info("FORMING");
   if (streak === 1 && Math.abs(latest) >= config.spike_floor_bps) return info("SPIKE");
@@ -137,9 +153,11 @@ export function classifyLifecycleSeries(
   perQuarterNetBps: number[],
   breadthP75: boolean[] = [],
   config: LifecycleConfig = LIFECYCLE_CONFIG,
+  /** Participating funds (holders) per quarter; default all-Infinity (no floor). */
+  participants: number[] = [],
 ): StageInfo[] {
   return perQuarterNetBps.map((_, i) =>
-    classifyLifecycleAt(perQuarterNetBps.slice(0, i + 1), breadthP75[i] ?? false, config),
+    classifyLifecycleAt(perQuarterNetBps.slice(0, i + 1), breadthP75[i] ?? false, config, participants[i] ?? Infinity),
   );
 }
 
@@ -159,24 +177,36 @@ export interface TransitionEvent {
   significance: number; // 0-1; BROKEN / →CORE / →CROWDED are the high-significance set
 }
 
+/** A real, transition-worthy stage: not null and not the soft WATCH pre-stage. */
+function isRealStage(s: LifecycleStage | null): s is LifecycleStage {
+  return s != null && s !== "WATCH";
+}
+
 /**
- * Emit a transition event on each stage change (and on the first quarter breadth
- * crosses into CROWDED). BROKEN, DURABLE→CROWDED, and →CORE are high-significance.
+ * Emit a transition event ONLY on a genuine stage change (Part 3): stage(q) !=
+ * stage(q-1) with BOTH non-null and non-WATCH. This excludes:
+ *   - same-state "X → X" (no change),
+ *   - null-origin "— → X" (a name's genuine first classification is not drawn),
+ *   - "— → BROKEN" (BROKEN needs a prior real streak, so its origin is never null),
+ *   - CROWDED escalations (CROWDED is a flag, not a stage — it rode here as bogus
+ *     "X → X" same-state events; it belongs on the scatter, not the ledger),
+ *   - WATCH (a sub-scale pre-stage, treated like null).
+ * BROKEN and →CORE are the high-significance set.
  */
 export function detectTransitions(stages: StageInfo[]): TransitionEvent[] {
   const out: TransitionEvent[] = [];
   for (let i = 1; i < stages.length; i++) {
-    const prev = stages[i - 1]!;
-    const cur = stages[i]!;
-    if (cur.stage !== prev.stage && cur.stage != null) {
-      const transition = (`→${cur.stage}` as LifecycleTransition);
-      const high = cur.stage === "BROKEN" || cur.stage === "CORE";
-      out.push({ index: i, from: prev.stage, to: cur.stage, transition: cur.stage === "BROKEN" ? "BROKEN" : transition, significance: high ? 1 : 0.5 });
-    }
-    // CROWDED escalation: first quarter the flag turns on.
-    if (cur.crowded && !prev.crowded) {
-      out.push({ index: i, from: cur.stage, to: cur.stage, transition: "→CROWDED", significance: 1 });
-    }
+    const prev = stages[i - 1]!.stage;
+    const cur = stages[i]!.stage;
+    if (!isRealStage(prev) || !isRealStage(cur) || cur === prev) continue;
+    const high = cur === "BROKEN" || cur === "CORE";
+    out.push({
+      index: i,
+      from: prev,
+      to: cur,
+      transition: cur === "BROKEN" ? "BROKEN" : (`→${cur}` as LifecycleTransition),
+      significance: high ? 1 : 0.5,
+    });
   }
   return out;
 }

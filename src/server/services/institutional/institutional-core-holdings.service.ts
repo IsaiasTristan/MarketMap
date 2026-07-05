@@ -62,6 +62,18 @@ export async function runCoreHoldingsPrecompute(log: (m: string) => void): Promi
     JOIN "InstitutionalFund" f ON f.id = h."fundId" AND f."isActive" = true AND f."tier" = 'signal'
     WHERE h.shares > 0`);
 
+  // Stage exclusivity (Part 2b): the Core board and a stasis break are for
+  // long-held, NON-actively-flowing names. A name carrying an active-accumulation
+  // (or distributing/watch) lifecycle stage this quarter is surfaced by the
+  // pipeline instead — it is neither a core row nor a stasis break here, so no name
+  // is DURABLE + CORE + stasis at once. Core-eligible = lifecycle stage null or CORE.
+  const stageRows = await prisma.institutionalNameAggregate.findMany({
+    where: { lifecycleStage: { in: ["SPIKE", "FORMING", "DURABLE", "WATCH", "BROKEN"] } },
+    select: { ticker: true, filingPeriod: true },
+  });
+  const activeStage = new Set(stageRows.map((r) => `${r.ticker}|${iso(r.filingPeriod)}`));
+  const coreEligible = (ticker: string, period: string): boolean => !activeStage.has(`${ticker}|${period}`);
+
   // Computed clone-alpha fund_quality_weight (Fund Overview Part 1), replacing the
   // interim elite-binary weight in endorsement scoring. Populated by runReturnsPrecompute,
   // which now runs BEFORE this pass; empty map → scoreEndorsement falls back to binary.
@@ -171,6 +183,7 @@ export async function runCoreHoldingsPrecompute(log: (m: string) => void): Promi
     const result = scoreEndorsement(holders, CFG);
     if (result.longHoldVoters === 0) continue; // only names with long-hold interest
     const [ticker, period] = key.split("|");
+    if (!coreEligible(ticker!, period!)) continue; // Part 2b: exclude actively-flowing names
     const nm = nameMeta.get(ticker!);
     // verify: a suspicious full-book reset among the LONG-HOLD VOTERS (whose tenure
     // we are trusting), not any holder — otherwise mega-caps flag on unrelated funds.
@@ -270,6 +283,7 @@ export async function runCoreHoldingsPrecompute(log: (m: string) => void): Promi
         const v = intensity[j];
         if (v != null) baseline.push(v);
       }
+      if (!coreEligible(ticker, periods[i]!)) continue; // Part 2b: stasis only on core/long-tenure names
       const sev = stasisSeverity(d.intensity, baseline, CFG);
       if (!isNameStasisBreak(d.intensity, sev.severity, d.priorLongHolders, CFG)) continue;
       const departing = [...d.departing].sort((a, b) => b.tenureMult - a.tenureMult);

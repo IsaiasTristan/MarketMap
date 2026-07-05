@@ -89,9 +89,55 @@ describe("lifecycle: historical series + transitions", () => {
     expect(broken?.significance).toBe(1);
   });
 
-  it("emits a →CROWDED event when breadth first crosses p75", () => {
+  it("does NOT emit CROWDED as a stage transition (it is a flag, not a stage)", () => {
     const series = classifyLifecycleSeries([2, 2, 2, 2], [false, false, false, true]);
     const events = detectTransitions(series);
-    expect(events.some((e) => e.transition === "→CROWDED" && e.significance === 1)).toBe(true);
+    expect(events.some((e) => e.transition === "→CROWDED")).toBe(false);
+    // no bogus same-state "X → X" event either
+    expect(events.every((e) => e.from !== e.to)).toBe(true);
+    expect(series[3]!.crowded).toBe(true); // the flag still rides on the stage
+  });
+});
+
+describe("lifecycle: participation floor (Part 2a)", () => {
+  it("a single-fund 5q staircase is WATCH, not DURABLE", () => {
+    const oneFund = Array(5).fill(1); // 1 participant every quarter
+    expect(classifyLifecycleAt([2, 2, 2, 2, 2], false, CFG, 1).stage).toBe("WATCH");
+    expect(classifyLifecycleSeries([2, 2, 2, 2, 2], [], CFG, oneFund).at(-1)!.stage).toBe("WATCH");
+  });
+  it("the same shape with ≥ min_participants_stage holders is DURABLE", () => {
+    expect(classifyLifecycleAt([2, 2, 2, 2, 2], false, CFG, CFG.min_participants_stage).stage).toBe("DURABLE");
+  });
+  it("a plateaued build below the floor is WATCH, not CORE", () => {
+    expect(classifyLifecycleAt([3, 3, 3, 3, 3, 0, 0], false, CFG, 1).stage).toBe("WATCH");
+  });
+  it("default participants (no data) imposes no floor — DURABLE as before", () => {
+    expect(classifyLifecycleAt([2, 2, 2, 2, 2]).stage).toBe("DURABLE");
+  });
+});
+
+describe("lifecycle: transition correctness (Part 3)", () => {
+  it("a stayed-FORMING name emits zero events (no same-state)", () => {
+    const series = classifyLifecycleSeries([0, 2, 2, 2]); // FORMING at q1..q3
+    expect(detectTransitions(series)).toHaveLength(0);
+  });
+  it("a null-history name (never classified) emits zero events", () => {
+    expect(detectTransitions(classifyLifecycleSeries([0, 0, 0, 0]))).toHaveLength(0);
+  });
+  it("a 2q failed build (streak 2 then negative) emits zero events (no →BROKEN, no null-origin)", () => {
+    const series = classifyLifecycleSeries([2, 2, -6]);
+    expect(detectTransitions(series)).toHaveLength(0);
+  });
+  it("a 5q durable going net-negative emits exactly one BROKEN, origin DURABLE", () => {
+    const series = classifyLifecycleSeries([2, 2, 2, 2, 2, -8]);
+    const events = detectTransitions(series);
+    const broken = events.filter((e) => e.transition === "BROKEN");
+    expect(broken).toHaveLength(1);
+    expect(broken[0]!.from).toBe("DURABLE");
+    expect(broken[0]!.to).toBe("BROKEN");
+  });
+  it("never emits a null-origin or WATCH-origin event", () => {
+    const series = classifyLifecycleSeries([2, 2, 2, 2, 2], [], CFG, Array(5).fill(1)); // WATCH throughout
+    expect(detectTransitions(series).every((e) => e.from != null && e.from !== "WATCH")).toBe(true);
   });
 });
