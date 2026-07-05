@@ -376,6 +376,8 @@ export interface DurableCard {
   topAdder: { fund: string; sizingMult: number; isElite: boolean } | null;
   evidenceChips: string[];
   actionTag: string;
+  /** Data-quality flags from the shared registry (same glyphs as leaderboard/rotation). */
+  flags?: FlowFlagId[];
 }
 export interface FormingChip {
   ticker: string;
@@ -383,10 +385,12 @@ export interface FormingChip {
   streak: number;
   eliteCount: number;
   qualifier: string;
+  flags?: FlowFlagId[];
 }
 export interface SpikeLine {
   ticker: string;
   latestActiveBps: number | null;
+  flags?: FlowFlagId[];
 }
 export interface TransitionItem {
   ticker: string;
@@ -470,11 +474,20 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24):
     return { accSeries, streak, rank, holdersByPeriod, startIdx };
   };
 
+  // ── Shared data-quality flags (Part 1c) — same registry/glyphs as leaderboard & rotation. ──
+  const flagMap = (await getLeaderboard(p))?.flagsByTicker ?? {};
+  const splitHolds = await unresolvedSplitTickers(periodDate);
+  const flagsFor = (ticker: string): FlowFlagId[] | undefined => {
+    const ids = activeFlowFlags({ ...flagMap[ticker], unresolvedSplit: splitHolds.has(ticker) }).map((d) => d.id);
+    return ids.length ? ids : undefined;
+  };
+
   // ── DURABLE cards (full evidence). ──
   const durableRows = staged.filter((s) => s.lifecycleStage === "DURABLE");
   const durTickers = durableRows.map((r) => r.ticker);
   // Indexed split-adjusted price over the window + top qualified initiator.
   const priceByTicker = await indexedPriceByTicker(durTickers, window);
+  const priceSinceByT = await priceSinceByTicker(durTickers, p);
   const topAdderByTicker = await topInitiatorByTicker(durTickers, p);
   const eliteByTicker = await eliteAdderCountByTicker(durTickers, p);
 
@@ -482,9 +495,10 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24):
     .map((r) => {
       const { accSeries, streak, rank } = rankOf(r.ticker, r.fundsHolding);
       const priceIndexed = priceByTicker.get(r.ticker) ?? window.map(() => null);
-      const firstPx = priceIndexed.find((x) => x != null) ?? null;
       const lastPx = [...priceIndexed].reverse().find((x) => x != null) ?? null;
-      const priceSincePeriodEnd = firstPx != null && lastPx != null && firstPx > 0 ? Math.round((lastPx / firstPx - 1) * 1000) / 10 : null;
+      // "% since period-end" = period-end → latest close (~1 quarter), NOT the full
+      // 12q window return (the earlier firstPx→lastPx bug that produced +400% "since").
+      const priceSincePeriodEnd = priceSinceByT.get(r.ticker) ?? null;
       const streakLen = Math.abs(streak);
       const startIdx = Math.max(0, window.length - (streakLen + 1));
       const priceOverStreak = priceIndexed[startIdx] != null && lastPx != null && priceIndexed[startIdx]! > 0 ? (lastPx / priceIndexed[startIdx]! - 1) * 100 : null;
@@ -509,6 +523,7 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24):
         topAdder: top,
         evidenceChips: chips,
         actionTag: r.crowded ? "crowded — confirm" : "add candidate",
+        flags: flagsFor(r.ticker),
       };
     })
     .sort((a, b) => b.rankScore - a.rankScore)
@@ -526,6 +541,7 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24):
         streak,
         eliteCount,
         qualifier: r.deltaHolders > 0 ? `+${r.deltaHolders} holders` : `${r.fundsHolding} funds`,
+        flags: flagsFor(r.ticker),
       };
     })
     .sort((a, b) => Math.abs(b.streak) - Math.abs(a.streak))
@@ -538,7 +554,7 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24):
     items: spikeRows
       .sort((a, b) => (b.netflowBps ?? 0) - (a.netflowBps ?? 0))
       .slice(0, 40)
-      .map((r) => ({ ticker: r.ticker, latestActiveBps: r.netflowBps })),
+      .map((r) => ({ ticker: r.ticker, latestActiveBps: r.netflowBps, flags: flagsFor(r.ticker) })),
   };
 
   // ── TRANSITIONS this quarter. ──
@@ -601,6 +617,40 @@ async function indexedPriceByTicker(tickers: string[], window: string[]): Promis
     });
     const base = raw.find((x) => x != null) ?? null;
     out.set(ticker, raw.map((x) => (x != null && base != null && base > 0 ? Math.round((x / base) * 1000) / 10 : null)));
+  }
+  return out;
+}
+
+/**
+ * True "% since period-end": split-adjusted return from the close at/after the as-of
+ * period-end to the LATEST available close (typically ~1 quarter later). Both legs are
+ * adjClose so a split inside the window is already adjusted — no +900% artifact. This
+ * is distinct from the full 12q window return (the earlier bug conflated the two).
+ */
+async function priceSinceByTicker(tickers: string[], periodEndIso: string): Promise<Map<string, number | null>> {
+  const out = new Map<string, number | null>();
+  if (tickers.length === 0) return out;
+  const secs = await prisma.security.findMany({ where: { ticker: { in: tickers } }, select: { id: true, ticker: true } });
+  if (secs.length === 0) return out;
+  const tickerBySec = new Map(secs.map((s) => [s.id, s.ticker]));
+  const start = new Date(`${periodEndIso}T00:00:00.000Z`);
+  const rows = await prisma.priceHistory.findMany({
+    where: { securityId: { in: secs.map((s) => s.id) }, tradeDate: { gte: start } },
+    select: { securityId: true, tradeDate: true, adjClose: true },
+    orderBy: { tradeDate: "asc" },
+  });
+  const bySec = new Map<string, { first: number | null; last: number | null }>();
+  for (const r of rows) {
+    const px = Number(r.adjClose);
+    if (!Number.isFinite(px) || px <= 0) continue;
+    const cur = bySec.get(r.securityId) ?? { first: null, last: null };
+    if (cur.first == null) cur.first = px; // first close on/after period-end
+    cur.last = px; // latest close (rows are ascending)
+    bySec.set(r.securityId, cur);
+  }
+  for (const [secId, { first, last }] of bySec) {
+    const ticker = tickerBySec.get(secId)!;
+    out.set(ticker, first != null && last != null && first > 0 ? Math.round((last / first - 1) * 1000) / 10 : null);
   }
   return out;
 }
@@ -703,6 +753,8 @@ export interface CoreHoldingRow {
   stasisBreak: StasisBreakInfo | null;
   /** Endorsement decomposition for the tooltip (fund names resolved). */
   contributions: Array<{ fund: string; contribution: number; tenureMult: number; weightBps: number; isElite: boolean }>;
+  /** Data-quality flags from the shared registry (same glyphs as leaderboard/rotation). */
+  flags?: FlowFlagId[];
 }
 export interface StasisBreakInfo {
   significance: number;
@@ -772,6 +824,10 @@ export async function getCoreHoldings(period?: string, limit = 25): Promise<Core
   const stasis = (await prisma.institutionalEvent.findMany({ where: { kind: "stasis_break", filingPeriod: periodDate } })).filter((e) => e.significance >= 0.75);
   const stasisByTicker = new Map(stasis.map((e) => [e.ticker, e]));
 
+  // Shared data-quality flags (Part 1c) — same registry as leaderboard/rotation/trajectories.
+  const flagMap = (await getLeaderboard(p))?.flagsByTicker ?? {};
+  const splitHolds = await unresolvedSplitTickers(periodDate);
+
   // 12-quarter weight-stability strip for the board tickers.
   const pIdx = Math.max(0, periods.indexOf(p));
   const stripPeriods = periods.slice(pIdx, pIdx + CORE_STRIP_QUARTERS).reverse(); // oldest→newest
@@ -822,6 +878,16 @@ export async function getCoreHoldings(period?: string, limit = 25): Promise<Core
       weightStrip: stripPeriods.map((w) => ({ period: w, medianPct: stripByTicker.get(r.ticker)?.get(w)?.medianPct ?? null, holders: stripByTicker.get(r.ticker)?.get(w)?.holders ?? 0 })),
       stasisBreak: ev ? toStasisInfo(ev.significance, evP, fundName) : null,
       contributions: contribs.sort((a, b) => b.contribution - a.contribution),
+      flags: ((): FlowFlagId[] | undefined => {
+        const ids = activeFlowFlags({
+          ...flagMap[r.ticker],
+          verifyData: r.verifyData || flagMap[r.ticker]?.verifyData,
+          tenureVerify: r.censoredPct > 0,
+          partialData: evP?.partialData ?? flagMap[r.ticker]?.partialData,
+          unresolvedSplit: splitHolds.has(r.ticker),
+        }).map((d) => d.id);
+        return ids.length ? ids : undefined;
+      })(),
     };
   });
 

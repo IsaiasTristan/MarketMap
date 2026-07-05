@@ -11,7 +11,7 @@
 import { useState } from "react";
 import type { DurableCard, TrajectoryPipelinePayload } from "@/server/services/institutional/institutional-query.service";
 import { useFlows } from "./useFlows";
-import { CapTag, PanelState, fmtBps, fmtDelta } from "./flowsUi";
+import { CapTag, FlagBadges, PanelState, fmtBps, fmtDelta } from "./flowsUi";
 import { CoreHoldingsPanel } from "./CoreHoldingsPanel";
 
 const STAGE_COLOR: Record<string, string> = {
@@ -63,6 +63,7 @@ export function TrajectoryPipelinePanel({ period, onSelectTicker }: { period: st
                   <span style={{ fontWeight: 700, color: "var(--color-info)", fontSize: 12 }}>{f.ticker}</span>
                   <span style={{ fontSize: 10, color: "var(--text-secondary)" }}>{Math.abs(f.streak)}q · {f.qualifier}</span>
                   {f.eliteCount > 0 && <span style={{ fontSize: 10, color: "var(--color-accent)" }}>★{f.eliteCount}</span>}
+                  <FlagBadges flags={f.flags} />
                 </div>
               ))}
               {data.forming.length === 0 && <Empty>None.</Empty>}
@@ -82,6 +83,7 @@ export function TrajectoryPipelinePanel({ period, onSelectTicker }: { period: st
                   <div key={s.ticker} onClick={() => onSelectTicker(s.ticker)} className="flows-row" style={{ display: "flex", gap: 5, padding: "2px 7px", background: "var(--bg-base)", border: "1px solid var(--bg-border)", cursor: "pointer", fontSize: 11 }}>
                     <span style={{ color: "var(--text-secondary)", fontWeight: 700 }}>{s.ticker}</span>
                     <span style={{ color: "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}>{fmtBps(s.latestActiveBps)}</span>
+                    <FlagBadges flags={s.flags} />
                   </div>
                 ))}
               </div>
@@ -164,6 +166,7 @@ function DurableCardView({ card, onClick }: { card: DurableCard; onClick: () => 
           <span style={{ fontWeight: 700, color: "var(--color-positive)", fontSize: 14 }}>{card.ticker}</span>
           <CapTag tier={card.marketCapTier} />
           <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{Math.abs(card.streak)}q streak</span>
+          <FlagBadges flags={card.flags} />
         </div>
         <span style={{ fontSize: 10, color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums" }}>{card.holders} funds · {card.breadth.toFixed(1)}%</span>
       </div>

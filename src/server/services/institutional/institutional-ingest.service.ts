@@ -21,7 +21,7 @@ import {
   type HoldingRow,
 } from "@/infrastructure/providers/fmp/institutional";
 import { InstitutionalAction, type Prisma } from "@prisma/client";
-import { canonicalTicker } from "@/lib/institutional/share-class-merge";
+import { canonicalTicker, canonicalUnitShares } from "@/lib/institutional/share-class-merge";
 
 export type QuarterKey = { year: number; quarter: number; periodEnd: string };
 
@@ -73,39 +73,51 @@ function aggregateHoldings(rows: HoldingRow[]): Map<
   string,
   { shares: number; value: number; cusip: string | null; name: string | null; raw: HoldingRow[] }
 > {
-  const bySymbol = new Map<
-    string,
-    { shares: number; value: number; cusip: string | null; name: string | null; raw: HoldingRow[] }
-  >();
+  interface Acc {
+    value: number;
+    cusip: string | null;
+    name: string | null;
+    raw: HoldingRow[];
+    // separate canonical vs folded contributions so shares can be expressed in
+    // canonical-class units (A + B are not unit-comparable — see share-class-merge).
+    canonShares: number;
+    canonValue: number;
+    foldShares: number;
+  }
+  const bySymbol = new Map<string, Acc>();
   for (const r of rows) {
     if (!r.symbol) continue; // drop unmapped (foreign/odd) lines
     // Share-class economic merge: a fund holding both classes of one issuer
-    // (GOOG+GOOGL, FOX+FOXA) is ONE position — bucket under the canonical symbol
-    // so fresh ingests land merged (raw per-class lines retained in `raw`).
+    // (GOOG+GOOGL, BRK-A+BRK-B, …) is ONE position — bucket under the canonical
+    // symbol so fresh ingests land merged (raw per-class lines retained in `raw`).
     const symbol = canonicalTicker(r.symbol);
-    const entry = bySymbol.get(symbol) ?? {
-      shares: 0,
-      value: 0,
-      cusip: r.cusip,
-      name: r.nameOfIssuer,
-      raw: [],
-    };
+    const isCanon = r.symbol.trim().toUpperCase() === symbol;
+    const entry: Acc =
+      bySymbol.get(symbol) ?? { value: 0, cusip: r.cusip, name: r.nameOfIssuer, raw: [], canonShares: 0, canonValue: 0, foldShares: 0 };
     entry.raw.push(r);
     // Long common equity only: exclude options (putCallShare set) and non-share
     // types (e.g. PRN = principal/debt). These stay in `raw` for reconciliation.
     const isOption = !!r.putCallShare && r.putCallShare.trim() !== "";
     const isShares = !r.sharesType || r.sharesType.toUpperCase() === "SH";
     if (!isOption && isShares) {
-      entry.shares += r.shares;
       entry.value += r.value;
+      if (isCanon) {
+        entry.canonShares += r.shares;
+        entry.canonValue += r.value;
+      } else {
+        entry.foldShares += r.shares;
+      }
     }
     bySymbol.set(symbol, entry);
   }
-  // Drop symbols that netted to no long-equity position (pure options lines).
+  // Finalize: canonical-unit shares + drop symbols with no long-equity position.
+  const out = new Map<string, { shares: number; value: number; cusip: string | null; name: string | null; raw: HoldingRow[] }>();
   for (const [sym, e] of bySymbol) {
-    if (e.shares <= 0 && e.value <= 0) bySymbol.delete(sym);
+    const shares = canonicalUnitShares(e.canonShares, e.canonValue, e.value, e.foldShares);
+    if (shares <= 0 && e.value <= 0) continue; // pure options lines
+    out.set(sym, { shares, value: e.value, cusip: e.cusip, name: e.name, raw: e.raw });
   }
-  return bySymbol;
+  return out;
 }
 
 export type IngestResult = {

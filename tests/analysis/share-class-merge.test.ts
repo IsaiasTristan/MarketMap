@@ -21,13 +21,21 @@ describe("canonicalTicker", () => {
     expect(canonicalTicker(" aapl ")).toBe("AAPL");
     expect(canonicalTicker("MSFT")).toBe("MSFT");
   });
-  it("does not map names without a tracked sibling (LEN.B, BRK.A out of scope)", () => {
-    expect(canonicalTicker("LEN.B")).toBe("LEN.B");
-    expect(canonicalTicker("BRK.A")).toBe("BRK.A");
+  it("folds the hyphen-form dual classes (DB ticker form)", () => {
+    expect(canonicalTicker("BRK-A")).toBe("BRK-B");
+    expect(canonicalTicker("LEN-B")).toBe("LEN");
+    expect(canonicalTicker("HEI-A")).toBe("HEI");
+    expect(canonicalTicker("MKC-V")).toBe("MKC");
+  });
+  it("leaves dot-form and preferred/ADR symbols unmapped (economically distinct)", () => {
+    expect(canonicalTicker("BRK.A")).toBe("BRK.A"); // dot form is not the DB ticker
+    expect(canonicalTicker("PBR-A")).toBe("PBR-A"); // preferred ADR, deliberately excluded
   });
   it("isNonCanonicalClass is true only for the folded-away symbols", () => {
     expect(isNonCanonicalClass("GOOG")).toBe(true);
+    expect(isNonCanonicalClass("BRK-A")).toBe(true);
     expect(isNonCanonicalClass("GOOGL")).toBe(false);
+    expect(isNonCanonicalClass("BRK-B")).toBe(false);
     expect(isNonCanonicalClass("AAPL")).toBe(false);
   });
 });
@@ -74,11 +82,30 @@ describe("mergeShareClassPositions", () => {
   it("handles non-finite shares/value defensively (treated as 0)", () => {
     const merged = mergeShareClassPositions([mk("GOOGL", NaN, 15_000), mk("GOOG", 60, Infinity)]);
     const goog = merged.find((m) => m.ticker === "GOOGL")!;
-    expect(goog.shares).toBe(60);
+    expect(goog.shares).toBe(60); // no canonical price → falls back to fold shares
     expect(goog.value).toBe(15_000);
   });
 
-  it("the canonical map only contains high-confidence dual-class pairs", () => {
-    expect(SHARE_CLASS_CANONICAL).toEqual({ GOOG: "GOOGL", FOX: "FOXA" });
+  it("expresses a non-parity fold (BRK-A into BRK-B) in canonical-class share units", () => {
+    // BRK-B: 100 sh @ $300 = $30k ; BRK-A: 2 sh @ $450k = $900k. Naive sum (102) is
+    // nonsense; canonical-unit shares = $930k / $300 = 3100 B-equivalent shares.
+    const merged = mergeShareClassPositions([mk("BRK-B", 100, 30_000), mk("BRK-A", 2, 900_000)]);
+    const brk = merged.find((m) => m.ticker === "BRK-B")!;
+    expect(brk.value).toBe(930_000);
+    expect(brk.shares).toBeCloseTo(3100, 5);
+    expect(brk.mergedFrom).toEqual(["BRK-A"]);
+  });
+
+  it("near-parity fold (GOOG into GOOGL) still equals the summed share count", () => {
+    // both classes priced at $150 → value-basis and share-sum agree.
+    const merged = mergeShareClassPositions([mk("GOOGL", 100, 15_000), mk("GOOG", 60, 9_000)]);
+    expect(merged[0]!.shares).toBe(160);
+  });
+
+  it("the canonical map is curated dual-class pairs only (no preferred/ADR)", () => {
+    // every value is a real surviving ticker; no key maps to itself
+    for (const [from, to] of Object.entries(SHARE_CLASS_CANONICAL)) expect(from).not.toBe(to);
+    expect(SHARE_CLASS_CANONICAL["BRK-A"]).toBe("BRK-B");
+    expect(SHARE_CLASS_CANONICAL["PBR-A"]).toBeUndefined();
   });
 });

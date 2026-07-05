@@ -18,7 +18,7 @@
  * reconciliation. Emits one `DataQualityEvent{kind:"share_class_merge"}` per pair.
  */
 import { prisma } from "@/infrastructure/db/client";
-import { SHARE_CLASS_CANONICAL } from "@/lib/institutional/share-class-merge";
+import { canonicalUnitShares, SHARE_CLASS_CANONICAL } from "@/lib/institutional/share-class-merge";
 
 const iso = (d: Date): string => d.toISOString().slice(0, 10);
 const minDate = (a: Date | null, b: Date | null): Date | null =>
@@ -64,8 +64,10 @@ export async function normalizeShareClasses(
       await prisma.fundHoldingSnapshot.update({ where: { id: r.id }, data: { ticker: canonTicker } });
       renamed += 1;
     } else {
-      const newShares = Number(sibling.shares) + Number(r.shares);
       const newValue = Number(sibling.value) + Number(r.value);
+      // canonical-class share units (A + B not unit-comparable) — value at the
+      // surviving class's own implied price; near-parity classes are unaffected.
+      const newShares = canonicalUnitShares(Number(sibling.shares), Number(sibling.value), newValue, Number(r.shares));
       const newPct =
         sibling.pctOfBook == null && r.pctOfBook == null
           ? null

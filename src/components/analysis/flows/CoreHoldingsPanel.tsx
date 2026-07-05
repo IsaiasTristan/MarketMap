@@ -10,7 +10,7 @@
  */
 import type { CoreHoldingRow, CoreHoldingsPayload } from "@/server/services/institutional/institutional-query.service";
 import { useFlows } from "./useFlows";
-import { PanelState } from "./flowsUi";
+import { FlagBadges, PanelState } from "./flowsUi";
 
 export function CoreHoldingsPanel({ period, onSelectTicker }: { period: string | null; onSelectTicker: (t: string) => void }) {
   const { data, state, error } = useFlows<CoreHoldingsPayload>(["flows-core-holdings", period], `/api/analysis/flows/core-holdings${period ? `?period=${period}` : ""}`);
@@ -80,9 +80,9 @@ function Row({ row, maxScore, onClick }: { row: CoreHoldingRow; maxScore: number
     <div onClick={onClick} className="flows-row" style={{ display: "grid", gridTemplateColumns: COLS, gap: 8, alignItems: "center", padding: "3px 6px", cursor: "pointer", background: "var(--bg-surface)", border: "1px solid var(--bg-border)" }}>
       <span style={{ fontSize: 11, color: "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}>{row.rank}</span>
       <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <span style={{ fontWeight: 700, fontSize: 12, color: "var(--text-primary)" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 4, fontWeight: 700, fontSize: 12, color: "var(--text-primary)" }}>
           {row.ticker}
-          {row.verifyData && <span title="a long-hold voter's fund had a >50% book reset this quarter (possible entity/CIK change) — verify tenure" style={{ fontSize: 8, color: "var(--color-accent)", marginLeft: 4 }}>⚠ verify</span>}
+          <FlagBadges flags={row.flags} />
         </span>
         <span style={{ fontSize: 9, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.companyName ?? ""}</span>
       </div>
