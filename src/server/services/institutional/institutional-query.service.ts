@@ -1102,6 +1102,7 @@ async function attachStockHistory(groups: RotationGroup[], periodDate: Date, cur
 // ── 5.5 single-name fund ledger ─────────────────────────────────────────────
 export interface LedgerRow {
   fundName: string;
+  cik: string;
   category: string;
   isMostRespected: boolean;
   action: string;
@@ -1132,12 +1133,13 @@ export async function getLedger(ticker: string, period?: string): Promise<Ledger
     prisma.institutionalNameAggregate.findUnique({ where: { ticker_filingPeriod: { ticker: t, filingPeriod: periodDate } } }),
     prisma.fundHoldingSnapshot.findMany({
       where: { ticker: t, filingPeriod: periodDate },
-      include: { fund: { select: { name: true, category: true, isMostRespected: true } } },
+      include: { fund: { select: { name: true, cik: true, category: true, isMostRespected: true } } },
     }),
     trackedFundsInPeriod(p),
   ]);
   const rows: LedgerRow[] = holdings.map((h) => ({
     fundName: h.fund.name,
+    cik: h.fund.cik,
     category: h.fund.category,
     isMostRespected: h.fund.isMostRespected,
     action: h.action,

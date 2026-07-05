@@ -55,6 +55,9 @@ export interface ScoreboardRow {
   meter: { n: number; f: number; pending: number };
   /** Fresh-now tickers: pending initiations with zero followers so far. */
   freshTickers: string[];
+  /** Exit-lead rate + n (Part 2), merged in by the scoreboard route; null when unavailable. */
+  exitLeadRate?: number | null;
+  exitLeadN?: number;
 }
 
 export interface FollowScoreboard {

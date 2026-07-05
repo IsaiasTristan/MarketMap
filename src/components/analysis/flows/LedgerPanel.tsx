@@ -4,6 +4,7 @@ import type { LedgerPayload, LedgerRow } from "@/server/services/institutional/i
 import { DataTable, type Column } from "@/components/analysis/ui/DataTable";
 import { useFlows } from "./useFlows";
 import { ActionPill, CapTag, PanelState } from "./flowsUi";
+import { FundLink } from "./funds/FundLink";
 
 export function LedgerPanel({ ticker, period, onClose }: { ticker: string; period: string | null; onClose: () => void }) {
   const { data, state, error } = useFlows<LedgerPayload>(
@@ -14,8 +15,7 @@ export function LedgerPanel({ ticker, period, onClose }: { ticker: string; perio
   const columns: Column<LedgerRow>[] = [
     { key: "fundName", label: "Fund", render: (r) => (
       <span>
-        {r.fundName}
-        {r.isMostRespected ? <span title="most-respected subset" style={{ color: "var(--color-accent)", marginLeft: 4 }}>★</span> : null}
+        <FundLink cik={r.cik} name={r.fundName} isElite={r.isMostRespected} />
         <span style={{ color: "var(--text-muted)", fontSize: 10, marginLeft: 6 }}>{r.category}</span>
       </span>
     ), sortValue: (r) => r.fundName },

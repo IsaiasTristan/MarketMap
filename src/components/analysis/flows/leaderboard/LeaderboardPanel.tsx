@@ -11,11 +11,12 @@
  */
 import { useMemo, useRef, useState } from "react";
 import type { GatedOutRow, HeatCell } from "@/domain/calculations/flow-leaderboard";
-import type { EnrichedRow, LeaderboardResult } from "@/server/services/institutional/institutional-leaderboard.service";
+import type { DistributionChurn, EnrichedRow, LeaderboardResult } from "@/server/services/institutional/institutional-leaderboard.service";
 import { pickTextColor } from "@/components/analysis/factors/shared/bloomberg-grid";
 import { useFlows } from "../useFlows";
 import { PanelState, Sparkline, quarterLabel } from "../flowsUi";
 import { LedgerPanel } from "../LedgerPanel";
+import { FundLink } from "../funds/FundLink";
 import { flowHeatColor, heatCellDisplay, FLOW_BLUE, FLOW_RED } from "./flowHeat";
 
 const HEAT_SPAN = 25; // diverging fill saturates at |25| net funds (per spec)
@@ -93,12 +94,13 @@ export function LeaderboardPanel({ period, onSelectTicker }: { period: string | 
           {gatedMatch && <BelowThreshold row={gatedMatch} />}
 
           <Board title="Accumulation leaders" accent={FLOW_BLUE} rows={data.accumulation} canon={canon} period={period} highlight={q} rowRefs={rowRefs} onSelectTicker={onSelectTicker} />
-          <Board title="Distribution watch" accent={FLOW_RED} rows={data.distribution} canon={canon} period={period} highlight={q} rowRefs={rowRefs} onSelectTicker={onSelectTicker} />
+          <Board title="Distribution watch" accent={FLOW_RED} rows={data.distribution} canon={canon} period={period} highlight={q} rowRefs={rowRefs} onSelectTicker={onSelectTicker} showChurn />
 
           <div style={{ fontSize: 9, color: "var(--text-muted)", lineHeight: 1.5 }}>
             {quarterLabel(data.filingPeriod)} · ranking = recency-weighted count flow + capital flow (bps), z-scored across
             gated names, ×streak ×conviction ×elite. Signal-tier funds only. Fixed sort by score — chevron expands the fund
-            ledger; hover the score for its breakdown.
+            ledger; hover the score for its breakdown. Distribution watch is sorted by <b>severity</b> (this quarter&apos;s churn vs
+            the name&apos;s own trailing 8-quarter baseline), not raw exit count.
           </div>
         </div>
       )}
@@ -130,6 +132,7 @@ function Board({
   highlight,
   rowRefs,
   onSelectTicker,
+  showChurn,
 }: {
   title: string;
   accent: string;
@@ -139,6 +142,7 @@ function Board({
   highlight: string;
   rowRefs: React.MutableRefObject<Map<string, HTMLDivElement | null>>;
   onSelectTicker: (t: string) => void;
+  showChurn?: boolean;
 }) {
   return (
     <div style={{ border: "1px solid var(--bg-border)" }}>
@@ -164,7 +168,7 @@ function Board({
         <div style={{ padding: 12, fontSize: 11, color: "var(--text-muted)" }}>No qualifying names this quarter.</div>
       ) : (
         rows.map((r) => (
-          <Row key={r.ticker} r={r} accent={accent} canon={canon} period={period} highlighted={highlight === r.ticker} rowRefs={rowRefs} onSelectTicker={onSelectTicker} />
+          <Row key={r.ticker} r={r} accent={accent} canon={canon} period={period} highlighted={highlight === r.ticker} rowRefs={rowRefs} onSelectTicker={onSelectTicker} showChurn={showChurn} />
         ))
       )}
     </div>
@@ -179,6 +183,7 @@ function Row({
   highlighted,
   rowRefs,
   onSelectTicker,
+  showChurn,
 }: {
   r: EnrichedRow;
   accent: string;
@@ -187,6 +192,7 @@ function Row({
   highlighted: boolean;
   rowRefs: React.MutableRefObject<Map<string, HTMLDivElement | null>>;
   onSelectTicker: (t: string) => void;
+  showChurn?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const cells = alignCells(r.cells, canon);
@@ -236,6 +242,7 @@ function Row({
             {r.companyName && <span style={{ fontSize: 9, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.companyName}</span>}
           </div>
           <div style={{ fontSize: 9, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.reason}</div>
+          {showChurn && r.churn && <ChurnStrip churn={r.churn} />}
         </div>
         {cells.map((c, i) => (
           <HeatCellView key={i} cell={c} />
@@ -253,6 +260,53 @@ function Row({
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Distribution-Watch exodus composition bar (100% stacked: exited / trimmed≥10% /
+ * trimmed<10% / held / added) + top-2 notable-departure chips + the severity
+ * z-score that drives the board's sort. Severity, not raw exit count, is the
+ * point — a mega-cap must beat its OWN trailing-8q churn baseline to stand out.
+ */
+function ChurnStrip({ churn }: { churn: DistributionChurn }) {
+  const { composition: c, notableDepartures, severity, churnPct, churnBaselineMean, churnBaselineSd } = churn;
+  const total = Math.max(1, c.exited + c.trimmedHi + c.trimmedLo + c.held + c.added);
+  const pct = (n: number) => `${(n / total) * 100}%`;
+  const tooltip =
+    `exited ${c.exited} · trimmed≥10% ${c.trimmedHi} · trimmed<10% ${c.trimmedLo} · held ${c.held} · added ${c.added}\n` +
+    (churnPct != null ? `this-qtr churn ${(churnPct * 100).toFixed(0)}%` : "churn n/a") +
+    (churnBaselineMean != null && churnBaselineSd != null
+      ? ` vs trailing-8q baseline ${(churnBaselineMean * 100).toFixed(0)}%±${(churnBaselineSd * 100).toFixed(0)}%`
+      : " · insufficient baseline history");
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 3, flexWrap: "wrap" }}>
+      <div title={tooltip} style={{ display: "flex", width: 120, height: 6, border: "1px solid var(--bg-border)", overflow: "hidden", flexShrink: 0 }}>
+        <div style={{ width: pct(c.exited), background: "var(--color-negative)" }} />
+        <div style={{ width: pct(c.trimmedHi), background: "var(--color-negative)", opacity: 0.55 }} />
+        <div style={{ width: pct(c.trimmedLo), background: "var(--color-accent)", opacity: 0.6 }} />
+        <div style={{ width: pct(c.held), background: "var(--color-neutral)" }} />
+        <div style={{ width: pct(c.added), background: "var(--color-positive)" }} />
+      </div>
+      {severity != null ? (
+        <span
+          title={tooltip}
+          style={{ fontSize: 9, fontWeight: 700, color: severity >= 1 ? "var(--color-negative)" : "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}
+        >
+          severity {severity >= 0 ? "+" : ""}
+          {severity.toFixed(1)}σ
+        </span>
+      ) : (
+        <span style={{ fontSize: 9, color: "var(--text-muted)" }}>severity n/a</span>
+      )}
+      {notableDepartures.map((d, i) => (
+        <span key={i} style={{ fontSize: 9, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+          <FundLink cik={d.cik} name={d.fund} style={{ fontSize: 9 }} />
+          {d.tenureQuarters != null ? ` ${d.tenureQuarters}q` : ""}
+          {d.priorPctOfBook != null ? ` · ${d.priorPctOfBook.toFixed(1)}%` : ""}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -300,21 +354,42 @@ function PriceCell({ pct }: { pct: number | null }) {
   );
 }
 
-/** Elite-adder chip (⭐N over last 2 quarters); hover lists the top adders. */
+/** Elite-adder chip (⭐N over last 2 quarters); hover lists the top adders, each a
+ *  FundLink into the Funds sub-tab's signal-provenance page. */
 function WhoChip({ r, accent, onSelectTicker }: { r: EnrichedRow; accent: string; onSelectTicker: (t: string) => void }) {
-  const title =
-    r.topAdders.length > 0
-      ? `Top adders (last 2 qtrs):\n${r.topAdders.map((a) => `${a.isElite ? "★ " : ""}${a.fund}${a.netBps != null ? ` +${a.netBps} bps` : ""}${a.deltaPct != null ? ` (${a.deltaPct > 0 ? "+" : ""}${a.deltaPct}% sh)` : ""}`).join("\n")}\n\nClick to open the fund ledger`
-      : "No notable adders in the last 2 quarters · click for the fund ledger";
+  const [open, setOpen] = useState(false);
   return (
-    <div style={{ display: "flex", justifyContent: "center" }}>
+    <div style={{ display: "flex", justifyContent: "center", position: "relative" }} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
       <span
-        title={title}
         onClick={(e) => { e.stopPropagation(); onSelectTicker(r.ticker); }}
         style={{ cursor: "pointer", fontSize: 10, fontWeight: 700, color: r.eliteAdders2 > 0 ? accent : "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}
       >
         {r.eliteAdders2 > 0 ? `★${r.eliteAdders2}` : "·"}
       </span>
+      {open && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute", top: "100%", right: -6, zIndex: 20, minWidth: 200, marginTop: 4,
+            background: "var(--bg-elevated)", border: "1px solid var(--bg-border)", boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
+            padding: "6px 8px", fontSize: 10, color: "var(--text-secondary)",
+          }}
+        >
+          <div style={{ color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4, fontSize: 9 }}>Top adders (last 2 qtrs)</div>
+          {r.topAdders.length === 0 ? (
+            <div style={{ color: "var(--text-muted)" }}>No notable adders</div>
+          ) : (
+            r.topAdders.map((a, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "2px 0" }}>
+                <FundLink cik={a.cik} name={a.fund} isElite={a.isElite} style={{ fontSize: 11 }} />
+                <span style={{ color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                  {a.netBps != null ? `${a.netBps > 0 ? "+" : ""}${a.netBps} bps` : "—"}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }

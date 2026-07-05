@@ -9,6 +9,7 @@
  * trade-recommendation system.
  */
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { BloombergTabStrip, type BloombergTabItem } from "@/components/analysis/BloombergTabStrip";
 import { useIsAdmin } from "@/lib/api/useMe";
@@ -19,31 +20,36 @@ import { OverviewPanel } from "./OverviewPanel";
 import { QuadrantPanel } from "./quadrant/QuadrantPanel";
 import { TrajectoryPipelinePanel } from "./TrajectoryPipelinePanel";
 import { RotationPanel } from "./RotationPanel";
-import { SignalsPanel } from "./SignalsPanel";
+import { FundsPanel } from "./funds/FundsPanel";
 import { WatchlistPanel } from "./WatchlistPanel";
 import { LedgerPanel } from "./LedgerPanel";
 import { LeaderboardPanel } from "./leaderboard/LeaderboardPanel";
 
-type FlowTab = "overview" | "leaderboard" | "quadrant" | "trajectories" | "rotation" | "signals" | "watchlist";
+type FlowTab = "overview" | "leaderboard" | "quadrant" | "trajectories" | "rotation" | "funds" | "watchlist";
 const TABS: BloombergTabItem[] = [
   { key: "overview", label: "Overview" },
   { key: "leaderboard", label: "Leaderboard" },
   { key: "quadrant", label: "Crowding × Conviction" },
   { key: "trajectories", label: "Trajectories" },
   { key: "rotation", label: "Rotation" },
-  { key: "signals", label: "First-Mover / Exits" },
+  { key: "funds", label: "Funds" },
   { key: "watchlist", label: "Watchlist" },
 ];
 
 export function FlowsClient() {
   const isAdmin = useIsAdmin();
   const qc = useQueryClient();
+  const searchParams = useSearchParams();
   const [tab, setTab] = useState<FlowTab>("overview");
-  // Apply a deep-linked ?tab= AFTER mount (no SSR/client hydration mismatch).
+  // React to ?tab= / ?fund= on mount AND on any later client-side navigation (e.g.
+  // a FundLink elsewhere pushing `/flows?tab=funds&fund=<cik>`) — useSearchParams is
+  // reactive, unlike a one-time window.location read.
   useEffect(() => {
-    const t = new URLSearchParams(window.location.search).get("tab");
-    if (t && TABS.some((x) => x.key === t)) setTab(t as FlowTab);
-  }, []);
+    const t = searchParams.get("tab");
+    const fund = searchParams.get("fund");
+    if (fund) setTab("funds"); // a fund deep-link always opens the Funds sub-tab
+    else if (t && TABS.some((x) => x.key === t)) setTab(t as FlowTab);
+  }, [searchParams]);
   const [period, setPeriod] = useState<string | null>(null);
   const [ticker, setTicker] = useState<string | null>(null);
   const [ingesting, setIngesting] = useState(false);
@@ -88,7 +94,7 @@ export function FlowsClient() {
       case "quadrant": return <QuadrantPanel period={activePeriod} onSelectTicker={select} />;
       case "trajectories": return <TrajectoryPipelinePanel period={activePeriod} onSelectTicker={select} />;
       case "rotation": return <RotationPanel period={activePeriod} onSelectTicker={select} />;
-      case "signals": return <SignalsPanel period={activePeriod} onSelectTicker={select} />;
+      case "funds": return <FundsPanel period={activePeriod} onSelectTicker={select} />;
       case "watchlist": return <WatchlistPanel isAdmin={isAdmin} />;
     }
   }, [tab, activePeriod, isAdmin]);
