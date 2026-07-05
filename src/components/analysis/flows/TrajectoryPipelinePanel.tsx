@@ -9,9 +9,9 @@
  * the latest-quarter move. Base-rate lines on the DURABLE / FORMING headers.
  */
 import { useState } from "react";
-import type { DurableCard, TrajectoryPipelinePayload } from "@/server/services/institutional/institutional-query.service";
+import type { DurableCard, SpikesPayload, TrajectoryPipelinePayload } from "@/server/services/institutional/institutional-query.service";
 import { useFlows } from "./useFlows";
-import { CapTag, FlagBadges, PanelState, fmtBps, fmtDelta } from "./flowsUi";
+import { CapTag, FlagBadges, PanelState, fmtDelta } from "./flowsUi";
 import { CoreHoldingsPanel } from "./CoreHoldingsPanel";
 
 const STAGE_COLOR: Record<string, string> = {
@@ -24,7 +24,6 @@ const STAGE_COLOR: Record<string, string> = {
 };
 
 export function TrajectoryPipelinePanel({ period, onSelectTicker }: { period: string | null; onSelectTicker: (t: string) => void }) {
-  const [spikesOpen, setSpikesOpen] = useState(false);
   const [includeMega, setIncludeMega] = useState(false);
   const cap = includeMega ? "all" : "ex-mega";
   const qs = new URLSearchParams();
@@ -97,25 +96,10 @@ export function TrajectoryPipelinePanel({ period, onSelectTicker }: { period: st
             </Section>
           )}
 
-          {/* SPIKES — collapsed. */}
-          <div style={{ padding: "6px 10px", background: "var(--bg-surface)", border: "1px solid var(--bg-border)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }} onClick={() => setSpikesOpen((v) => !v)}>
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{spikesOpen ? "▾" : "▸"}</span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-secondary)" }}>{data.spikes.count} one-quarter spike{data.spikes.count === 1 ? "" : "s"}</span>
-              <span style={{ fontSize: 10, color: "var(--text-muted)" }}>discount unless they persist — auto-promote to Forming next quarter if they hold</span>
-            </div>
-            {spikesOpen && (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
-                {data.spikes.items.map((s) => (
-                  <div key={s.ticker} onClick={() => onSelectTicker(s.ticker)} className="flows-row" style={{ display: "flex", gap: 5, padding: "2px 7px", background: "var(--bg-base)", border: "1px solid var(--bg-border)", cursor: "pointer", fontSize: 11 }}>
-                    <span style={{ color: "var(--text-secondary)", fontWeight: 700 }}>{s.ticker}</span>
-                    <span style={{ color: "var(--text-muted)", fontVariantNumeric: "tabular-nums" }}>{fmtBps(s.latestActiveBps)}</span>
-                    <FlagBadges flags={s.flags} />
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          {/* SPIKES — magnitude-sorted lollipop by cohort bps (Part 5). */}
+          <Section title="Spikes" color={STAGE_COLOR.SPIKE!} count={data.spikes.count} subtitle="one-quarter moves — discount unless they persist; auto-promote to Forming next quarter if they hold">
+            <SpikeLollipop spikes={data.spikes} onSelectTicker={onSelectTicker} />
+          </Section>
 
           {/* TRANSITIONS panel. */}
           {data.transitions.length > 0 && (
@@ -157,6 +141,46 @@ function Section({ title, color, baseRate, count, subtitle, children }: { title:
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <div style={{ fontSize: 11, color: "var(--text-muted)", padding: "4px 0" }}>{children}</div>;
+}
+
+/** Spikes as a magnitude-sorted lollipop by COHORT bps (Part 5c). Label keeps the
+ *  intensity read (per-adder bps + adder count + elite stars); mega dimmed; tail
+ *  collapsed to one line. */
+function SpikeLollipop({ spikes, onSelectTicker }: { spikes: SpikesPayload; onSelectTicker: (t: string) => void }) {
+  if (spikes.count === 0) return <Empty>None.</Empty>;
+  const max = Math.max(1, ...spikes.items.map((s) => Math.abs(s.cohortBps ?? 0)));
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      {spikes.items.map((s) => {
+        const bps = s.cohortBps ?? 0;
+        const w = Math.max(2, (Math.abs(bps) / max) * 100);
+        return (
+          <div key={s.ticker} onClick={() => onSelectTicker(s.ticker)} className="flows-row" style={{ display: "grid", gridTemplateColumns: "76px 1fr auto", gap: 8, alignItems: "center", padding: "2px 6px", cursor: "pointer", opacity: s.informational ? 0.55 : 1 }}>
+            <span style={{ fontWeight: 700, fontSize: 11, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 3 }}>
+              {s.ticker}
+              {s.informational && <span title="mega-cap — informational only" style={{ fontSize: 7, textTransform: "uppercase", color: "var(--text-muted)", border: "1px solid var(--bg-border)", padding: "0 2px" }}>info</span>}
+            </span>
+            <div style={{ position: "relative", height: 10, background: "var(--bg-base)", border: "1px solid var(--bg-border)" }}>
+              <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, width: `${w}%`, background: bps >= 0 ? "var(--color-info)" : "var(--color-negative)", opacity: 0.7 }} />
+            </div>
+            <span style={{ fontSize: 10, color: "var(--text-muted)", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ color: "var(--text-secondary)", fontWeight: 700 }}>{bps >= 0 ? "+" : ""}{bps.toFixed(1)} bps</span>
+              · {s.funds} fund{s.funds === 1 ? "" : "s"}
+              {s.perAdderBps != null && ` · ~${(s.perAdderBps / 100).toFixed(1)}%/adder`}
+              {s.eliteCount > 0 && <span style={{ color: "var(--color-accent)" }}>★{s.eliteCount}</span>}
+              <FlagBadges flags={s.flags} />
+            </span>
+          </div>
+        );
+      })}
+      {spikes.tail.count > 0 && (
+        <div style={{ fontSize: 10, color: "var(--text-muted)", padding: "3px 6px", borderTop: "1px dashed var(--bg-border)" }}>
+          ＋{spikes.tail.count} more spike{spikes.tail.count === 1 ? "" : "s"}
+          {spikes.tail.medianCohortBps != null && ` · median ${spikes.tail.medianCohortBps >= 0 ? "+" : ""}${spikes.tail.medianCohortBps} bps`}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Dual-line chart: accumulation (solid blue) + faint dashed indexed price behind. */

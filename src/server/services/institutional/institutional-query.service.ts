@@ -401,8 +401,25 @@ export interface FormingChip {
 }
 export interface SpikeLine {
   ticker: string;
-  latestActiveBps: number | null;
+  companyName: string | null;
+  /** THE bar: cohort bps — mean drift-adjusted active change over ALL signal funds
+   *  (non-holders = 0). Comparable to the leaderboard capital strips. */
+  cohortBps: number | null;
+  /** Intensity read for the label only: mean bps over PARTICIPATING adders. Never
+   *  the bar — conflating the two was the participant-denominator bug (d9). */
+  perAdderBps: number | null;
+  funds: number; // participating adders
+  eliteCount: number;
+  marketCapTier: string | null;
+  informational?: boolean; // mega-cap, dimmed
   flags?: FlowFlagId[];
+}
+export interface SpikesPayload {
+  count: number;
+  /** Top spike_top_n by cohort bps (tie-break adder count) — the lollipop rows. */
+  items: SpikeLine[];
+  /** Collapsed tail: everything below the top N, as one line. */
+  tail: { count: number; medianCohortBps: number | null };
 }
 export interface TransitionItem {
   ticker: string;
@@ -419,12 +436,14 @@ export interface TrajectoryPipelinePayload {
   forming: FormingChip[];
   /** Below-participation-floor builds (Part 2a) — surfaced as watch, never durable. */
   watch: WatchItem[];
-  spikes: { count: number; items: SpikeLine[] };
+  spikes: SpikesPayload;
   transitions: TransitionItem[];
   baseRates: { durable: string | null; forming: string | null };
 }
 
 const PIPELINE_WINDOW = 8;
+/** Spikes lollipop: rows shown before the tail collapses (Part 5c). */
+const SPIKE_TOP_N = 7;
 
 /** Format a stored base-rate row into a header line (null-N-safe). */
 function baseRateLine(row: { excessReturn: number | null; hitRate: number | null; n: number } | null, label: string, horizon = "2Q"): string | null {
@@ -446,7 +465,7 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24, 
   // Names carrying a lifecycle stage this quarter.
   const staged = await prisma.institutionalNameAggregate.findMany({
     where: { filingPeriod: periodDate, lifecycleStage: { not: null } },
-    select: { ticker: true, companyName: true, sector: true, marketCapTier: true, fundsHolding: true, deltaHolders: true, pctOfFunds: true, netflowBps: true, lifecycleStage: true, crowded: true },
+    select: { ticker: true, companyName: true, sector: true, marketCapTier: true, fundsHolding: true, deltaHolders: true, pctOfFunds: true, netflowBps: true, activeBpsAvg: true, fundsParticipating: true, fundsBought: true, lifecycleStage: true, crowded: true },
   });
 
   // Stage census + QoQ deltas (Part 2d): counts come from the SAME filtered set the
@@ -508,7 +527,8 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24, 
   const priceByTicker = await indexedPriceByTicker(durTickers, window);
   const priceSinceByT = await priceSinceByTicker(durTickers, p);
   const topAdderByTicker = await topInitiatorByTicker(durTickers, p);
-  const eliteByTicker = await eliteAdderCountByTicker(durTickers, p);
+  // Elite-adder counts for every staged ticker (durable cards + spike lollipop labels).
+  const eliteByTicker = await eliteAdderCountByTicker(tickers, p);
 
   const durable: DurableCard[] = durableRows
     .map((r) => {
@@ -572,14 +592,31 @@ export async function getTrajectoryPipeline(period?: string, durableLimit = 24, 
     .map((r) => ({ ticker: r.ticker, companyName: r.companyName, streak: rankOf(r.ticker, r.fundsHolding).streak, holders: r.fundsHolding, flags: flagsFor(r.ticker) }))
     .sort((a, b) => Math.abs(b.streak) - Math.abs(a.streak));
 
-  // ── SPIKES (collapsed). ──
-  const spikeRows = staged.filter((s) => s.lifecycleStage === "SPIKE");
-  const spikes = {
+  // ── SPIKES (Part 5): magnitude-sorted lollipop by COHORT bps (the bar), top N,
+  // tail collapsed. The label also carries per-ADDER bps (intensity) + adder count +
+  // elite stars, but the two bps quantities are never conflated (d9). ──
+  const spikeRows = staged
+    .filter((s) => s.lifecycleStage === "SPIKE")
+    .sort((a, b) => (b.netflowBps ?? 0) - (a.netflowBps ?? 0) || (b.fundsParticipating ?? 0) - (a.fundsParticipating ?? 0));
+  const toSpike = (r: (typeof spikeRows)[number]): SpikeLine => ({
+    ticker: r.ticker,
+    companyName: r.companyName,
+    cohortBps: r.netflowBps,
+    perAdderBps: r.activeBpsAvg,
+    funds: r.fundsParticipating ?? r.fundsBought ?? 0,
+    eliteCount: eliteByTicker.get(r.ticker) ?? 0,
+    marketCapTier: r.marketCapTier,
+    informational: r.marketCapTier === "mega",
+    flags: flagsFor(r.ticker),
+  });
+  const spikeItems = spikeRows.slice(0, SPIKE_TOP_N).map(toSpike);
+  const tailRows = spikeRows.slice(SPIKE_TOP_N);
+  const tailBps = tailRows.map((r) => r.netflowBps ?? 0).sort((a, b) => a - b);
+  const medianCohortBps = tailBps.length ? tailBps[Math.floor((tailBps.length - 1) / 2)]! : null;
+  const spikes: SpikesPayload = {
     count: spikeRows.length,
-    items: spikeRows
-      .sort((a, b) => (b.netflowBps ?? 0) - (a.netflowBps ?? 0))
-      .slice(0, 40)
-      .map((r) => ({ ticker: r.ticker, latestActiveBps: r.netflowBps, flags: flagsFor(r.ticker) })),
+    items: spikeItems,
+    tail: { count: tailRows.length, medianCohortBps: medianCohortBps != null ? Math.round(medianCohortBps * 10) / 10 : null },
   };
 
   // ── TRANSITIONS this quarter. ──
