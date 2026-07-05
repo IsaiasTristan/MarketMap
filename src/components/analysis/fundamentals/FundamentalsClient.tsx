@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BloombergTabStrip, type BloombergTabItem } from "@/components/analysis/BloombergTabStrip";
-import { useIsAdmin } from "@/lib/api/useMe";
 import type { DiscoveryPayload } from "./types";
 import { DiscoveryRankTable } from "./DiscoveryRankTable";
 import { DiligencePanel } from "./DiligencePanel";
@@ -24,7 +23,6 @@ export function FundamentalsClient() {
   const [subsectorFilter, setSubsectorFilter] = useState<string | null>(null);
   const [excludeSectorFilter, setExcludeSectorFilter] = useState<string | null>(null);
   const [excludeSubsectorFilter, setExcludeSubsectorFilter] = useState<string | null>(null);
-  const isAdmin = useIsAdmin();
 
   const { data, isLoading, error } = useQuery<DiscoveryPayload>({
     queryKey: ["fundamentals-discovery"],
@@ -62,7 +60,6 @@ export function FundamentalsClient() {
             analysts react. Quality filters kill traps. Discovery + diligence, not a trader.
           </div>
         </div>
-        {isAdmin ? <IngestButton /> : null}
       </div>
 
       <BloombergTabStrip tabs={TABS} activeKey={tab} onChange={(k) => setTab(k as FundTab)} />
@@ -100,46 +97,10 @@ function DataNotice({ state, snapshotDate }: { state: string; snapshotDate?: str
   }
   return (
     <div style={{ color: "var(--text-muted)", fontSize: 11, padding: 12 }}>
-      No discovery data yet. Run the fundamentals weekly job (admin: &quot;Run weekly ingest&quot;, or
-      <code style={{ margin: "0 4px" }}>npm run job:fundamental -- --backfill</code>) to populate signals from the
-      ~9-year statement history. {snapshotDate ? `(last: ${snapshotDate})` : ""}
+      No discovery data yet — it populates automatically once the fundamentals job has run (runs on server
+      boot and weekly). To force a manual backfill from the ~9-year statement history, run
+      <code style={{ margin: "0 4px" }}>npm run job:fundamental -- --backfill</code>. {snapshotDate ? `(last: ${snapshotDate})` : ""}
     </div>
   );
 }
 
-function IngestButton() {
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const run = async () => {
-    setBusy(true);
-    setMsg(null);
-    try {
-      const r = await fetch("/api/analysis/fundamentals/ingest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      const j = await r.json();
-      setMsg(r.ok ? `Done: ${j.ingest?.snapshotsWritten ?? 0} snapshots, ${j.scoring?.scored ?? 0} scored` : j.error ?? "Failed");
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : "Failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      {msg ? <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{msg}</span> : null}
-      <button
-        type="button"
-        onClick={run}
-        disabled={busy}
-        className="bb-tab"
-        style={{ border: "1px solid var(--chrome-border)", opacity: busy ? 0.6 : 1 }}
-        title="Run the weekly fundamentals ingest + scoring now (admin). Heavy; prefer the scheduled job."
-      >
-        {busy ? "Running…" : "Run weekly ingest"}
-      </button>
-    </div>
-  );
-}

@@ -19,6 +19,10 @@ import {
   loadActiveUniverseTickers,
   refreshRevisionReference,
 } from "./reference-ingest.service";
+import { capturePriceWeek } from "./price-ingest.service";
+import { appendLegBWeek } from "./legb-weekly.service";
+import { scoreRevisionWeek, type ScoreSummary } from "./revision-scoring.service";
+import { computeAndCacheValidation } from "./revision-validation.service";
 
 /** Where the revision universe (the list of tickers) comes from. */
 export type ReferenceSource = "MARKET_MAP" | "FMP_SCREENER";
@@ -147,4 +151,86 @@ export async function runRevisionWeekly(
     events,
     failures,
   };
+}
+
+export interface RevisionPipelineOptions extends RevisionWeeklyOptions {
+  /** Weekly price capture (default true; scoring degrades to null px z if it fails). */
+  capturePrices?: boolean;
+  /** Append the Leg-B point-in-time week (default true). */
+  appendLegB?: boolean;
+  /** Recompute + cache the validation payload at the end (default true). */
+  revalidate?: boolean;
+}
+
+export interface RevisionPipelineSummary {
+  ingest: RevisionWeeklySummary;
+  priceCapture: { rowsWritten: number; coverage: number; failures: number } | null;
+  legBAppend: { rowsWritten: number } | null;
+  scoring: ScoreSummary | null;
+  validation: { effectiveWeeks: { full: number; legB: number; price: number } } | null;
+  stepErrors: string[];
+}
+
+/**
+ * The full weekly pipeline — ingest, price capture, Leg-B append, scoring
+ * (+ transitions), validation cache — in dependency order. One code path for
+ * the runner, the CLI, and the ingest route. Each step is try/caught so a
+ * partial failure degrades (e.g. missing prices -> null px z / gap) instead of
+ * aborting the week.
+ */
+export async function runRevisionPipeline(
+  opts: RevisionPipelineOptions = {},
+): Promise<RevisionPipelineSummary> {
+  const log = opts.log ?? (() => {});
+  const stepErrors: string[] = [];
+
+  const ingest = await runRevisionWeekly(opts);
+  const summary: RevisionPipelineSummary = {
+    ingest,
+    priceCapture: null,
+    legBAppend: null,
+    scoring: null,
+    validation: null,
+    stepErrors,
+  };
+  if (ingest.snapshotsWritten === 0) {
+    log("[pipeline] no snapshots written; skipping downstream steps");
+    return summary;
+  }
+
+  if (opts.capturePrices !== false) {
+    try {
+      const p = await capturePriceWeek({ snapshotDate: ingest.snapshotDate, log });
+      summary.priceCapture = { rowsWritten: p.rowsWritten, coverage: p.coverage, failures: p.failures.length };
+    } catch (e) {
+      stepErrors.push(`price-capture: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  if (opts.appendLegB !== false) {
+    try {
+      const b = await appendLegBWeek({ snapshotDate: ingest.snapshotDate, log });
+      summary.legBAppend = { rowsWritten: b.rowsWritten };
+    } catch (e) {
+      stepErrors.push(`legb-append: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  try {
+    summary.scoring = await scoreRevisionWeek({ snapshotDate: ingest.snapshotDate, log });
+  } catch (e) {
+    stepErrors.push(`scoring: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  if (opts.revalidate !== false && summary.scoring) {
+    try {
+      const v = await computeAndCacheValidation({ log });
+      summary.validation = { effectiveWeeks: v.effectiveWeeks };
+    } catch (e) {
+      stepErrors.push(`validation: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  if (stepErrors.length) log(`[pipeline] completed with step errors: ${stepErrors.join(" | ")}`);
+  return summary;
 }

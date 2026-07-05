@@ -271,7 +271,7 @@ function ScoreRow({ r, rank, onSelectTicker }: { r: ScoreboardRow; rank: number;
         ) : (
           r.freshTickers.map((t) => (
             <span
-              key={t}
+              key={`${r.fundId}-${t}`}
               onClick={(e) => {
                 e.stopPropagation();
                 onSelectTicker(t);
@@ -374,7 +374,7 @@ function FreshCallsSection({ data, onSelectTicker }: { data: FreshCallsPayload; 
           {data.rows.length === 0 ? (
             <div style={{ padding: 14, fontSize: 11, color: "var(--text-muted)" }}>No fresh calls this quarter.</div>
           ) : (
-            data.rows.map((r) => <FreshRow key={`${r.fundId}|${r.ticker}`} r={r} onSelectTicker={onSelectTicker} />)
+            data.rows.map((r) => <FreshRow key={`${r.fundId}|${r.ticker}|${r.enteredPeriod}`} r={r} onSelectTicker={onSelectTicker} />)
           )}
         </div>
       </div>

@@ -16,8 +16,7 @@
  * share the same code path. Exit 0 on success, 1 on fatal error.
  */
 import { prisma } from "../src/infrastructure/db/client";
-import { runRevisionWeekly } from "../src/server/services/revision/revision-weekly-job.service";
-import { scoreRevisionWeek } from "../src/server/services/revision/revision-scoring.service";
+import { runRevisionPipeline } from "../src/server/services/revision/revision-weekly-job.service";
 
 function flag(name: string): boolean {
   return process.argv.includes(`--${name}`);
@@ -32,27 +31,28 @@ async function main() {
   const snapshotDate = opt("date");
 
   const limit = opt("limit");
-  const ingest = await runRevisionWeekly({
+  const pipeline = await runRevisionPipeline({
     snapshotDate,
     refreshReference: !flag("no-reference"),
     referenceSource: flag("screener") ? "FMP_SCREENER" : "MARKET_MAP",
     backfillEvents: flag("backfill"),
     enrichProfiles: flag("enrich"),
     maxUniverse: limit ? Number(limit) : undefined,
+    capturePrices: !flag("no-prices"),
+    appendLegB: !flag("no-legb"),
+    revalidate: !flag("no-validate"),
     log,
   });
-  console.log("[revision-weekly] ingestion summary:", JSON.stringify(ingest, (_k, v) => v, 2));
+  console.log("[revision-weekly] ingestion summary:", JSON.stringify(pipeline.ingest, null, 2));
+  if (pipeline.priceCapture) console.log("[revision-weekly] price capture:", JSON.stringify(pipeline.priceCapture));
+  if (pipeline.legBAppend) console.log("[revision-weekly] legB append:", JSON.stringify(pipeline.legBAppend));
+  if (pipeline.scoring) console.log("[revision-weekly] scoring summary:", JSON.stringify(pipeline.scoring, null, 2));
+  if (pipeline.validation) console.log("[revision-weekly] validation:", JSON.stringify(pipeline.validation));
+  if (pipeline.stepErrors.length) console.log("[revision-weekly] step errors:", pipeline.stepErrors);
 
-  if (ingest.snapshotsWritten > 0) {
-    const scored = await scoreRevisionWeek({ snapshotDate: ingest.snapshotDate, log });
-    console.log("[revision-weekly] scoring summary:", JSON.stringify(scored, null, 2));
-  } else {
-    console.log("[revision-weekly] no snapshots written; skipping scoring.");
-  }
-
-  if (ingest.failures.length) {
-    console.log(`[revision-weekly] ${ingest.failures.length} failures (first 10):`);
-    for (const f of ingest.failures.slice(0, 10)) console.log(`  ${f}`);
+  if (pipeline.ingest.failures.length) {
+    console.log(`[revision-weekly] ${pipeline.ingest.failures.length} failures (first 10):`);
+    for (const f of pipeline.ingest.failures.slice(0, 10)) console.log(`  ${f}`);
   }
 }
 

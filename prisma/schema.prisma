@@ -60,6 +60,20 @@ enum RevisionGroupType {
   SUBSECTOR
 }
 
+/// Engine 1 threshold-crossing event types (SignalTransition.type). Weekly
+/// types are rewritten per snapshotDate; ER_WITHIN_7D is keyed to the earnings
+/// date so the daily scan fires each earnings event exactly once.
+enum RevisionTransitionType {
+  NEW_LONG
+  NEW_SHORT
+  GAP_CLOSED
+  STREAK_BROKEN
+  ER_WITHIN_7D
+  GROUP_INFLECTION
+  GROUP_ROLLOVER
+  NEXT_DOMINO
+}
+
 // --- Core reference ---
 
 model Universe {
@@ -668,7 +682,19 @@ model RevisionScore {
   sectorDecile    Int?
   rank            Int?
   newArrival      Boolean           @default(false)
-  scoreJson       Json? // all raw signals + their z-scores
+  // Derived decision metrics (gap score + friends). Nullable so sparse history
+  // degrades gracefully; full detail duplicated in scoreJson.derived.
+  px4wZ           Float? // 4-grid-week peer-relative price return z
+  gapScore        Float? // composite4wZ - px4wZ; positive = bullish revisions unpriced
+  composite4wZ    Float? // trailing 4-grid-week mean composite (clamped to depth)
+  groupZ          Float? // peer-group mean composite, re-z-scored across groups
+  idioZ           Float? // composite - groupZ
+  streakLen       Int? // consecutive same-sign composite weeks
+  streakSign      Int? // -1 | 0 | 1
+  streakSource    String? // LEG_A | LEG_B (Leg-B fallback until Leg A depth >= 6w)
+  side            String? // LONG | SHORT — sticky flag driven by decile + gap thresholds
+  dispersionTrend String? // NARROWING | WIDENING | FLAT
+  scoreJson       Json? // all raw signals + their z-scores + derived detail
   createdAt       DateTime          @default(now())
 
   @@unique([ticker, snapshotDate])
@@ -683,6 +709,87 @@ model ResearchQueueSnapshot {
   snapshotDate DateTime @unique @db.Date
   payloadJson  Json
   computedAt   DateTime @default(now())
+}
+
+/// Weekly close + trailing returns per revision-universe ticker, on the same
+/// snapshot-date grid as RevisionSnapshot but extended backward (backfilled
+/// weeks predate the first RevisionSnapshot — that is why this is its own
+/// table and not columns on RevisionSnapshot). Feeds px4wZ / gapScore and the
+/// forward returns of the validation backtests. Prices ARE backfillable from
+/// FMP even though estimates are not.
+model RevisionPriceSnapshot {
+  id           String    @id @default(cuid())
+  ticker       String
+  snapshotDate DateTime  @db.Date
+  close        Float? // last daily adjClose <= snapshotDate (staleness-gated)
+  priceDate    DateTime? @db.Date // actual bar date used; null if too stale
+  ret1w        Float?
+  ret4w        Float?
+  ret13w       Float? // trailing grid-step returns (grid ~= weekly)
+  source       String    @default("FMP")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([ticker, snapshotDate])
+  @@index([snapshotDate])
+  @@index([ticker])
+}
+
+/// Point-in-time weekly Leg-B reconstruction from the backfilled event tables
+/// (RatingEvent / PriceTargetEvent). Gives streaks + validation stats real
+/// history from day one while Leg A accrues. Composite = peer-group z-blend of
+/// {netUpDown, ptRevisionRecon}, z-scored against TODAY's peer taxonomy
+/// (documented limitation — no historical sector membership exists).
+model RevisionLegBWeekly {
+  id               String   @id @default(cuid())
+  ticker           String
+  snapshotDate     DateTime @db.Date
+  netUpDown        Float? // sum of +-1 action scores over rating events in (prevWeek, week]
+  ratingActivity   Int? // rating event count in the window
+  ptConsensusRecon Float? // mean of each analyst's latest PT <= week, staleness-windowed
+  ptRevisionRecon  Float? // relChange vs prior week's reconstruction
+  composite        Float? // cross-sectional peer z-blend of the two signals
+  createdAt        DateTime @default(now())
+
+  @@unique([ticker, snapshotDate])
+  @@index([snapshotDate])
+}
+
+/// Engine 1 threshold-crossing event log — powers the SUMMARY tab feed and
+/// doubles as an audit log for future threshold backtesting. Weekly types are
+/// rewritten per snapshotDate (delete + createMany, InstitutionalEvent
+/// pattern); the unique constraint makes ER_WITHIN_7D fire once per earnings
+/// event (its snapshotDate is the earnings date). subjectKey is non-null
+/// (ticker, or "SECTOR:key"/"SUBSECTOR:key") because Postgres NULLs do not
+/// collide in unique constraints.
+model SignalTransition {
+  id           String                 @id @default(cuid())
+  type         RevisionTransitionType
+  subjectKey   String // ticker | "SECTOR:<key>" | "SUBSECTOR:<key>"
+  ticker       String?
+  groupType    RevisionGroupType?
+  groupKey     String?
+  snapshotDate DateTime               @db.Date
+  firedAt      DateTime               @default(now())
+  payload      Json? // numbers behind the transition — feeds the reason template
+
+  @@unique([type, subjectKey, snapshotDate])
+  @@index([snapshotDate])
+  @@index([ticker])
+  @@index([type, snapshotDate])
+}
+
+/// Heavy analytics payload cache (validation tab today; kind-keyed so future
+/// expensive payloads can share it). One row per (kind, snapshotDate).
+model RevisionAnalyticsSnapshot {
+  id           String   @id @default(cuid())
+  kind         String // "validation"
+  snapshotDate DateTime @db.Date
+  payloadJson  Json
+  computedAt   DateTime @default(now())
+
+  @@unique([kind, snapshotDate])
+  @@index([kind, snapshotDate])
 }
 
 // ===========================================================================

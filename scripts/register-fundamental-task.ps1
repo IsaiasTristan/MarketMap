@@ -1,7 +1,11 @@
 <#
 .SYNOPSIS
-  One-time setup: register a Windows Scheduled Task that runs the Engine 2
-  fundamental-inflection weekly ingestion + scoring job.
+  OPTIONAL fallback: register a Windows Scheduled Task that runs the Engine 2
+  fundamental-inflection weekly ingestion + scoring job. The in-app fundamental
+  runner (src/server/services/fundamental-runner.ts, started from
+  instrumentation.ts) is the primary mechanism — earnings-driven daily
+  incremental + weekly full sweep whenever the app server runs; register this
+  task only if you want a belt-and-braces run without the server.
 
 .DESCRIPTION
   Creates (or overwrites) a scheduled task that runs scripts/fundamental-weekly.ps1

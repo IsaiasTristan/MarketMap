@@ -2,6 +2,9 @@
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { MetricTip } from "./MetricTip";
+import { GotoLink } from "./GotoLink";
+import { fmtZ, heatZ } from "./researchUi";
 
 type RatingChangeKind = "RATING" | "PRICE_TARGET";
 
@@ -20,6 +23,9 @@ interface RatingChangeRow {
   priceTarget: number | null;
   priceWhenPosted: number | null;
   newsPublisher: string | null;
+  inQueue?: boolean;
+  gapScore?: number | null;
+  side?: string | null;
 }
 
 interface EventsPayload {
@@ -70,9 +76,11 @@ function fmtPrice(n: number | null): string {
 export function RatingChanges({
   ticker,
   onSelectTicker,
+  onOpenQueue,
 }: {
   ticker?: string | null;
   onSelectTicker?: (t: string) => void;
+  onOpenQueue?: (t?: string) => void;
 }) {
   const [kind, setKind] = useState<KindFilter>("ALL");
   const [query, setQuery] = useState("");
@@ -105,7 +113,7 @@ export function RatingChanges({
   if (error) {
     return (
       <div style={{ color: "var(--text-muted)", fontSize: 11, padding: 12 }}>
-        No rating-change events yet. They are tailed daily from FMP once the revision runner has run (admin: &quot;Run weekly ingest&quot;, or `npm run job:revision-daily`).
+        No rating-change events yet. They are tailed daily from FMP automatically once the revision runner has run (manual fallback: `npm run job:revision-daily`).
       </div>
     );
   }
@@ -153,6 +161,9 @@ export function RatingChanges({
               <th style={{ padding: "3px 6px" }}>Firm / Analyst</th>
               <th style={{ padding: "3px 6px" }}>Action</th>
               <th style={{ padding: "3px 6px" }}>Change</th>
+              <th style={{ padding: "3px 6px" }}>
+                <MetricTip id="side">Queue</MetricTip>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -186,6 +197,20 @@ export function RatingChanges({
                     </span>
                   ) : (
                     <PriceTargetChange target={r.priceTarget} prior={r.priceWhenPosted} />
+                  )}
+                </td>
+                <td style={{ padding: "2px 6px", whiteSpace: "nowrap" }}>
+                  {r.inQueue ? (
+                    <GotoLink tab="queue" ticker={r.ticker} style={{ fontSize: 10 }}>
+                      <span style={{ color: r.side === "SHORT" ? "var(--color-negative)" : "var(--color-positive)", fontWeight: 700 }}>
+                        {r.side === "SHORT" ? "S" : "L"}
+                      </span>{" "}
+                      <span className="bb-num" style={{ color: heatZ(r.gapScore ?? null, 2) }}>
+                        GAP {fmtZ(r.gapScore)}
+                      </span>
+                    </GotoLink>
+                  ) : (
+                    <span style={{ color: "var(--text-muted)" }}>{"\u2014"}</span>
                   )}
                 </td>
               </tr>

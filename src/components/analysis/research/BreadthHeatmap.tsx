@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { heatSignedBloomberg } from "@/components/analysis/ui/heat";
+import { MetricTip } from "./MetricTip";
 
 type GroupType = "SECTOR" | "SUBSECTOR";
 
@@ -41,7 +42,9 @@ export function BreadthHeatmap() {
             {g === "SECTOR" ? "Sector" : "Subsector"}
           </button>
         ))}
-        <span style={{ color: "var(--text-muted)" }}>estimate-revision breadth, groups × weeks</span>
+        <span style={{ color: "var(--text-muted)" }}>
+          <MetricTip id="estimateBreadthZ">estimate-revision breadth</MetricTip>, groups × weeks
+        </span>
       </div>
 
       {isLoading ? (

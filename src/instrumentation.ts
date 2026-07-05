@@ -98,5 +98,27 @@ export async function register() {
         e,
       );
     }
+    try {
+      const { startFundamentalRunner } = await import(
+        "@/server/services/fundamental-runner"
+      );
+      startFundamentalRunner();
+    } catch (e) {
+      console.error(
+        "[instrumentation] failed to start fundamental runner:",
+        e,
+      );
+    }
+    try {
+      const { startInstitutionalRunner } = await import(
+        "@/server/services/institutional-runner"
+      );
+      startInstitutionalRunner();
+    } catch (e) {
+      console.error(
+        "[instrumentation] failed to start institutional runner:",
+        e,
+      );
+    }
   }
 }

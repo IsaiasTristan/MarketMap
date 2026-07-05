@@ -248,18 +248,5 @@ export function quarterLabel(period: string): string {
   return `${q} ${y}`;
 }
 
-// ── shared data states ───────────────────────────────────────────────────────
-export function PanelState({ state, error, children }: { state: string; error?: unknown; children: ReactNode }) {
-  if (state === "loading") return <Muted>Loading…</Muted>;
-  if (state === "error") return <Muted tone="negative">{error instanceof Error ? error.message : "Failed to load."}</Muted>;
-  if (state === "empty") return <Muted>No data for this period.</Muted>;
-  return <>{children}</>;
-}
-
-export function Muted({ children, tone, style }: { children: ReactNode; tone?: "negative"; style?: CSSProperties }) {
-  return (
-    <div style={{ padding: 20, fontSize: 12, color: tone === "negative" ? "var(--color-negative)" : "var(--text-muted)", ...style }}>
-      {children}
-    </div>
-  );
-}
+// ── shared data states (moved to ui/PanelState; re-exported for back-compat) ─
+export { PanelState, Muted } from "@/components/analysis/ui/PanelState";

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   CartesianGrid,
@@ -25,8 +25,20 @@ const PALETTE = [
   "#4ad6c0", "#b0b0b0", "#9ae86a", "#ff9ad2", "#7a9cff", "#e0c060",
 ];
 
-export function RotationFlow() {
-  const [groupType, setGroupType] = useState<GroupType>("SECTOR");
+export function RotationFlow({
+  initialGroupType,
+  focusGroup,
+}: {
+  /** Deep-link focus (from Decomp / Summary group triggers): pre-select the level... */
+  initialGroupType?: GroupType;
+  /** ...and highlight this group's line (others dimmed). */
+  focusGroup?: string | null;
+} = {}) {
+  const [groupType, setGroupType] = useState<GroupType>(initialGroupType ?? "SECTOR");
+
+  useEffect(() => {
+    if (initialGroupType) setGroupType(initialGroupType);
+  }, [initialGroupType]);
 
   const { data, isLoading, error } = useQuery<RotationPayload>({
     queryKey: ["research-rotation", groupType],
@@ -41,11 +53,15 @@ export function RotationFlow() {
   const { chartData, groups } = useMemo(() => {
     if (!data) return { chartData: [] as Array<Record<string, unknown>>, groups: [] as string[] };
     // Rank groups by latest composite mean; cap to top 12 for legibility.
+    // A deep-linked focus group is always forced into the selection.
     const ranked = [...data.series]
       .map((s) => ({ key: s.groupKey, last: s.points[s.points.length - 1]?.compositeMean ?? -Infinity }))
       .sort((a, b) => b.last - a.last)
       .slice(0, 12)
       .map((g) => g.key);
+    if (focusGroup && !ranked.includes(focusGroup) && data.series.some((s) => s.groupKey === focusGroup)) {
+      ranked[ranked.length - 1] = focusGroup;
+    }
     const set = new Set(ranked);
     const byDate = new Map<string, Record<string, unknown>>();
     for (const d of data.dates) byDate.set(d, { date: d });
@@ -57,7 +73,7 @@ export function RotationFlow() {
       }
     }
     return { chartData: [...byDate.values()], groups: ranked };
-  }, [data]);
+  }, [data, focusGroup]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -92,7 +108,16 @@ export function RotationFlow() {
               <YAxis tick={{ fontSize: 9, fill: "var(--text-muted)" }} />
               <Tooltip contentStyle={{ background: "var(--bg-base)", border: "1px solid var(--chrome-border)", fontSize: 10 }} />
               {groups.map((g, i) => (
-                <Line key={g} type="monotone" dataKey={g} stroke={PALETTE[i % PALETTE.length]} dot={false} connectNulls strokeWidth={1.5} />
+                <Line
+                  key={g}
+                  type="monotone"
+                  dataKey={g}
+                  stroke={PALETTE[i % PALETTE.length]}
+                  dot={false}
+                  connectNulls
+                  strokeWidth={focusGroup === g ? 3 : 1.5}
+                  strokeOpacity={focusGroup && focusGroup !== g ? 0.3 : 1}
+                />
               ))}
             </LineChart>
           </ResponsiveContainer>

@@ -11,6 +11,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { MetricTip } from "./MetricTip";
 
 interface TrajectoryPoint {
   snapshotDate: string;
@@ -82,7 +83,7 @@ export function RevisionTrajectory({
 
       {!ticker ? (
         <div style={{ color: "var(--text-muted)", fontSize: 11, padding: 12 }}>
-          Pick a ticker from the Master Rank table, or type one above. Trajectory shows whether the
+          Pick a ticker from the Idea Queue, or type one above. Trajectory shows whether the
           revision signal is a durable climb, a spike, or a round-trip over the stored weeks.
         </div>
       ) : isLoading ? (
@@ -111,8 +112,12 @@ export function RevisionTrajectory({
             </ResponsiveContainer>
           </div>
           <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-            {data?.points.length ?? 0} weekly observations. Leg B (rating/PT) fills from day one via
-            backfill; Leg A (estimates) accrues forward as snapshots accumulate.
+            {data?.points.length ?? 0} weekly observations of{" "}
+            <MetricTip id="composite">composite z</MetricTip>,{" "}
+            <MetricTip id="ratingMomentumZ">rating momentum</MetricTip>,{" "}
+            <MetricTip id="ptRevisionZ">PT revision</MetricTip> and{" "}
+            <MetricTip id="epsRevisionZ">EPS revision</MetricTip>. Leg B (rating/PT) fills from day
+            one via backfill; Leg A (estimates) accrues forward as snapshots accumulate.
           </div>
         </>
       )}

@@ -1,7 +1,10 @@
 <#
 .SYNOPSIS
-  One-time setup: register a Windows Scheduled Task that runs the Engine 1
-  analyst-revision weekly ingestion + scoring job.
+  OPTIONAL fallback: register a Windows Scheduled Task that runs the Engine 1
+  analyst-revision weekly ingestion + scoring job. The in-app revision runner
+  (src/server/services/revision-runner.ts, started from instrumentation.ts) is
+  the primary mechanism and already covers this whenever the app server runs;
+  register this task only if you want a belt-and-braces run without the server.
 
 .DESCRIPTION
   Creates (or overwrites) a scheduled task that runs scripts/revision-weekly.ps1

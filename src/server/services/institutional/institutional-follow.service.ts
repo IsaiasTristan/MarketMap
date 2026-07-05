@@ -228,7 +228,9 @@ export async function getFollowScoreboard(
       const followedBlocks = os.filter((o) => o.status === "followed").length;
       const resolvedBlocks = os.filter((o) => o.status === "followed" || o.status === "not_followed").length;
       const pendingBlocks = os.filter((o) => o.status === "pending").length;
-      const freshTickers = os.filter((o) => o.status === "pending" && o.followerFunds === 0).map((o) => o.ticker);
+      const freshTickers = [
+        ...new Set(os.filter((o) => o.status === "pending" && o.followerFunds === 0).map((o) => o.ticker)),
+      ];
       return {
         fundId: f.fundId,
         cik: m.cik,

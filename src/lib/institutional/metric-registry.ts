@@ -14,20 +14,9 @@
 import { FUND_OVERVIEW_CONFIG, type FundOverviewConfig } from "@/domain/calculations/fund-overview-config";
 import { FUNDS_ATTRIBUTION_CONFIG, type FundsAttributionConfig } from "@/domain/calculations/funds-attribution-config";
 import { INITIATION_CONFIG, type InitiationConfig } from "@/domain/calculations/initiation";
+import type { MetricDef } from "@/lib/analysis/metric-def";
 
-export interface MetricDef {
-  id: string;
-  /** Short human label (matches the on-screen term). */
-  label: string;
-  /** One/two-sentence definition — the tooltip body. Config numbers are interpolated. */
-  short_def: string;
-  /** How it's calculated (optional second paragraph). */
-  calculation?: string;
-  /** Caveats / gotchas (optional). */
-  caveats?: string;
-  /** Window / basis line (optional). */
-  basis?: string;
-}
+export type { MetricDef };
 
 export interface RegistryConfigs {
   overview: FundOverviewConfig;

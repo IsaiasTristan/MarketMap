@@ -248,6 +248,21 @@ export const researchIngestBody = z.object({
   backfillEvents: z.boolean().optional(),
   enrichProfiles: z.boolean().optional(),
   maxUniverse: z.number().int().min(1).max(5000).optional(),
+  capturePrices: z.boolean().optional(),
+  appendLegB: z.boolean().optional(),
+  revalidate: z.boolean().optional(),
+});
+
+export const researchCalendarQuery = z.object({
+  days: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(1, Math.min(30, Number(v))) : 21))
+    .pipe(z.number().int().min(1).max(30)),
+});
+
+export const researchDecompQuery = z.object({
+  groupType: z.enum(["SECTOR", "SUBSECTOR"]).optional().default("SUBSECTOR"),
 });
 
 // ─── Engine 2 — Fundamentals (discovery) ───────────────────────────────────

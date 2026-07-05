@@ -23,8 +23,8 @@ import {
   runRevisionDailyEvents,
   type RevisionDailyEventsSummary,
 } from "./revision/revision-daily-events.service";
-import { runRevisionWeekly } from "./revision/revision-weekly-job.service";
-import { scoreRevisionWeek } from "./revision/revision-scoring.service";
+import { runRevisionPipeline } from "./revision/revision-weekly-job.service";
+import { runDailyTransitionScan } from "./revision/revision-transitions.service";
 
 /** Hourly tick. Daily/weekly work is gated by ET-date, not by this interval. */
 const TICK_INTERVAL_MS = 60 * 60_000;
@@ -115,7 +115,8 @@ async function tick(): Promise<void> {
   running = true;
   const today = etToday();
   try {
-    // Daily: tail rating / price-target events once per ET calendar day.
+    // Daily: tail rating / price-target events once per ET calendar day,
+    // then scan for names entering the earnings window (ER_WITHIN_7D).
     if (isDailyDue(lastDailyRunDate, today)) {
       const summary = await runRevisionDailyEvents({
         log: (m) => console.log(m),
@@ -126,20 +127,25 @@ async function tick(): Promise<void> {
       console.log(
         `[revision-runner] daily events: +${summary.ratingEvents} ratings, +${summary.priceTargetEvents} PTs over ${summary.universeSize} tickers (${summary.failures} failed)`,
       );
+      try {
+        const scan = await runDailyTransitionScan({ log: (m) => console.log(m) });
+        console.log(`[revision-runner] ER scan: ${scan.fired} transitions fired`);
+      } catch (e) {
+        console.error("[revision-runner] ER scan failed:", e);
+      }
     }
 
-    // Weekly: re-snapshot + re-score when the consensus snapshot is stale.
-    // Attempted at most once per ET day so a transient FMP outage cannot
-    // hammer the endpoint hourly.
+    // Weekly: the full pipeline (snapshot -> prices -> Leg-B append -> score ->
+    // validation cache) when the consensus snapshot is stale. Attempted at
+    // most once per ET day so a transient FMP outage cannot hammer hourly.
     if (lastWeeklyRunDate !== today && (await weeklySnapshotIsStale())) {
-      const ingest = await runRevisionWeekly({ log: (m) => console.log(m) });
-      if (ingest.snapshotsWritten > 0) {
-        await scoreRevisionWeek({ snapshotDate: ingest.snapshotDate, log: (m) => console.log(m) });
-      }
+      const pipeline = await runRevisionPipeline({ log: (m) => console.log(m) });
       lastWeeklyRunDate = today;
       lastWeeklyAt = new Date().toISOString();
       console.log(
-        `[revision-runner] weekly snapshot: ${ingest.snapshotsWritten} written (${ingest.universeSize} tickers)`,
+        `[revision-runner] weekly pipeline: ${pipeline.ingest.snapshotsWritten} snapshots, ` +
+          `${pipeline.scoring?.scored ?? 0} scored, ${pipeline.scoring?.transitionsWritten ?? 0} transitions` +
+          (pipeline.stepErrors.length ? ` (step errors: ${pipeline.stepErrors.join("; ")})` : ""),
       );
     } else if (lastWeeklyRunDate !== today) {
       // Not stale yet; record that we checked today so we don't re-query hourly.

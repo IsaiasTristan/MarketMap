@@ -40,6 +40,9 @@ export interface FundamentalWeeklyOptions {
   universeId?: string;
   backfill?: boolean; // BACKFILL provenance + deep history (first run)
   enrichProfiles?: boolean;
+  /** Restrict to these tickers (intersected with the active universe) — daily
+   *  earnings-driven incremental refresh. Universe membership still enforced. */
+  tickers?: string[];
   maxUniverse?: number;
   quarters?: number;
   log?: (msg: string) => void;
@@ -204,6 +207,10 @@ export async function runFundamentalWeekly(
   }
 
   let tickers = await loadActiveUniverseTickers();
+  if (opts.tickers) {
+    const requested = new Set(opts.tickers.map((t) => t.toUpperCase()));
+    tickers = tickers.filter((t) => requested.has(t.toUpperCase()));
+  }
   if (opts.maxUniverse) tickers = tickers.slice(0, opts.maxUniverse);
   log(`[fund-weekly] universe ${tickers.length} tickers; snapshotDate=${snapshotDate}; provenance=${provenance}`);
   if (tickers.length === 0) {

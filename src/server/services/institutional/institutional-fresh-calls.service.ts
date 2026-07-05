@@ -57,12 +57,19 @@ export async function getFreshCalls(
 
   const rateByFund = new Map(sb.rows.map((r) => [r.fundId, r]));
 
-  // Collect fresh outcomes (pending + zero followers) across funds.
+  // Collect fresh outcomes (pending + zero followers) across funds. A fund can
+  // re-initiate the same ticker in more than one quarter (both still fresh); keep
+  // only the most recent entry per (fund, ticker) — smallest age = latest quarter.
   const inputs: FreshCallRankInput[] = [];
   for (const [fundId, outs] of sb.outcomesByFund) {
     const meta = rateByFund.get(fundId);
+    const freshest = new Map<string, (typeof outs)[number]>();
     for (const o of outs) {
       if (!isFreshCall(o)) continue;
+      const prev = freshest.get(o.ticker);
+      if (!prev || o.age < prev.age) freshest.set(o.ticker, o);
+    }
+    for (const o of freshest.values()) {
       inputs.push({
         fundId,
         ticker: o.ticker,
