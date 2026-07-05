@@ -21,6 +21,7 @@ import {
   type HoldingRow,
 } from "@/infrastructure/providers/fmp/institutional";
 import { InstitutionalAction, type Prisma } from "@prisma/client";
+import { canonicalTicker } from "@/lib/institutional/share-class-merge";
 
 export type QuarterKey = { year: number; quarter: number; periodEnd: string };
 
@@ -78,7 +79,11 @@ function aggregateHoldings(rows: HoldingRow[]): Map<
   >();
   for (const r of rows) {
     if (!r.symbol) continue; // drop unmapped (foreign/odd) lines
-    const entry = bySymbol.get(r.symbol) ?? {
+    // Share-class economic merge: a fund holding both classes of one issuer
+    // (GOOG+GOOGL, FOX+FOXA) is ONE position — bucket under the canonical symbol
+    // so fresh ingests land merged (raw per-class lines retained in `raw`).
+    const symbol = canonicalTicker(r.symbol);
+    const entry = bySymbol.get(symbol) ?? {
       shares: 0,
       value: 0,
       cusip: r.cusip,
@@ -94,7 +99,7 @@ function aggregateHoldings(rows: HoldingRow[]): Map<
       entry.shares += r.shares;
       entry.value += r.value;
     }
-    bySymbol.set(r.symbol, entry);
+    bySymbol.set(symbol, entry);
   }
   // Drop symbols that netted to no long-equity position (pure options lines).
   for (const [sym, e] of bySymbol) {

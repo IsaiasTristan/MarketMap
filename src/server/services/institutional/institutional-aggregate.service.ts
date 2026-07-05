@@ -20,6 +20,7 @@ import { buildActiveFlowMetrics, netDiffusionPct } from "./institutional-active-
 import { runIngredientPrecompute } from "./institutional-ingredients.service";
 import { runCoreHoldingsPrecompute } from "./institutional-core-holdings.service";
 import { runBaseRates } from "./institutional-base-rates.service";
+import { normalizeShareClasses } from "./share-class-normalize.service";
 import { FLOW_LEADERBOARD_CONFIG } from "@/domain/calculations/flow-leaderboard-config";
 import { cumulativeAccSeries } from "@/domain/calculations/flow-trajectory";
 import { classifyLifecycleSeries, detectTransitions, type StageInfo } from "@/domain/calculations/lifecycle";
@@ -625,6 +626,12 @@ export async function runInstitutionalAggregate(opts: {
   log?: (msg: string) => void;
 }): Promise<AggregateResult> {
   const log = opts.log ?? (() => {});
+
+  // Share-class economic merge (blocking prerequisite): fold GOOG→GOOGL / FOX→FOXA
+  // BEFORE the diff pass so prevShares / action / tenure / initiations / flow all
+  // derive from one merged position per issuer. Idempotent.
+  await normalizeShareClasses(log);
+
   const funds = await prisma.institutionalFund.findMany({ where: { isActive: true }, select: { id: true } });
   log(`[institutional-agg] diffing ${funds.length} funds`);
   for (const f of funds) await diffFund(f.id, log);
