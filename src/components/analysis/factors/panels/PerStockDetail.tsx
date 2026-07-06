@@ -3,11 +3,14 @@
  * PerStockDetail — sticky right-side panel showing the full single-stock
  * factor decomposition.
  *
- * Phase 3 lock-ins (2026-04-25):
- *   • UX hierarchy (Q13 lock): 1-large + 3-small headline.
- *       — Large primary: Realised σ (annualised).
- *       — Small secondary: Model-implied σ (ann.) + var-gap badge.
+ * Phase 3 lock-ins (2026-04-25), headline revised 2026-07-05:
+ *   • UX hierarchy: 1-large + 4-small headline.
+ *       — Large primary: enterprise-value build (FDSO × live price → market
+ *         cap → TEV) + NTM / FY+1 trading multiples (ValuationBuild).
+ *       — Small: Realised σ (ann. + daily) with model-implied σ + var-gap
+ *         badge sub-line.
  *       — Small diagnostic: R² (in-sample) + Variance share (Euler).
+ *       — Small: Variance gap (model vs realized).
  *       — Small tertiary: Static alpha (ann.).
  *     A reconciliation strip just below the header restates everything in
  *     one monospace line for at-a-glance scanning.
@@ -46,6 +49,7 @@ import {
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
 import { pickHeadlineValue } from "@/lib/factors/attribution/headline-picker";
 import { StockPriceChart } from "./StockPriceChart";
+import { ValuationBuild } from "./ValuationBuild";
 import type { FactorCode } from "@/types/factors";
 import { Waterfall, type WaterfallSegment } from "../shared/Waterfall";
 import { FactorInfoIcon } from "../shared/FactorInfoIcon";
@@ -446,6 +450,14 @@ export function PerStockDetail({
           flexDirection: "column",
         }}
       >
+        <div
+          style={{
+            padding: "12px 14px",
+            borderBottom: "1px solid var(--bg-border)",
+          }}
+        >
+          <ValuationBuild ticker={selectedTicker} />
+        </div>
         <StockPriceChart ticker={selectedTicker} />
         <div
           role="status"
@@ -506,7 +518,7 @@ export function PerStockDetail({
         </div>
       </div>
 
-      {/* 1-LARGE + 3-SMALL HEADLINE LAYOUT (Q13 lock) */}
+      {/* 1-LARGE + 4-SMALL HEADLINE LAYOUT (Q13 lock, revised 2026-07-05: TEV build primary) */}
       <div
         style={{
           display: "grid",
@@ -514,67 +526,78 @@ export function PerStockDetail({
           borderBottom: "1px solid var(--bg-border)",
         }}
       >
-        {/* Primary: Realized volatility (annualized) — sample σ of daily excess returns. */}
+        {/* Primary: enterprise-value build (FDSO × live price → MC → TEV) + multiples. */}
         <div
           style={{
             padding: "12px 14px",
             borderRight: "1px solid rgba(255,255,255,0.04)",
           }}
-          title={
-            `Realized volatility (annualized).\n` +
-            `Annualized sample standard deviation of DAILY EXCESS RETURNS over the regression-aligned dates ` +
-            `(σ̂ × √252, where σ̂ = √Var(y) and y = r_stock − r_f).\n\n` +
-            `This is HISTORICAL / SAMPLE volatility of excess returns — NOT a portfolio "total risk" budget ` +
-            `and NOT the sum of the variance decomposition below. The decomposition card uses MODEL-IMPLIED ` +
-            `variance (β'Σβ + σ²_idio); the Variance gap chip on the right reports model − realized.`
-          }
         >
-          <div
-            style={{
-              fontSize: 9,
-              color: "var(--text-muted)",
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              display: "flex",
-              alignItems: "center",
-            }}
-          >
-            Realized vol (ann.)
-            <FactorInfoIcon
-              tip={
-                `Annualized sample standard deviation of daily EXCESS returns (stock − RF) ` +
-                `over the regression-aligned window:  σ̂_y × √252.\n\n` +
-                `Distinct from the variance decomposition below, which is MODEL-implied ` +
-                `(β'Σβ + σ²_idio) and decomposes ex-ante variance into systematic + idiosyncratic shares.`
-              }
-              ariaLabel="Realized volatility methodology"
-            />
-          </div>
-          <div
-            style={{
-              fontSize: 28,
-              fontWeight: 700,
-              fontFamily: "var(--font-mono, monospace)",
-              color: "var(--text-primary)",
-              lineHeight: 1.1,
-              marginTop: 2,
-            }}
-          >
-            {(row.realizedAnnualizedVol * 100).toFixed(1)}%
-          </div>
-          <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
-            Model-implied vol {(row.modelImpliedAnnualizedVol * 100).toFixed(1)}%
-            <VarGapBadge varGapPct={row.varGapPct} />
-          </div>
+          <ValuationBuild ticker={row.ticker} />
         </div>
 
-        {/* Secondary stack: 3 small cells */}
+        {/* Secondary stack: 4 small cells */}
         <div
           style={{
             display: "grid",
-            gridTemplateRows: "1fr 1fr 1fr",
+            gridTemplateRows: "1fr 1fr 1fr 1fr",
           }}
         >
+          <div
+            style={{
+              padding: "6px 14px",
+              borderBottom: "1px solid rgba(255,255,255,0.04)",
+            }}
+            title={
+              `Realized volatility.\n` +
+              `Annualized sample standard deviation of DAILY EXCESS RETURNS over the regression-aligned dates ` +
+              `(σ̂ × √252, where σ̂ = √Var(y) and y = r_stock − r_f). Daily figure = annualized ÷ √252.\n\n` +
+              `This is HISTORICAL / SAMPLE volatility of excess returns — NOT a portfolio "total risk" budget ` +
+              `and NOT the sum of the variance decomposition below. The decomposition card uses MODEL-IMPLIED ` +
+              `variance (β'Σβ + σ²_idio); the Variance gap cell below reports model − realized.`
+            }
+          >
+            <div
+              style={{
+                fontSize: 9,
+                color: "var(--text-muted)",
+                textTransform: "uppercase",
+                letterSpacing: "0.06em",
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              Realized vol (ann. · daily)
+              <FactorInfoIcon
+                tip={
+                  `Annualized sample standard deviation of daily EXCESS returns (stock − RF) ` +
+                  `over the regression-aligned window:  σ̂_y × √252. Daily = annualized ÷ √252.\n\n` +
+                  `Distinct from the variance decomposition below, which is MODEL-implied ` +
+                  `(β'Σβ + σ²_idio) and decomposes ex-ante variance into systematic + idiosyncratic shares.`
+                }
+                ariaLabel="Realized volatility methodology"
+              />
+            </div>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                fontFamily: "var(--font-mono, monospace)",
+                color: "var(--text-primary)",
+                marginTop: 1,
+              }}
+            >
+              {(row.realizedAnnualizedVol * 100).toFixed(1)}%
+              <span style={{ color: "var(--text-muted)", marginLeft: 6, fontSize: 10 }}>
+                {((row.realizedAnnualizedVol / Math.sqrt(252)) * 100).toFixed(2)}%/d
+              </span>
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 1 }}>
+              Model {(row.modelImpliedAnnualizedVol * 100).toFixed(1)}% ·{" "}
+              {((row.modelImpliedAnnualizedVol / Math.sqrt(252)) * 100).toFixed(2)}%/d
+              <VarGapBadge varGapPct={row.varGapPct} />
+            </div>
+          </div>
           <div
             style={{
               padding: "6px 14px",
