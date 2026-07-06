@@ -266,6 +266,26 @@ export async function getPositions(portfolioId: string): Promise<PositionRow[]> 
   });
 }
 
+/**
+ * Distinct tickers currently held across ALL portfolios (cash pseudo-positions
+ * excluded), uppercased. The revision universe unions these in (curated ∪ held)
+ * so every held name carries a research signal + next-earnings date; see
+ * buildReferenceFromMarketMap / the daily onboarding in revision-daily-events.
+ */
+export async function loadAllHeldTickers(): Promise<string[]> {
+  const rows = await db.portfolioPosition.findMany({
+    where: { isCash: false, securityId: { not: null } },
+    distinct: ["securityId"],
+    select: { security: { select: { ticker: true } } },
+  });
+  const tickers = new Set<string>();
+  for (const r of rows) {
+    const t = r.security?.ticker.trim().toUpperCase();
+    if (t) tickers.add(t);
+  }
+  return [...tickers];
+}
+
 export async function addCashPosition(
   portfolioId: string,
   amount: number,

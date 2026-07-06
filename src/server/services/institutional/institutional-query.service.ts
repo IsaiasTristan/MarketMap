@@ -1688,6 +1688,106 @@ export async function getCrowdingColumn(tickers: string[], period?: string): Pro
   return { filingPeriod: p, byTicker };
 }
 
+// ── SIGNAL BRIEF (Overview portfolio-lens read helpers) ─────────────────────
+// Thin per-ticker reads for the Overview signal modules: latest-quarter name
+// aggregates and this quarter's events (stasis breaks / stage transitions),
+// plus the stored stasis base-rate line. Same period resolution as the panels
+// above; no new computation.
+
+export interface TickerFlowAggregate {
+  ticker: string;
+  netflowBps: number | null;
+  quadrant: string | null;
+  lifecycleStage: string | null;
+  deltaHolders: number;
+  fundsHolding: number;
+  breadthDecile: number | null;
+  convictionDecile: number | null;
+}
+
+/** Latest-quarter InstitutionalNameAggregate per requested ticker (missing = no 13F coverage). */
+export async function getNameAggregatesForTickers(
+  tickers: string[],
+  period?: string,
+): Promise<{ filingPeriod: string | null; rows: TickerFlowAggregate[] }> {
+  const p = await resolvePeriod(period);
+  if (!p || tickers.length === 0) return { filingPeriod: p, rows: [] };
+  const rows = await prisma.institutionalNameAggregate.findMany({
+    where: { filingPeriod: new Date(`${p}T00:00:00.000Z`), ticker: { in: tickers.map((t) => t.toUpperCase()) } },
+    select: {
+      ticker: true,
+      netflowBps: true,
+      quadrant: true,
+      lifecycleStage: true,
+      deltaHolders: true,
+      fundsHolding: true,
+      breadthDecile: true,
+      convictionDecile: true,
+    },
+  });
+  return { filingPeriod: p, rows };
+}
+
+export interface TickerFlowEvent {
+  ticker: string;
+  /** "stasis_break" | "stage_transition" */
+  kind: string;
+  significance: number;
+  filingPeriod: string;
+  /** stage_transition payload. */
+  from: string | null;
+  to: string | null;
+  /** stasis_break payload. */
+  departed: number | null;
+  priorLongHolders: number | null;
+}
+
+/**
+ * This quarter's InstitutionalEvent rows for the requested tickers, plus the
+ * stored stasis-break base-rate line (null until N≥30) for feed sentences.
+ */
+export async function getEventsForTickers(
+  tickers: string[],
+  period?: string,
+): Promise<{ filingPeriod: string | null; events: TickerFlowEvent[]; stasisBaseRate: string | null }> {
+  const p = await resolvePeriod(period);
+  if (!p || tickers.length === 0) return { filingPeriod: p, events: [], stasisBaseRate: null };
+  const [rows, br] = await Promise.all([
+    prisma.institutionalEvent.findMany({
+      where: {
+        filingPeriod: new Date(`${p}T00:00:00.000Z`),
+        ticker: { in: tickers.map((t) => t.toUpperCase()) },
+        kind: { in: ["stasis_break", "stage_transition"] },
+      },
+      orderBy: { significance: "desc" },
+    }),
+    prisma.institutionalBaseRate.findFirst({ where: { pattern: "stasis_break", horizon: "2Q" } }),
+  ]);
+  const events: TickerFlowEvent[] = rows.map((e) => {
+    const pl = e.payload as {
+      from?: string | null;
+      to?: string | null;
+      departed?: number;
+      priorLongHolders?: number;
+    } | null;
+    return {
+      ticker: e.ticker,
+      kind: e.kind,
+      significance: e.significance,
+      filingPeriod: iso(e.filingPeriod),
+      from: pl?.from ?? null,
+      to: pl?.to ?? null,
+      departed: pl?.departed ?? null,
+      priorLongHolders: pl?.priorLongHolders ?? null,
+    };
+  });
+  const stasisBaseRate =
+    br && br.n >= 30 && br.excessReturn != null
+      ? `${br.excessReturn >= 0 ? "+" : ""}${(br.excessReturn * 100).toFixed(1)}% excess next 2Q after a break (n=${br.n}${br.hitRate != null ? `, ${Math.round(br.hitRate * 100)}% hit` : ""})`
+      : null;
+  return { filingPeriod: p, events, stasisBaseRate };
+}
+
 // ── watchlist CRUD ───────────────────────────────────────────────────────────
 export interface FundRow {
   id: string;

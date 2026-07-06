@@ -13,6 +13,7 @@ import { PortfolioNews } from "@/components/analysis/overview/PortfolioNews";
 import { HoldingsFundamentalsTable } from "@/components/analysis/overview/HoldingsFundamentalsTable";
 import { HoldingsLiveChartGrid } from "@/components/analysis/overview/HoldingsLiveChartGrid";
 import { PortfolioFactorSummary } from "@/components/analysis/overview/PortfolioFactorSummary";
+import { SignalBriefSection } from "@/components/analysis/overview/SignalBriefSection";
 import { fmt$, fmtPct } from "@/components/analysis/overview/formatters";
 import type { HoldingRow } from "@/server/services/portfolio-holdings.service";
 import type { PerStockResult } from "@/server/services/factor-per-stock.service";
@@ -219,6 +220,8 @@ export function OverviewClient() {
           loading={exposureLoading || attributionLoading}
         />
       </div>
+
+      <SignalBriefSection portfolioId={activePortfolioId} />
 
       <HoldingsDashboard
         rows={holdingsData?.rows ?? []}

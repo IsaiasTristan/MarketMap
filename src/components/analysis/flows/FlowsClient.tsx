@@ -53,6 +53,12 @@ export function FlowsClient() {
   }, [searchParams]);
   const [period, setPeriod] = useState<string | null>(null);
   const [ticker, setTicker] = useState<string | null>(null);
+  // React to ?ticker= (e.g. a Confluence stack-cell deep-link pushing
+  // `/flows?tab=trajectories&ticker=X`) — opens the inline LedgerPanel.
+  useEffect(() => {
+    const t = searchParams.get("ticker");
+    if (t) setTicker(t.toUpperCase());
+  }, [searchParams]);
   const [ingesting, setIngesting] = useState(false);
   const [ingestMsg, setIngestMsg] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);

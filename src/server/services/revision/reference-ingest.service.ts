@@ -6,6 +6,7 @@
  */
 import { prisma } from "@/infrastructure/db/client";
 import { getOrCreateDefaultUniverse } from "@/server/services/universe.service";
+import { loadAllHeldTickers } from "@/server/services/position.service";
 import {
   fetchProfile,
   fetchScreener,
@@ -182,6 +183,134 @@ export function marketMapConstituentToReference(
   };
 }
 
+// ─── Held-position union ────────────────────────────────────────────────────
+// Policy (2026-07): current portfolio holdings are ALWAYS revision-universe
+// members (universe = curated market map ∪ held tickers), so every held name
+// carries a research signal + next-earnings date. The weekly reference rebuild
+// unions them below; the daily runner onboards newly-held names between weekly
+// runs (revision-daily-events.service).
+
+export interface HeldReferenceSummary {
+  /** Tickers that now have an ACTIVE reference row (created + reactivated + already active). */
+  ensured: string[];
+  /** Subset that had no reference row before (brand-new onboards). */
+  created: string[];
+  failures: string[];
+}
+
+/**
+ * Ensure every given held ticker has an ACTIVE RevisionReference row. Existing
+ * rows are reactivated in place (their richer taxonomy is preserved — no
+ * re-fetch); missing rows are created from the FMP profile (sector + industry,
+ * parity with the screener path), falling back to the Security profile /
+ * per-position sector override when the profile is unavailable. Never throws —
+ * failures are collected per ticker.
+ */
+export async function ensureHeldReferences(
+  tickers: string[],
+  opts: { log?: (msg: string) => void } = {},
+): Promise<HeldReferenceSummary> {
+  const log = opts.log ?? (() => {});
+  const failures: string[] = [];
+  if (tickers.length === 0) return { ensured: [], created: [], failures };
+
+  const now = new Date();
+  const existing = await prisma.revisionReference.findMany({
+    where: { ticker: { in: tickers } },
+    select: { ticker: true },
+  });
+  const existingTickers = new Set(existing.map((r) => r.ticker));
+  const toCreate = tickers.filter((t) => !existingTickers.has(t));
+
+  // Reactivate + touch existing rows (covers inactive ones deactivated by a
+  // past reconcile; a no-op flag-wise for already-active rows).
+  if (existingTickers.size > 0) {
+    await prisma.revisionReference.updateMany({
+      where: { ticker: { in: [...existingTickers] } },
+      data: { isActive: true, lastSeenAt: now },
+    });
+  }
+
+  const created: string[] = [];
+  if (toCreate.length > 0) {
+    // Fallback taxonomy: Security profile + any per-position sector override.
+    const secRows = await prisma.security.findMany({
+      where: { ticker: { in: toCreate } },
+      select: {
+        ticker: true,
+        name: true,
+        sector: true,
+        country: true,
+        currency: true,
+        portfolioPositions: {
+          where: { sector: { not: null } },
+          select: { sector: true },
+          take: 1,
+        },
+      },
+    });
+    const secByTicker = new Map(secRows.map((s) => [s.ticker, s]));
+
+    const { results, failures: profFailures } = await fmpPool(
+      toCreate,
+      async (t) => ({ ticker: t, profile: await fetchProfile(t) }),
+      { concurrency: 4 },
+    );
+    for (const f of profFailures) failures.push(`held profile ${f.item}: ${f.error}`);
+    const profileByTicker = new Map(results.map((x) => [x.value.ticker, x.value.profile]));
+
+    for (const t of toCreate) {
+      const sec = secByTicker.get(t);
+      const fallbackSector = sec?.sector ?? sec?.portfolioPositions[0]?.sector ?? null;
+      const p = profileByTicker.get(t);
+      const r: NormalizedReference = p ?? {
+        ticker: t,
+        companyName: sec?.name ?? t,
+        cik: null,
+        sector: fallbackSector,
+        subsector: null,
+        exchange: null,
+        country: sec?.country ?? null,
+        currency: sec?.currency ?? null,
+        marketCap: null,
+        identifiers: {},
+      };
+      if (!r.sector) r.sector = fallbackSector;
+      try {
+        await prisma.revisionReference.upsert({
+          where: { ticker: t },
+          create: {
+            ticker: t,
+            companyName: r.companyName,
+            cik: r.cik,
+            sector: r.sector,
+            subsector: r.subsector,
+            exchange: r.exchange,
+            country: r.country,
+            currency: r.currency,
+            marketCap: r.marketCap ?? undefined,
+            identifiersJson: r.identifiers,
+            isActive: true,
+            lastSeenAt: now,
+          },
+          update: { isActive: true, lastSeenAt: now },
+        });
+        created.push(t);
+      } catch (e) {
+        failures.push(`held upsert ${t}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    log(`[reference] held onboard: created ${created.length}/${toCreate.length} new reference row(s)`);
+  }
+
+  const failedCreates = new Set(toCreate.filter((t) => !created.includes(t)));
+  return {
+    ensured: tickers.filter((t) => !failedCreates.has(t)),
+    created,
+    failures,
+  };
+}
+
 export interface MarketMapReferenceOptions {
   /** Specific universe to source from; defaults to the single active universe. */
   universeId?: string;
@@ -190,8 +319,10 @@ export interface MarketMapReferenceOptions {
 
 /**
  * Build RevisionReference from the active market-map universe. Upserts one row
- * per active constituent (mapping sub-theme -> subsector), then deactivates any
- * existing reference whose ticker is no longer in the market map so removed /
+ * per active constituent (mapping sub-theme -> subsector), unions in currently
+ * held portfolio tickers (holdings are always universe members — see the
+ * held-position union section above), then deactivates any existing reference
+ * whose ticker is neither in the market map nor held so removed /
  * screener-only names drop out of the research queue.
  */
 export async function buildReferenceFromMarketMap(
@@ -282,12 +413,30 @@ export async function buildReferenceFromMarketMap(
     }
   }
 
-  // Reconcile: deactivate references no longer in the market-map universe so
-  // stale / screener-only names stop appearing in the ranked queue. Skipped on
-  // an empty universe so a transient empty read can't wipe the whole reference.
+  // Held-position union: portfolio holdings outside the curated map are
+  // ensured as active references (existing rows keep their taxonomy; new ones
+  // are onboarded from the FMP profile). Best-effort — a failure here must not
+  // block the curated rebuild.
+  let heldEnsured: string[] = [];
+  try {
+    const held = await loadAllHeldTickers();
+    const heldOutside = held.filter((t) => !byTicker.has(t));
+    if (heldOutside.length > 0) {
+      const h = await ensureHeldReferences(heldOutside, { log });
+      heldEnsured = h.ensured;
+      failures.push(...h.failures.slice(0, 10));
+    }
+  } catch (e) {
+    failures.push(`held-union: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Reconcile: deactivate references neither in the market-map universe nor
+  // held so stale / screener-only names stop appearing in the ranked queue.
+  // Skipped on an empty universe so a transient empty read can't wipe the
+  // whole reference.
   let deactivatedCount = 0;
   if (universe.length > 0) {
-    const activeTickers = universe.map((r) => r.ticker);
+    const activeTickers = [...universe.map((r) => r.ticker), ...heldEnsured];
     const deactivated = await prisma.revisionReference.updateMany({
       where: { isActive: true, ticker: { notIn: activeTickers } },
       data: { isActive: false },

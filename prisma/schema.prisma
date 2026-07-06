@@ -792,6 +792,24 @@ model RevisionAnalyticsSnapshot {
   @@index([kind, snapshotDate])
 }
 
+/// CONFLUENCE — weekly per-name stage history (cross-engine agreement board).
+/// One row per (ticker, snapshotDate) written at the tail of the revision
+/// weekly pipeline; the hook for later validating whether stack depth predicts
+/// forward returns better than any single signal. Kept deliberately lean —
+/// the display annotations live in the source engines' own tables.
+model ConfluenceStageSnapshot {
+  id           String   @id @default(cuid())
+  ticker       String
+  snapshotDate DateTime @db.Date
+  stage        String // FULL_STACK | CROWDED | PLUS_REVISIONS | R_PLUS_13F | F_PLUS_13F | SINGLE | CONFLICT
+  stackDepth   Int // count of agreeing non-neutral sources (CONFLICT: majority-direction count)
+  direction    String? // LONG | SHORT | null (1-1 conflict tie)
+  createdAt    DateTime @default(now())
+
+  @@unique([ticker, snapshotDate])
+  @@index([snapshotDate])
+}
+
 // ===========================================================================
 // Engine 2 — Fundamental-Inflection Discovery (FMP-backed)
 //

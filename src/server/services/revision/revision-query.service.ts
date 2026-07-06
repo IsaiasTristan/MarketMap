@@ -626,6 +626,189 @@ export async function getCalendar(days: number): Promise<CalendarPayload> {
   return { generatedAt: new Date().toISOString(), today: todayIso, days, weeks };
 }
 
+// ─── SIGNAL BRIEF (Overview portfolio-lens read helpers) ────────────────────
+// Thin per-ticker reads for the Overview signal modules: latest scores,
+// the latest transition set, and next-earnings dates. Same latest-date
+// resolution as the panels above; no new computation.
+
+export interface TickerSignalScore {
+  ticker: string;
+  gapScore: number | null;
+  composite: number | null;
+  side: string | null;
+  streakLen: number | null;
+  streakSign: number | null;
+  subsectorDecile: number | null;
+  sectorDecile: number | null;
+}
+
+export interface LatestScoresPayload {
+  snapshotDate: string | null;
+  /** Accruing-window state from the baked queue payload (axis-suffix source). */
+  effectiveWindow: { legAWeeks: number; composite4wWindow: number } | null;
+  scores: TickerSignalScore[];
+}
+
+/** Latest RevisionScore per requested ticker (missing tickers are simply absent). */
+export async function getLatestScoresForTickers(tickers: string[]): Promise<LatestScoresPayload> {
+  const latest = (
+    await prisma.revisionScore.findFirst({ orderBy: { snapshotDate: "desc" }, select: { snapshotDate: true } })
+  )?.snapshotDate;
+  const queueSnap = await prisma.researchQueueSnapshot.findFirst({
+    orderBy: { snapshotDate: "desc" },
+    select: { payloadJson: true },
+  });
+  const ew = (queueSnap?.payloadJson as { effectiveWindow?: { legAWeeks?: number; composite4wWindow?: number } } | null)
+    ?.effectiveWindow;
+  const effectiveWindow =
+    typeof ew?.legAWeeks === "number" && typeof ew?.composite4wWindow === "number"
+      ? { legAWeeks: ew.legAWeeks, composite4wWindow: ew.composite4wWindow }
+      : null;
+  if (!latest || tickers.length === 0) {
+    return { snapshotDate: latest ? isoOf(latest) : null, effectiveWindow, scores: [] };
+  }
+  const rows = await prisma.revisionScore.findMany({
+    where: { snapshotDate: latest, ticker: { in: tickers } },
+    select: {
+      ticker: true,
+      gapScore: true,
+      composite: true,
+      side: true,
+      streakLen: true,
+      streakSign: true,
+      subsectorDecile: true,
+      sectorDecile: true,
+    },
+  });
+  return { snapshotDate: isoOf(latest), effectiveWindow, scores: rows };
+}
+
+/**
+ * Latest RevisionScore for EVERY scored ticker (the CONFLUENCE board's
+ * revision leg). Same shape as getLatestScoresForTickers, universe-wide —
+ * one bulk read at the latest snapshot date.
+ */
+export async function getLatestScoresAll(): Promise<LatestScoresPayload> {
+  const latest = (
+    await prisma.revisionScore.findFirst({ orderBy: { snapshotDate: "desc" }, select: { snapshotDate: true } })
+  )?.snapshotDate;
+  const queueSnap = await prisma.researchQueueSnapshot.findFirst({
+    orderBy: { snapshotDate: "desc" },
+    select: { payloadJson: true },
+  });
+  const ew = (queueSnap?.payloadJson as { effectiveWindow?: { legAWeeks?: number; composite4wWindow?: number } } | null)
+    ?.effectiveWindow;
+  const effectiveWindow =
+    typeof ew?.legAWeeks === "number" && typeof ew?.composite4wWindow === "number"
+      ? { legAWeeks: ew.legAWeeks, composite4wWindow: ew.composite4wWindow }
+      : null;
+  if (!latest) return { snapshotDate: null, effectiveWindow, scores: [] };
+  const rows = await prisma.revisionScore.findMany({
+    where: { snapshotDate: latest },
+    select: {
+      ticker: true,
+      gapScore: true,
+      composite: true,
+      side: true,
+      streakLen: true,
+      streakSign: true,
+      subsectorDecile: true,
+      sectorDecile: true,
+    },
+  });
+  return { snapshotDate: isoOf(latest), effectiveWindow, scores: rows };
+}
+
+export interface LatestTransitionRow {
+  type: RevisionTransitionType;
+  ticker: string | null;
+  groupType: RevisionGroupType | null;
+  groupKey: string | null;
+  snapshotDate: string;
+  reason: string;
+  payload: Record<string, unknown>;
+}
+
+/**
+ * The latest transition set — the same rows getSummary groups, returned flat
+ * (weekly transitions at the latest score date + still-upcoming ER catalysts),
+ * without the header stats. Empty array is a valid first-run outcome.
+ */
+export async function getLatestTransitions(): Promise<{ snapshotDate: string | null; rows: LatestTransitionRow[] }> {
+  const latestScore = await prisma.revisionScore.findFirst({
+    orderBy: { snapshotDate: "desc" },
+    select: { snapshotDate: true },
+  });
+  if (!latestScore) return { snapshotDate: null, rows: [] };
+  const latest = latestScore.snapshotDate;
+  const [weekly, catalysts] = await Promise.all([
+    prisma.signalTransition.findMany({
+      where: { snapshotDate: latest, type: { not: "ER_WITHIN_7D" } },
+      orderBy: { firedAt: "asc" },
+    }),
+    prisma.signalTransition.findMany({
+      where: { type: "ER_WITHIN_7D", snapshotDate: { gte: latest } },
+      orderBy: { snapshotDate: "asc" },
+    }),
+  ]);
+  const rows = [...weekly, ...catalysts].map((t) => {
+    const payload = (t.payload ?? {}) as Record<string, unknown>;
+    return {
+      type: t.type,
+      ticker: t.ticker,
+      groupType: t.groupType,
+      groupKey: t.groupKey,
+      snapshotDate: isoOf(t.snapshotDate),
+      reason: transitionReason(t.type, payload),
+      payload,
+    };
+  });
+  return { snapshotDate: isoOf(latest), rows };
+}
+
+export interface TickerEarningsRow {
+  ticker: string;
+  erDate: string;
+  days: number;
+}
+
+/**
+ * Next earnings dates for the requested tickers within `days`, read from the
+ * latest stored snapshot (held names appear regardless of any signal — a print
+ * on a held position is a risk event). `coveredTickers` = tickers with ANY row
+ * at the latest snapshot date; a requested ticker not in it hasn't been
+ * onboarded into the universe yet (the caller footnotes those). A covered
+ * ticker with no upcoming ER inside the window is normal and absent from rows.
+ */
+export async function getNextEarningsForTickers(
+  tickers: string[],
+  days: number,
+): Promise<{ rows: TickerEarningsRow[]; coveredTickers: string[] }> {
+  if (tickers.length === 0) return { rows: [], coveredTickers: [] };
+  const latestSnapDate = (
+    await prisma.revisionSnapshot.findFirst({ orderBy: { snapshotDate: "desc" }, select: { snapshotDate: true } })
+  )?.snapshotDate;
+  if (!latestSnapDate) return { rows: [], coveredTickers: [] };
+  const todayIso = isoOf(new Date());
+  const todayMs = new Date(`${todayIso}T00:00:00Z`).getTime();
+  const snaps = await prisma.revisionSnapshot.findMany({
+    where: { snapshotDate: latestSnapDate, ticker: { in: tickers } },
+    select: { ticker: true, nextEarningsDate: true },
+  });
+  const untilMs = todayMs + days * 86_400_000;
+  const rows: TickerEarningsRow[] = [];
+  for (const s of snaps) {
+    const er = s.nextEarningsDate?.getTime();
+    if (er === undefined || er < todayMs || er > untilMs) continue;
+    rows.push({
+      ticker: s.ticker,
+      erDate: isoOf(s.nextEarningsDate!),
+      days: Math.round((er - todayMs) / 86_400_000),
+    });
+  }
+  return { rows, coveredTickers: snaps.map((s) => s.ticker) };
+}
+
 // ─── DECOMP (group vs idiosyncratic split) ──────────────────────────────────
 
 export interface DecompRow {

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { BloombergTabStrip, type BloombergTabItem } from "@/components/analysis/BloombergTabStrip";
 import type { DiscoveryPayload } from "./types";
@@ -17,8 +18,22 @@ const TABS: BloombergTabItem[] = [
 ];
 
 export function FundamentalsClient() {
+  const searchParams = useSearchParams();
   const [tab, setTab] = useState<FundTab>("rank");
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
+  // Deep-link contract (Confluence stack cells, cross-engine links):
+  // /fundamentals?tab=&ticker= — reactive like ResearchClient/FlowsClient.
+  // A ticker link defaults to Diligence (the per-name "why" view).
+  useEffect(() => {
+    const t = searchParams.get("tab");
+    const ticker = searchParams.get("ticker");
+    if (ticker) {
+      setSelectedTicker(ticker.toUpperCase());
+      setTab(t === "financials" ? "financials" : "diligence");
+    } else if (t && TABS.some((x) => x.key === t)) {
+      setTab(t as FundTab);
+    }
+  }, [searchParams]);
   const [sectorFilter, setSectorFilter] = useState<string | null>(null);
   const [subsectorFilter, setSubsectorFilter] = useState<string | null>(null);
   const [excludeSectorFilter, setExcludeSectorFilter] = useState<string | null>(null);

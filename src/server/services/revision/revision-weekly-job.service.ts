@@ -23,6 +23,7 @@ import { capturePriceWeek } from "./price-ingest.service";
 import { appendLegBWeek } from "./legb-weekly.service";
 import { scoreRevisionWeek, type ScoreSummary } from "./revision-scoring.service";
 import { computeAndCacheValidation } from "./revision-validation.service";
+import { writeConfluenceStageSnapshot } from "@/server/services/confluence.service";
 
 /** Where the revision universe (the list of tickers) comes from. */
 export type ReferenceSource = "MARKET_MAP" | "FMP_SCREENER";
@@ -37,6 +38,14 @@ export interface RevisionWeeklyOptions {
   backfillEvents?: boolean; // also (re)load Leg B event history (default false)
   enrichProfiles?: boolean; // CIK enrichment during reference refresh (FMP_SCREENER only)
   maxUniverse?: number; // cap the universe size (FMP_SCREENER smoke tests / staged rollout)
+  /**
+   * Restrict the snapshot to these tickers instead of the full active universe
+   * (daily held-name onboarding). Callers should pair this with
+   * `refreshReference: false` and an EXISTING snapshotDate — reads like the
+   * calendar load the single latest snapshot date, so a targeted run must
+   * patch that date rather than create a new sparse one.
+   */
+  tickers?: string[];
   log?: (msg: string) => void;
 }
 
@@ -74,8 +83,10 @@ export async function runRevisionWeekly(
         : await buildReferenceFromMarketMap({ universeId: opts.universeId, log });
     failures.push(...ref.failures.slice(0, 20));
   }
-  const tickers = await loadActiveUniverseTickers();
-  log(`[weekly] universe: ${tickers.length} active tickers; snapshotDate=${snapshotDate}`);
+  const tickers = opts.tickers ?? (await loadActiveUniverseTickers());
+  log(
+    `[weekly] ${opts.tickers ? "targeted" : "universe"}: ${tickers.length} active tickers; snapshotDate=${snapshotDate}`,
+  );
   if (tickers.length === 0) {
     return { snapshotDate, universeSize: 0, snapshotsWritten: 0, legAFailures: 0, failures };
   }
@@ -168,6 +179,8 @@ export interface RevisionPipelineSummary {
   legBAppend: { rowsWritten: number } | null;
   scoring: ScoreSummary | null;
   validation: { effectiveWeeks: { full: number; legB: number; price: number } } | null;
+  /** Weekly cross-engine confluence stage history (ConfluenceStageSnapshot). */
+  confluence: { rowsWritten: number } | null;
   stepErrors: string[];
 }
 
@@ -191,6 +204,7 @@ export async function runRevisionPipeline(
     legBAppend: null,
     scoring: null,
     validation: null,
+    confluence: null,
     stepErrors,
   };
   if (ingest.snapshotsWritten === 0) {
@@ -228,6 +242,21 @@ export async function runRevisionPipeline(
       summary.validation = { effectiveWeeks: v.effectiveWeeks };
     } catch (e) {
       stepErrors.push(`validation: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // Confluence stage history — the weekly cross-engine snapshot (stage, stack
+  // depth, direction per name) that later answers "does stack depth predict
+  // forward returns better than any single signal". Reads whatever
+  // fundamentals/13F snapshots exist right now (their runners refresh on
+  // their own cadences); same rules as the live board.
+  if (summary.scoring) {
+    try {
+      const c = await writeConfluenceStageSnapshot(ingest.snapshotDate);
+      summary.confluence = { rowsWritten: c.rowsWritten };
+      log(`[pipeline] confluence stage snapshot: ${c.rowsWritten} rows @ ${ingest.snapshotDate}`);
+    } catch (e) {
+      stepErrors.push(`confluence: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 

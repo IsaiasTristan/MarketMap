@@ -40,6 +40,16 @@ export const factorQueryParams = z.object({
   benchmark: z.enum(["SP500", "NASDAQ", "DOW"]).optional(),
 });
 
+/** Overview signal-brief query (portfolio-lens signal modules). */
+export const signalBriefQuery = z.object({
+  portfolioId: z.string().min(1),
+});
+
+/** Confluence board query — portfolioId only enables the held-only annotations. */
+export const confluenceQuery = z.object({
+  portfolioId: z.string().min(1).optional(),
+});
+
 /** Portfolio news feed query. */
 export const portfolioNewsQuery = z.object({
   portfolioId: z.string().min(1),
