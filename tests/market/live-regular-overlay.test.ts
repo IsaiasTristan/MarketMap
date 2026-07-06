@@ -88,6 +88,19 @@ describe("applyLiveRegularOverlay", () => {
     expect(r.series).toBe(s);
   });
 
+  it("appends across a single-day holiday (Thu -> Mon over July 4th)", () => {
+    // Last bar Thu 2026-07-02; Fri 2026-07-03 was the observed Independence Day
+    // holiday, so the DB is current and the overlay must APPLY — the calendar
+    // gap is 4 days but only the closed Friday sits between (1 missed weekday).
+    const holidaySeries: DateClose[] = [
+      { date: "2026-07-01", adjClose: 100 },
+      { date: "2026-07-02", adjClose: 101 }, // Thursday
+    ];
+    const r = applyLiveRegularOverlay(holidaySeries, quote("2026-07-06", 105), "live");
+    expect(r.applied).toBe(true);
+    expect(r.series[2]).toEqual({ date: "2026-07-06", adjClose: 105 });
+  });
+
   it("no-ops on a non-finite price", () => {
     const s = makeSeries([100, 101, 102]);
     expect(applyLiveRegularOverlay(s, quote("2026-06-04", NaN), "live").series).toBe(s);
@@ -123,10 +136,12 @@ describe("liveRegular1D (prevClose-anchored 1D)", () => {
     );
   });
 
-  it("missing-Friday tape: chain is unusable but the anchor stays correct", () => {
-    // Stored series ends Thursday (Friday never ingested). The Thu->Mon gap is
-    // 4 calendar days, so the live overlay SKIPS (stale_db) and the chain is
-    // left stale — exactly the case the prevClose anchor must rescue.
+  it("missing-Friday tape: overlay applies but the anchor keeps D1 correct", () => {
+    // Stored series ends Thursday with Friday missing. A single missing weekday
+    // is indistinguishable from a market holiday without a holiday calendar, so
+    // the overlay now APPLIES (tolerating one missed trading day). The appended
+    // Monday bar then chains off the stale Thursday close, so the chain-derived
+    // D1 is wrong — exactly the case the prevClose anchor must rescue.
     const thuSeries: DateClose[] = [
       { date: "2026-06-18", adjClose: 5.0 },
       { date: "2026-06-19", adjClose: 5.1 },
@@ -137,11 +152,15 @@ describe("liveRegular1D (prevClose-anchored 1D)", () => {
     ];
     const monQuote = quote("2026-06-29", 5.35, 5.97);
     const overlaid = applyLiveRegularOverlay(thuSeries, monQuote, "live");
-    expect(overlaid.applied).toBe(false);
-    expect(overlaid.skipReason).toBe("stale_db");
-    // The chain alone would mis-report 1D as the stale Thu/Wed move…
+    expect(overlaid.applied).toBe(true);
+    expect(overlaid.series[overlaid.series.length - 1]).toEqual({
+      date: "2026-06-29",
+      adjClose: 5.35,
+    });
+    // The chain would mis-report 1D as the Thu->Mon move (Friday's close is
+    // missing from the series)…
     const chainedD1 = securityHorizonMetrics(overlaid.series, null, 0).D1.return;
-    expect(chainedD1).toBeCloseTo(5.08 / 5.29 - 1, 12); // stale, wrong
+    expect(chainedD1).toBeCloseTo(5.35 / 5.08 - 1, 12); // spans the gap, wrong
     // …but the anchor uses Friday's prevClose for the correct Mon 1D.
     const anchored = liveRegular1D(monQuote, "live")!;
     expect(anchored).toBeCloseTo(5.35 / 5.97 - 1, 12);

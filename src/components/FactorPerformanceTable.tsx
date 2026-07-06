@@ -7,6 +7,7 @@ import { HORIZON_ORDER } from "@/domain/entities/horizons";
 import type { MetricKind, BenchmarkCode } from "@/domain/entities/analytics";
 import { heatmapRgb, resolveHeatRange } from "@/domain/calculations/heatmap";
 import { HORIZON_LABEL, formatMetricValue } from "@/lib/format";
+import { WarningsChip } from "@/components/WarningsChip";
 
 type ApiRow = {
   key: string;
@@ -162,19 +163,7 @@ export function FactorPerformanceTable({
           {err}
         </p>
       )}
-      {data?.warnings?.length ? (
-        <ul
-          style={{
-            color: "var(--color-warning)",
-            fontSize: "12px",
-            marginBottom: "0.5rem",
-          }}
-        >
-          {data.warnings.map((w, i) => (
-            <li key={i}>{w}</li>
-          ))}
-        </ul>
-      ) : null}
+      <WarningsChip warnings={data?.warnings} />
 
       <div style={tableWrap}>
         <table style={tableStyle}>

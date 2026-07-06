@@ -57,19 +57,42 @@ describe("applyExtendedQuoteOverlay — tradeDateEt anchoring", () => {
   });
 
   it("skips overlay when DB lags print date by more than one trading day", () => {
+    // Mon 2026-06-08 -> Thu 2026-06-11: two real missed sessions (Tue, Wed),
+    // no holiday involved -> genuinely stale.
     const series: DateClose[] = [
-      { date: "2026-06-15", adjClose: 90 },
-      { date: "2026-06-18", adjClose: 85 },
+      { date: "2026-06-05", adjClose: 90 },
+      { date: "2026-06-08", adjClose: 85 },
     ];
     const q = quote({
       price: 89.5,
-      tradeDateEt: "2026-06-22",
+      tradeDateEt: "2026-06-11",
       regularClose: 80.88,
     });
     const r = applyExtendedQuoteOverlay(series, q);
     expect(r.applied).toBe(false);
     expect(r.skipReason).toBe("stale_db");
     expect(r.series).toBe(series);
+  });
+
+  it("tolerates a single-day market holiday (Thu -> Mon over July 4th)", () => {
+    // Fri 2026-07-03 was the observed Independence Day holiday, so a DB ending
+    // Thu 2026-07-02 is fully current for a Mon 2026-07-06 print: the only
+    // weekday between is the closed Friday. The overlay must APPLY, not skip.
+    const series: DateClose[] = [
+      { date: "2026-07-01", adjClose: 90 },
+      { date: "2026-07-02", adjClose: 91 },
+    ];
+    const q = quote({
+      price: 92,
+      tradeDateEt: "2026-07-06",
+      regularClose: 91,
+    });
+    const r = applyExtendedQuoteOverlay(series, q);
+    expect(r.applied).toBe(true);
+    expect(r.series[r.series.length - 1]).toEqual({
+      date: "2026-07-06",
+      adjClose: 92,
+    });
   });
 });
 

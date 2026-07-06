@@ -154,11 +154,28 @@ export type MarketMapDiagnostics = {
   d1FallbackToRegular: number;
 };
 
-/** Calendar days between two yyyy-MM-dd strings (exclusive of start, inclusive span). */
-function calendarDaysBetween(startIso: string, endIso: string): number {
+/**
+ * Number of Mon–Fri weekdays strictly between two yyyy-MM-dd strings (both
+ * ends exclusive). This is a *trading-day* staleness gauge: a normal Fri→Mon
+ * weekend counts 0 missed days, and a single-day market holiday counts 1.
+ *
+ * No US equity holiday calendar is consulted — consistent with the rest of the
+ * codebase (see market-session.ts, factors/diagnostics/freshness.ts,
+ * fred.provider.ts). A holiday therefore reads as one missed trading day, which
+ * is exactly why the overlay tolerates up to one missed day: it absorbs every
+ * single-day closure (July 4, Thanksgiving, Juneteenth, MLK, Christmas, …)
+ * without a calendar, while a genuinely stale DB (≥2 missed sessions) still trips.
+ */
+function tradingDaysMissed(startIso: string, endIso: string): number {
   const start = Date.parse(`${startIso}T12:00:00Z`);
   const end = Date.parse(`${endIso}T12:00:00Z`);
-  return Math.round((end - start) / 86_400_000);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+  let missed = 0;
+  for (let t = start + 86_400_000; t < end; t += 86_400_000) {
+    const dow = new Date(t).getUTCDay(); // 0=Sun … 6=Sat (anchored at 12:00Z)
+    if (dow !== 0 && dow !== 6) missed++;
+  }
+  return missed;
 }
 
 export type ExtendedOverlayResult = {
@@ -197,8 +214,8 @@ export function computeAhOnly1DReturn(
 
 /**
  * Anchor extended-hours overlay on the print's ET trade date (not wall clock).
- * Skips overlay when the DB series lags the print by more than one trading
- * day (Fri→Mon gap = 3 calendar days is allowed).
+ * Skips overlay when the DB series lags the print by more than one trading day
+ * (a normal weekend or any single-day market holiday is allowed).
  */
 export function applyExtendedQuoteOverlay(
   series: DateClose[],
@@ -233,8 +250,8 @@ export function applyExtendedQuoteOverlay(
     };
   }
 
-  const gapDays = calendarDaysBetween(last.date, tradeDateEt);
-  if (gapDays > 3) return skip(series, "stale_db");
+  if (tradingDaysMissed(last.date, tradeDateEt) > 1)
+    return skip(series, "stale_db");
 
   const out = [...series, { date: tradeDateEt, adjClose: price }];
   return {
@@ -266,9 +283,9 @@ export type LiveOverlayResult = {
  *     EOD close, once written to PriceHistory, always wins over the frozen
  *     regular print.
  *
- * Both modes APPEND when the DB series lags the trade date by <= 3 calendar
- * days (Fri->Mon weekend gap allowed) and SKIP a larger gap (stale) or a DB
- * bar dated after the print (future_bar).
+ * Both modes APPEND when the DB series lags the trade date by <= 1 trading day
+ * (a normal weekend or any single-day market holiday) and SKIP a larger gap
+ * (stale) or a DB bar dated after the print (future_bar).
  */
 export function applyLiveRegularOverlay(
   series: DateClose[],
@@ -295,8 +312,8 @@ export function applyLiveRegularOverlay(
     return { series: out, applied: true };
   }
 
-  const gapDays = calendarDaysBetween(last.date, tradeDateEt);
-  if (gapDays > 3) return skip(series, "stale_db");
+  if (tradingDaysMissed(last.date, tradeDateEt) > 1)
+    return skip(series, "stale_db");
 
   const out = [...series, { date: tradeDateEt, adjClose: price }];
   return { series: out, applied: true };
