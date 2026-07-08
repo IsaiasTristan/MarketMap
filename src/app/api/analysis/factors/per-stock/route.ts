@@ -30,6 +30,7 @@ import {
 import {
   readPerStockGridCache,
   writePerStockGridCache,
+  revalidatePerStockGrid,
 } from "@/server/services/factor-per-stock-cache.service";
 import type { FactorCode, ModelPresetName } from "@/types/factors";
 
@@ -133,11 +134,21 @@ export async function GET(req: NextRequest) {
       cacheHasRealized &&
       cacheHasStaticBeta &&
       cacheHasLiveCoeffs;
-    if (cached && cacheUsable) {
+    if (cached) {
+      // Serve whatever blob we have instantly — even one that fails a
+      // self-heal probe. Blocking here meant a 30–120s hang whenever the
+      // cache predated a new field; instead the outdated grid renders (new
+      // columns blank for one refresh cycle) while a background recompute +
+      // write-through heals it. The single-flight guard inside
+      // revalidatePerStockGrid dedupes concurrent requests onto one compute.
+      if (!cacheUsable) void revalidatePerStockGrid(modelName, win);
       const overlaid = period ? applyPeriodOverlay(cached, period as PeriodLabel) : cached;
       return NextResponse.json({
         ...overlaid,
         factorMeta: describeFactors(overlaid.usableFactors),
+        /** True when this response served a blob that predates newer fields
+         *  and a background recompute is in flight. */
+        refreshing: !cacheUsable,
       });
     }
   }

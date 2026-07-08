@@ -51,23 +51,28 @@ function fakeDb(
         })),
     },
     benchmark: { findUnique: async () => null },
-    benchmarkPriceHistory: { findMany: async () => [] },
-    priceHistory: {
-      findMany: async () => {
-        const rows: { securityId: string; tradeDate: Date; adjClose: number }[] =
-          [];
-        for (const [securityId, series] of Object.entries(prices)) {
-          for (const b of series) {
-            rows.push({
-              securityId,
-              tradeDate: new Date(`${b.date}T00:00:00Z`),
-              adjClose: b.adjClose,
-            });
-          }
+    // loadRecentPricesBatch now issues raw SQL (float8 cast + index-friendly
+    // ordering); the only $queryRaw this service reaches with a null benchmark
+    // is the PriceHistory batch load, so serve it rows in the same
+    // (securityId, tradeDate) order the real query produces.
+    $queryRaw: async () => {
+      const rows: { securityId: string; tradeDate: Date; adjClose: number }[] =
+        [];
+      for (const [securityId, series] of Object.entries(prices)) {
+        for (const b of series) {
+          rows.push({
+            securityId,
+            tradeDate: new Date(`${b.date}T00:00:00Z`),
+            adjClose: b.adjClose,
+          });
         }
-        rows.sort((a, b) => a.tradeDate.getTime() - b.tradeDate.getTime());
-        return rows;
-      },
+      }
+      rows.sort(
+        (a, b) =>
+          a.securityId.localeCompare(b.securityId) ||
+          a.tradeDate.getTime() - b.tradeDate.getTime(),
+      );
+      return rows;
     },
   } as unknown as PrismaClient;
 }

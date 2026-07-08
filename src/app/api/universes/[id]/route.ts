@@ -22,6 +22,9 @@ export async function DELETE(_req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
   try {
     await prisma.universe.delete({ where: { id } });
+    // MarketMapSnapshot has no FK to Universe — drop the cached grids too so
+    // they don't linger as orphans (invalidation only marks rows stale now).
+    await prisma.marketMapSnapshot.deleteMany({ where: { universeId: id } });
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ error: "Not found" }, { status: 404 });

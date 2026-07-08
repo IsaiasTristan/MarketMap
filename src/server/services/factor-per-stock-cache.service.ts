@@ -60,6 +60,39 @@ export async function writePerStockGridCache(
   });
 }
 
+/** In-flight background recomputes, keyed `${model}:${window}`. Single-flight
+ *  guard so repeated grid requests against an outdated blob don't stampede
+ *  N identical ~300k-regression computes. */
+const inflightRevalidations = new Map<string, Promise<void>>();
+
+/**
+ * Recompute + persist one (model, window) grid in the background, deduping
+ * concurrent callers onto the same in-flight promise. Never throws — the
+ * per-stock route fires-and-forgets this while serving the outdated blob
+ * (stale-while-revalidate), so an error must not surface as an unhandled
+ * rejection; the old blob keeps serving and the next request retries.
+ */
+export function revalidatePerStockGrid(
+  model: ModelPresetName,
+  window: number,
+): Promise<void> {
+  const key = `${model}:${window}`;
+  const existing = inflightRevalidations.get(key);
+  if (existing) return existing;
+  const run = (async () => {
+    try {
+      const result = await runPerStockFactors({ model, window });
+      if (result) await writePerStockGridCache(model, window, result);
+    } catch (e) {
+      console.error(`[per-stock-cache] revalidate failed for ${key}:`, e);
+    } finally {
+      inflightRevalidations.delete(key);
+    }
+  })();
+  inflightRevalidations.set(key, run);
+  return run;
+}
+
 export interface GridPrecomputeEntry {
   model: ModelPresetName;
   window: number;

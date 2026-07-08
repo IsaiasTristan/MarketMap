@@ -27,6 +27,7 @@
  *     audit (2026-04-25)" for the canonical table.
  */
 
+import { Prisma } from "@prisma/client";
 import { prisma as db } from "@/infrastructure/db/client";
 import { multivariateOls } from "@/lib/factors/regression/ols";
 import { rollingMultivariateOls } from "@/lib/factors/regression/rolling";
@@ -673,20 +674,27 @@ export async function runPerStockFactors(
   winStart.setUTCDate(winStart.getUTCDate() - 7);
 
   const secIds = constituents.map((c) => c.securityId);
-  const priceRows = await db.priceHistory.findMany({
-    where: {
-      securityId: { in: secIds },
-      tradeDate: { gte: winStart, lte: winEnd },
-    },
-    orderBy: { tradeDate: "asc" },
-    select: { securityId: true, tradeDate: true, adjClose: true },
-  });
+  // Raw SQL: `"adjClose"::float8` casts server-side so ~1M values (756d
+  // window × ~1,200 securities) arrive as JS numbers instead of Decimal.js
+  // objects each converted via Number(); ordering by the
+  // (securityId, tradeDate) unique index avoids a global sort. Rows land in
+  // date-keyed maps, so ordering is otherwise irrelevant here.
+  const priceRows = await db.$queryRaw<
+    Array<{ securityId: string; tradeDate: Date; adjClose: number }>
+  >(Prisma.sql`
+    SELECT "securityId", "tradeDate", "adjClose"::float8 AS "adjClose"
+    FROM "PriceHistory"
+    WHERE "securityId" IN (${Prisma.join(secIds)})
+      AND "tradeDate" >= ${winStart}
+      AND "tradeDate" <= ${winEnd}
+    ORDER BY "securityId", "tradeDate"
+  `);
 
   const pricesBySecurity = new Map<string, Map<string, number>>();
   for (const r of priceRows) {
     const d = r.tradeDate.toISOString().slice(0, 10);
     if (!pricesBySecurity.has(r.securityId)) pricesBySecurity.set(r.securityId, new Map());
-    pricesBySecurity.get(r.securityId)!.set(d, Number(r.adjClose));
+    pricesBySecurity.get(r.securityId)!.set(d, r.adjClose);
   }
 
   const rows: PerStockRow[] = [];

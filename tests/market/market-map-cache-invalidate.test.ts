@@ -3,18 +3,23 @@
  *
  * `ingestChangedMarketMap` is the pure gate the ingest route uses to decide
  * whether a completed run touched data; `invalidateMarketMapCache` is the
- * (side-effecting) drop scoped to the affected universe.
+ * (side-effecting) stale-mark scoped to the affected universe. Rows are
+ * MARKED stale rather than deleted so the GET route can keep serving the
+ * last-known grid instantly while a background recompute refreshes it
+ * (stale-while-revalidate) — deleting would force the next viewer to block
+ * on a 5–28s cold compute.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// `vi.hoisted` so the spy exists before the hoisted `vi.mock` factory runs.
-const { deleteMany } = vi.hoisted(() => ({
+// `vi.hoisted` so the spies exist before the hoisted `vi.mock` factory runs.
+const { deleteMany, updateMany } = vi.hoisted(() => ({
   deleteMany: vi.fn(async () => ({ count: 0 })),
+  updateMany: vi.fn(async () => ({ count: 0 })),
 }));
 
 vi.mock("@/infrastructure/db/client", () => ({
   prisma: {
-    marketMapSnapshot: { deleteMany },
+    marketMapSnapshot: { deleteMany, updateMany },
   },
 }));
 
@@ -25,6 +30,7 @@ import {
 
 beforeEach(() => {
   deleteMany.mockClear();
+  updateMany.mockClear();
 });
 
 describe("ingestChangedMarketMap", () => {
@@ -44,9 +50,15 @@ describe("ingestChangedMarketMap", () => {
 });
 
 describe("invalidateMarketMapCache", () => {
-  it("drops every cached blob scoped to the given universe", async () => {
+  it("marks every cached blob for the universe stale (never deletes)", async () => {
     await invalidateMarketMapCache("univ-123");
-    expect(deleteMany).toHaveBeenCalledTimes(1);
-    expect(deleteMany).toHaveBeenCalledWith({ where: { universeId: "univ-123" } });
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { universeId: "univ-123" },
+      data: { stale: true },
+    });
+    // Deleting would force the next read to block on a cold compute — the
+    // stale blob must survive to be served while revalidation runs.
+    expect(deleteMany).not.toHaveBeenCalled();
   });
 });

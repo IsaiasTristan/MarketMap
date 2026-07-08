@@ -160,12 +160,17 @@ export async function getPrecomputeFreshness(
   const haveSet = new Set(rows.map((r) => r.regressionWindow));
   const missing = [...expectedSet].filter((w) => !haveSet.has(w));
 
+  // "Freshest" = oldest computedAt across the EXPECTED rows only: that is the
+  // moment from which all expected grids have been refreshed. Legacy rows for
+  // windows no longer precomputed (e.g. the window=21 blob left behind by the
+  // Jun-2026 preset trim) must not count — including them pinned
+  // freshestComputedAt to the orphan's timestamp, so every server boot judged
+  // the cache stale and spawned the CPU/DB-saturating catch-up job.
+  const expectedRows = rows.filter((r) => expectedSet.has(r.regressionWindow));
   let freshestComputedAt: string | null = null;
-  if (missing.length === 0 && rows.length > 0) {
-    // "Freshest" = oldest computedAt across the expected rows: that is the
-    // moment from which ALL expected grids have been refreshed.
-    let oldest = rows[0]!.computedAt;
-    for (const r of rows) {
+  if (missing.length === 0 && expectedRows.length > 0) {
+    let oldest = expectedRows[0]!.computedAt;
+    for (const r of expectedRows) {
       if (r.computedAt < oldest) oldest = r.computedAt;
     }
     freshestComputedAt = oldest.toISOString();

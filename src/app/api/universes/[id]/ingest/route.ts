@@ -7,6 +7,7 @@ import {
 import {
   invalidateMarketMapCache,
   ingestChangedMarketMap,
+  rewarmUniverse,
 } from "@/server/services/market-map-cache.service";
 import { withIngestLock } from "@/server/services/ingest-inflight";
 import { requireAdminGuard } from "@/lib/api/guards";
@@ -70,10 +71,13 @@ export async function POST(req: Request, ctx: Ctx) {
     // Self-heal the warm cache: price ingest writes PriceHistory directly, but
     // the precomputed MarketMapSnapshot blob is otherwise only refreshed by the
     // daily job / regular-hours runner — so a freshly backfilled ticker would
-    // keep showing stale/blank cells until then. Drop the cache when this run
-    // actually changed data so the next grid read cold-recomputes fresh values.
+    // keep showing stale/blank cells until then. Mark the cache stale when this
+    // run actually changed data (readers keep serving the old grid instantly),
+    // then re-warm every (metric, benchmark) combo out-of-band so viewers get
+    // fresh values on their next poll instead of blocking on a cold compute.
     if (ingestChangedMarketMap(outcome.result)) {
       await invalidateMarketMapCache(id);
+      void rewarmUniverse(id);
     }
     return NextResponse.json({ ok: true, ...outcome.result });
   } catch (e) {

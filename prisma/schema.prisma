@@ -475,6 +475,11 @@ model MarketMapSnapshot {
   asOfDate    DateTime @db.Date
   payloadJson Json
   computedAt  DateTime @default(now())
+  /// Marked by invalidation (price ingest / constituent writes) instead of
+  /// deleting the row: the GET route serves the stale blob instantly and
+  /// triggers a background recompute (stale-while-revalidate). Cleared by
+  /// every write-through.
+  stale       Boolean  @default(false)
 
   @@unique([universeId, metric, benchmark])
   @@index([universeId, metric, benchmark])

@@ -182,6 +182,28 @@ describe("getPrecomputeFreshness", () => {
     expect(new Date(f.freshestComputedAt!).getTime()).toBe(before.getTime());
   });
 
+  it("ignores legacy rows for windows no longer precomputed (orphan window=21)", async () => {
+    // Regression guard: an orphan blob left behind by a window-preset trim
+    // (e.g. window=21, computedAt weeks old) must NOT drag freshestComputedAt
+    // back and mark the cache permanently stale — that made every server boot
+    // spawn the CPU/DB-saturating catch-up job.
+    const after = new Date(lastClose.getTime() + 60_000);
+    const weeksOld = new Date(lastClose.getTime() - 21 * 86_400_000);
+    const db = makeFakeDb([
+      { regressionWindow: 21, asOfDate: new Date("2026-05-01"), computedAt: weeksOld },
+      ...[63, 252, 504, 756].map((w) => ({
+        regressionWindow: w,
+        asOfDate: new Date("2026-06-15"),
+        computedAt: after,
+      })),
+    ]);
+    const f = await getPrecomputeFreshness(db, "MACRO14", [63, 252, 504, 756], now);
+    expect(f.stale).toBe(false);
+    expect(new Date(f.freshestComputedAt!).getTime()).toBe(after.getTime());
+    // The orphan still shows in the informational grid list.
+    expect(f.grids).toHaveLength(5);
+  });
+
   it("returns latestComputedAt and oldestAsOfDate sourced from the actual rows", async () => {
     const t1 = new Date(lastClose.getTime() + 60_000);
     const t2 = new Date(lastClose.getTime() + 120_000);

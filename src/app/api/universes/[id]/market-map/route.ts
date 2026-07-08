@@ -5,6 +5,7 @@ import { computeMarketMap } from "@/server/services/market-map.service";
 import {
   readMarketMapCache,
   computeAndCacheMarketMap,
+  revalidateMarketMap,
 } from "@/server/services/market-map-cache.service";
 import { getExtendedSnapshot } from "@/server/services/extended-hours.service";
 import { getLiveRegularSnapshot } from "@/server/services/live-regular.service";
@@ -74,9 +75,13 @@ export async function GET(req: Request, ctx: Ctx) {
   const rowLevel = parsed.data.rowLevel as RowLevel;
 
   // Fast path: COMPANY grid with no extended overlay and no sector/sub-theme
-  // filter is served from the precomputed snapshot (sub-second). A cold miss
-  // computes live + writes through so the next read is warm. The overlay and
-  // filtered/non-COMPANY paths are inherently dynamic and always compute live.
+  // filter is served from the precomputed snapshot (sub-second) — including a
+  // STALE snapshot (invalidated by an ingest/constituent write), which is
+  // served as-is while a background recompute refreshes it; the client's
+  // 30/60s poll picks up the fresh grid (stale-while-revalidate). Only a
+  // truly missing row (never computed) blocks on live compute + write-through.
+  // The overlay and filtered/non-COMPANY paths are inherently dynamic and
+  // always compute live.
   const cacheable =
     !overlayActive &&
     !parsed.data.sector &&
@@ -93,10 +98,24 @@ export async function GET(req: Request, ctx: Ctx) {
     d1FallbackToRegular: 0,
   };
 
+  // True when this response served an invalidated blob with a background
+  // recompute in flight — surfaced to the client so the staleness chip can
+  // say "refreshing" instead of implying the data is final.
+  let refreshing = false;
+
   if (cacheable) {
-    const cached =
-      (await readMarketMapCache(id, metric, benchmark)) ??
-      (await computeAndCacheMarketMap(id, metric, benchmark));
+    let cached = await readMarketMapCache(id, metric, benchmark);
+    if (!cached) {
+      // Never computed (brand-new universe / combo) — the one remaining
+      // blocking compute; write-through makes every later read warm.
+      cached = await computeAndCacheMarketMap(id, metric, benchmark);
+    } else if (cached.stale) {
+      // Serve the last-known grid instantly; refresh out-of-band. The
+      // single-flight guard inside revalidateMarketMap dedupes the 30/60s
+      // poll (and concurrent viewers) onto one compute.
+      refreshing = true;
+      void revalidateMarketMap(id, metric, benchmark);
+    }
     rows = cached.rows;
     asOf = cached.asOf;
     warnings = cached.warnings;
@@ -134,6 +153,9 @@ export async function GET(req: Request, ctx: Ctx) {
     rows,
     /** Grid health counters — drives the "data gap" chip + ops visibility. */
     diagnostics,
+    /** True when a stale (invalidated) snapshot was served and a background
+     *  recompute is in flight — the next poll should return fresh data. */
+    refreshing,
     extended: {
       requested: !!parsed.data.extended,
       applied: overlayActive,

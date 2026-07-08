@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import type { BenchmarkCode, MetricKind, RowLevel } from "@/domain/entities/analytics";
 import { HORIZON_ORDER } from "@/domain/entities/horizons";
 import type { Horizon } from "@/domain/entities/horizons";
@@ -7,10 +7,6 @@ import { securityHorizonMetrics } from "@/domain/calculations/security-metrics";
 import { riskFreeAnnual } from "@/infrastructure/config/env";
 import type { ExtendedTickerQuote } from "@/server/services/extended-hours.service";
 import type { LiveRegularQuote } from "@/server/services/live-regular.service";
-
-function dec(x: { toString(): string }): number {
-  return Number(x.toString());
-}
 
 function iso(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -33,6 +29,17 @@ const PRICE_LOOKBACK_DAYS = 600;
  * Replaces the previous per-ticker loop that issued one DB round-trip per
  * constituent (~1,220 sequential queries on the full universe). Mirrors the
  * single-query pattern used by factor-per-stock.service.
+ *
+ * Raw SQL rather than findMany for two reasons that dominate the 5–28s
+ * compute this feeds:
+ *   - `"adjClose"::float8` casts server-side, so ~500K values arrive as JS
+ *     numbers instead of Decimal.js objects each round-tripped through
+ *     `Number(x.toString())` (8dp is comfortably inside float64 for return
+ *     math).
+ *   - Ordering by ("securityId", "tradeDate") is served directly by the
+ *     `@@unique([securityId, tradeDate])` index — the previous global
+ *     `tradeDate` sort of the full result set disappears. The grouping loop
+ *     only needs per-security ascending order, which this preserves.
  */
 export async function loadRecentPricesBatch(
   db: PrismaClient,
@@ -44,11 +51,15 @@ export async function loadRecentPricesBatch(
   const cutoff = new Date();
   cutoff.setUTCDate(cutoff.getUTCDate() - PRICE_LOOKBACK_DAYS);
 
-  const rows = await db.priceHistory.findMany({
-    where: { securityId: { in: securityIds }, tradeDate: { gte: cutoff } },
-    orderBy: { tradeDate: "asc" },
-    select: { securityId: true, tradeDate: true, adjClose: true },
-  });
+  const rows = await db.$queryRaw<
+    Array<{ securityId: string; tradeDate: Date; adjClose: number }>
+  >(Prisma.sql`
+    SELECT "securityId", "tradeDate", "adjClose"::float8 AS "adjClose"
+    FROM "PriceHistory"
+    WHERE "securityId" IN (${Prisma.join(securityIds)})
+      AND "tradeDate" >= ${cutoff}
+    ORDER BY "securityId", "tradeDate"
+  `);
 
   for (const r of rows) {
     let arr = out.get(r.securityId);
@@ -56,9 +67,9 @@ export async function loadRecentPricesBatch(
       arr = [];
       out.set(r.securityId, arr);
     }
-    arr.push({ date: iso(r.tradeDate), adjClose: dec(r.adjClose) });
+    arr.push({ date: iso(r.tradeDate), adjClose: r.adjClose });
   }
-  // Rows are ascending; keep only the most recent RECENT_BARS per security.
+  // Rows are ascending per security; keep only the most recent RECENT_BARS.
   for (const [id, arr] of out) {
     if (arr.length > RECENT_BARS) out.set(id, arr.slice(-RECENT_BARS));
   }
@@ -71,14 +82,20 @@ export async function loadBenchmarkSeries(
 ): Promise<DateClose[]> {
   const b = await db.benchmark.findUnique({ where: { code } });
   if (!b) return [];
-  const rows = await db.benchmarkPriceHistory.findMany({
-    where: { benchmarkId: b.id },
-    orderBy: { tradeDate: "desc" },
-    take: 320,
-  });
+  // float8 cast server-side (see loadRecentPricesBatch) — only ~320 rows, but
+  // keeps both loaders on the same convention.
+  const rows = await db.$queryRaw<Array<{ tradeDate: Date; adjClose: number }>>(
+    Prisma.sql`
+      SELECT "tradeDate", "adjClose"::float8 AS "adjClose"
+      FROM "BenchmarkPriceHistory"
+      WHERE "benchmarkId" = ${b.id}
+      ORDER BY "tradeDate" DESC
+      LIMIT 320
+    `
+  );
   return rows
     .reverse()
-    .map((p) => ({ date: iso(p.tradeDate), adjClose: dec(p.adjClose) }));
+    .map((p) => ({ date: iso(p.tradeDate), adjClose: p.adjClose }));
 }
 
 type CompanyRow = {
@@ -386,6 +403,7 @@ export async function computeMarketMap(
 }> {
   const warnings: string[] = [];
   const rf = riskFreeAnnual();
+  const t0 = Date.now();
 
   const constituents = await db.universeConstituent.findMany({
     where: {
@@ -424,10 +442,12 @@ export async function computeMarketMap(
   const benchForStock =
     metric === "EXCESS_RETURN" && benchSeries.length >= 5 ? benchSeries : null;
 
+  const tLoad0 = Date.now();
   const pricesBySecurity = await loadRecentPricesBatch(
     db,
     constituents.map((c) => c.securityId)
   );
+  const loadMs = Date.now() - tLoad0;
 
   const companies: CompanyRow[] = [];
   const overlay = options.extendedQuotes;
@@ -516,6 +536,17 @@ export async function computeMarketMap(
       metrics,
       d1Source,
     });
+  }
+
+  // Timing observability for the 5–28s cold-compute class of load problems.
+  // Quiet under the 60s regular-hours runner (warm computes are fast); only a
+  // genuinely slow compute logs, with the price-load vs metric-math split.
+  const totalMs = Date.now() - t0;
+  if (totalMs > 2_000) {
+    console.warn(
+      `[market-map] slow compute universe=${universeId} metric=${metric} bench=${benchmark}: ` +
+        `${totalMs}ms total (${loadMs}ms price load, ${constituents.length} constituents)`,
+    );
   }
 
   if (companies.length === 0) {
