@@ -180,22 +180,22 @@ export function PredictedActualScatter({ data, staticRSquared, loading }: Predic
                   dataKey="x"
                   name="Actual"
                   domain={[fit.lo, fit.hi]}
-                  tick={{ fontSize: 9, fill: "var(--text-secondary)" }}
+                  tick={{ fontSize: 9, fill: "var(--color-accent)" }}
                   tickFormatter={tickPct}
-                  label={{ value: "Actual excess return", position: "bottom", offset: 0, fill: "var(--text-muted)", fontSize: 10 }}
+                  label={{ value: "Actual excess return", position: "bottom", offset: 0, fill: "var(--color-accent)", fontSize: 10 }}
                 />
                 <YAxis
                   type="number"
                   dataKey="y"
                   name="Predicted"
                   domain={[fit.lo, fit.hi]}
-                  tick={{ fontSize: 9, fill: "var(--text-secondary)" }}
+                  tick={{ fontSize: 9, fill: "var(--color-accent)" }}
                   tickFormatter={tickPct}
                   label={{
                     value: "Predicted excess return",
                     angle: -90,
                     position: "insideLeft",
-                    fill: "var(--text-muted)",
+                    fill: "var(--color-accent)",
                     fontSize: 10,
                   }}
                 />

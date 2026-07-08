@@ -57,7 +57,7 @@ interface ValidationPayload {
   icSource: "FULL" | "LEG_B" | null;
 }
 
-const tickStyle = { fontSize: 9, fill: "var(--text-muted)" };
+const tickStyle = { fontSize: 9, fill: "var(--color-accent)" };
 const tooltipStyle = {
   background: "var(--bg-base)",
   border: "1px solid var(--chrome-border)",
@@ -139,7 +139,7 @@ export function ValidationPanel() {
                     <ResponsiveContainer>
                       <BarChart data={variant.deciles.buckets} margin={{ top: 8, right: 12, bottom: 0, left: -14 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--chrome-border)" vertical={false} />
-                        <XAxis dataKey="decile" tick={tickStyle} axisLine={{ stroke: "var(--chrome-border)" }} tickLine={false} />
+                        <XAxis dataKey="decile" tick={tickStyle} axisLine={{ stroke: "var(--color-accent)" }} tickLine={false} />
                         <YAxis tick={tickStyle} axisLine={false} tickLine={false} tickFormatter={(v: number) => `${(v * 100).toFixed(1)}%`} />
                         <ReferenceLine y={0} stroke="#464646" />
                         <Tooltip
@@ -171,7 +171,7 @@ export function ValidationPanel() {
                     <ResponsiveContainer>
                       <LineChart data={variant.rollingIC4w} margin={{ top: 8, right: 12, bottom: 0, left: -14 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--chrome-border)" />
-                        <XAxis dataKey="date" tick={tickStyle} axisLine={{ stroke: "var(--chrome-border)" }} tickLine={false} minTickGap={40} />
+                        <XAxis dataKey="date" tick={tickStyle} axisLine={{ stroke: "var(--color-accent)" }} tickLine={false} minTickGap={40} />
                         <YAxis tick={tickStyle} axisLine={false} tickLine={false} />
                         <ReferenceLine y={0} stroke="#464646" />
                         {data.icLongRun !== null && (

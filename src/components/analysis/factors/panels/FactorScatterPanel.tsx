@@ -562,13 +562,13 @@ export function FactorScatterPanel({
                   scale={xLog && xLogEligible ? "log" : "linear"}
                   domain={xRange ?? ["auto", "auto"]}
                   allowDataOverflow
-                  tick={{ fill: "var(--text-muted)", fontSize: 10 }}
+                  tick={{ fill: "var(--color-accent)", fontSize: 10 }}
                   tickFormatter={(v: number) => formatAxisValue(v, xDef.format)}
                   label={{
                     value: xDef.label,
                     position: "insideBottom",
                     offset: -10,
-                    fill: "var(--text-secondary)",
+                    fill: "var(--color-accent)",
                     fontSize: 11,
                   }}
                 />
@@ -579,13 +579,13 @@ export function FactorScatterPanel({
                   scale={yLog && yLogEligible ? "log" : "linear"}
                   domain={yRange ?? ["auto", "auto"]}
                   allowDataOverflow
-                  tick={{ fill: "var(--text-muted)", fontSize: 10 }}
+                  tick={{ fill: "var(--color-accent)", fontSize: 10 }}
                   tickFormatter={(v: number) => formatAxisValue(v, yDef.format)}
                   label={{
                     value: yDef.label,
                     angle: -90,
                     position: "insideLeft",
-                    fill: "var(--text-secondary)",
+                    fill: "var(--color-accent)",
                     fontSize: 11,
                   }}
                 />

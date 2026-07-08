@@ -809,6 +809,76 @@ export async function getNextEarningsForTickers(
   return { rows, coveredTickers: snaps.map((s) => s.ticker) };
 }
 
+export interface HeldEarningsRow {
+  ticker: string;
+  /** Next earnings date (yyyy-MM-dd), or null when none is stored / it's stale. */
+  erDate: string | null;
+  /** Calendar days until the print, or null when there's no upcoming date. */
+  days: number | null;
+}
+
+/**
+ * Next earnings date for EVERY requested (held) ticker — no time-window cap, so
+ * the Overview earnings table can list the whole book ordered by next print.
+ * A covered name with no upcoming (or a stale past) date returns erDate=null and
+ * sorts last in the UI. `coveredTickers` mirrors getNextEarningsForTickers.
+ */
+export async function getHeldEarnings(
+  tickers: string[],
+): Promise<{ rows: HeldEarningsRow[]; coveredTickers: string[] }> {
+  if (tickers.length === 0) return { rows: [], coveredTickers: [] };
+  const latestSnapDate = (
+    await prisma.revisionSnapshot.findFirst({ orderBy: { snapshotDate: "desc" }, select: { snapshotDate: true } })
+  )?.snapshotDate;
+  if (!latestSnapDate) return { rows: [], coveredTickers: [] };
+  const todayMs = new Date(`${isoOf(new Date())}T00:00:00Z`).getTime();
+  const snaps = await prisma.revisionSnapshot.findMany({
+    where: { snapshotDate: latestSnapDate, ticker: { in: tickers } },
+    select: { ticker: true, nextEarningsDate: true },
+  });
+  const rows: HeldEarningsRow[] = snaps.map((s) => {
+    const er = s.nextEarningsDate?.getTime();
+    if (er === undefined || er < todayMs) return { ticker: s.ticker, erDate: null, days: null };
+    return {
+      ticker: s.ticker,
+      erDate: isoOf(s.nextEarningsDate!),
+      days: Math.round((er - todayMs) / 86_400_000),
+    };
+  });
+  return { rows, coveredTickers: snaps.map((s) => s.ticker) };
+}
+
+/**
+ * Prior-snapshot gap score per ticker — the second-most-recent RevisionScore
+ * date. Lets the WHAT CHANGED feed annotate a move with where the metric stood
+ * last week ("prev 5d: gap +0.1"). Returns the prior date + a ticker→gap map.
+ */
+export async function getPrevScoresForTickers(
+  tickers: string[],
+): Promise<{ snapshotDate: string | null; gapByTicker: Map<string, number> }> {
+  if (tickers.length === 0) return { snapshotDate: null, gapByTicker: new Map() };
+  // The prior GAP-SCORED snapshot — daily-event runs append rows with a null
+  // gapScore, so the second distinct date is often a partial, not last week's
+  // score. Filtering on a populated gap skips those and lands on the real prior
+  // weekly snapshot (or nothing, while history is still one week deep).
+  const dates = await prisma.revisionScore.findMany({
+    where: { gapScore: { not: null } },
+    distinct: ["snapshotDate"],
+    orderBy: { snapshotDate: "desc" },
+    select: { snapshotDate: true },
+    take: 2,
+  });
+  const prev = dates[1]?.snapshotDate;
+  if (!prev) return { snapshotDate: null, gapByTicker: new Map() };
+  const rows = await prisma.revisionScore.findMany({
+    where: { snapshotDate: prev, ticker: { in: tickers } },
+    select: { ticker: true, gapScore: true },
+  });
+  const gapByTicker = new Map<string, number>();
+  for (const r of rows) if (r.gapScore != null) gapByTicker.set(r.ticker, r.gapScore);
+  return { snapshotDate: isoOf(prev), gapByTicker };
+}
+
 // ─── DECOMP (group vs idiosyncratic split) ──────────────────────────────────
 
 export interface DecompRow {

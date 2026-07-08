@@ -59,6 +59,37 @@ async function loadReturnsByTicker(): Promise<Map<string, Record<Horizon, number
   return byTicker;
 }
 
+export interface LatestFundamentalScoresPayload {
+  snapshotDate: string | null;
+  scores: Array<{ ticker: string; composite: number | null }>;
+}
+
+/**
+ * Latest FundamentalScore.composite per requested ticker — the Engine-2
+ * inflection composite (z-scored within subsector), keyed on the same
+ * (ticker, snapshotDate) grain as the revision score. One bulk read at the
+ * latest scored date; missing tickers are simply absent. Mirrors
+ * getLatestScoresForTickers so the signal-brief join stays free of N+1s.
+ */
+export async function getLatestFundamentalScoresForTickers(
+  tickers: string[],
+): Promise<LatestFundamentalScoresPayload> {
+  const latest = (
+    await prisma.fundamentalScore.findFirst({
+      orderBy: { snapshotDate: "desc" },
+      select: { snapshotDate: true },
+    })
+  )?.snapshotDate;
+  if (!latest || tickers.length === 0) {
+    return { snapshotDate: latest ? isoOf(latest) : null, scores: [] };
+  }
+  const rows = await prisma.fundamentalScore.findMany({
+    where: { snapshotDate: latest, ticker: { in: tickers } },
+    select: { ticker: true, composite: true },
+  });
+  return { snapshotDate: isoOf(latest), scores: rows };
+}
+
 function attachReturns(
   rows: Array<Record<string, unknown>>,
   returnsByTicker: Map<string, Record<Horizon, number | null>>,

@@ -29,6 +29,13 @@ const KIND_TAG: Record<string, string> = {
   GROUP_ROTATION: "ROTATION",
 };
 
+/** "prev {N}d: gap {+x.x}" annotation from the prior snapshot's gap. */
+function prevGapText(r: FeedRowDto): string | null {
+  if (r.prevGapScore == null) return null;
+  const g = `${r.prevGapScore >= 0 ? "+" : ""}${r.prevGapScore.toFixed(1)}`;
+  return r.prevGapDays != null ? `prev ${r.prevGapDays}d: gap ${g}` : `prev: gap ${g}`;
+}
+
 export function WhatChangedFeed({
   rows,
   sinceDate,
@@ -45,6 +52,11 @@ export function WhatChangedFeed({
       </div>
     );
   }
+
+  // If every row shares one as-of date, it's shown once in the panel title
+  // (by SignalBriefSection); otherwise each row stamps its own date.
+  const dates = new Set(rows.map((r) => r.date));
+  const perRowDate = dates.size > 1;
 
   return (
     <div>
@@ -114,7 +126,15 @@ export function WhatChangedFeed({
             }}
           >
             {r.sentence}
+            {prevGapText(r) && (
+              <span style={{ color: "var(--text-muted)" }}> ({prevGapText(r)})</span>
+            )}
           </span>
+          {perRowDate && (
+            <span style={{ marginLeft: "auto", fontSize: 9, color: "var(--text-muted)", flexShrink: 0 }}>
+              {r.date}
+            </span>
+          )}
         </button>
       ))}
       <div style={{ padding: "4px 8px", fontSize: 9, color: "var(--text-muted)" }}>

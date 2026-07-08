@@ -27,7 +27,7 @@ export interface ScatterPoint {
   side: string | null;
 }
 
-const tickStyle = { fontSize: 9, fill: "var(--text-muted)" };
+const tickStyle = { fontSize: 9, fill: "var(--color-accent)" };
 
 function PointTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: ScatterPoint }> }) {
   if (!active || !payload?.length) return null;
@@ -85,8 +85,8 @@ export function DivergenceScatter({
       <ResponsiveContainer>
         <ScatterChart margin={{ top: 12, right: 16, bottom: 4, left: -18 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--chrome-border)" />
-          <XAxis type="number" dataKey="revZ" tick={tickStyle} axisLine={{ stroke: "var(--chrome-border)" }} tickLine={false} />
-          <YAxis type="number" dataKey="pxZ" tick={tickStyle} axisLine={{ stroke: "var(--chrome-border)" }} tickLine={false} />
+          <XAxis type="number" dataKey="revZ" tick={tickStyle} axisLine={{ stroke: "var(--color-accent)" }} tickLine={false} />
+          <YAxis type="number" dataKey="pxZ" tick={tickStyle} axisLine={{ stroke: "var(--color-accent)" }} tickLine={false} />
           <ReferenceLine x={0} stroke="#464646" />
           <ReferenceLine y={0} stroke="#464646" />
           <Tooltip content={<PointTooltip />} cursor={{ strokeDasharray: "3 3", stroke: "#464646" }} />

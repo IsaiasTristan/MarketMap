@@ -14,16 +14,17 @@
 import { prisma } from "@/infrastructure/db/client";
 import { loadPortfolioWeights } from "@/server/services/portfolio.service";
 import {
-  getCalendar,
+  getHeldEarnings,
   getLatestScoresForTickers,
   getLatestTransitions,
-  getNextEarningsForTickers,
+  getPrevScoresForTickers,
   type LatestTransitionRow,
 } from "@/server/services/revision/revision-query.service";
+import { getLatestFundamentalScoresForTickers } from "@/server/services/fundamental/fundamental-query.service";
+import { getCompanyNamesByTicker } from "@/server/services/security-name.service";
 import {
   getEventsForTickers,
   getNameAggregatesForTickers,
-  getOverview,
   type TickerFlowEvent,
 } from "@/server/services/institutional/institutional-query.service";
 import {
@@ -46,17 +47,21 @@ export interface ScatterPointDto {
   /** Gross portfolio weight fraction (0..1). */
   weight: number;
   isShort: boolean;
-  gapScore: number;
-  netflowBps: number;
+  /** Any axis metric is null when that leg has no coverage — never fabricate 0.
+   *  Each scatter plots only the names carrying BOTH of its two axes. */
+  gapScore: number | null;
+  netflowBps: number | null;
+  /** Engine-2 inflection composite (z-scored). */
+  inflection: number | null;
   verdict: Verdict;
 }
 
 export interface EarningsItemDto {
   ticker: string;
-  erDate: string;
-  days: number;
-  /** Held names carry weight; queue names carry side. */
-  held: boolean;
+  companyName: string | null;
+  /** Null when no upcoming print is stored for the name. */
+  erDate: string | null;
+  days: number | null;
   weight: number | null;
   side: string | null;
 }
@@ -71,6 +76,11 @@ export interface FeedRowDto {
   positive: boolean;
   date: string;
   href: string;
+  /** Current + prior gap for the delta annotation (REV rows only). */
+  gapScore?: number | null;
+  prevGapScore?: number | null;
+  /** Calendar days between the current and prior revision snapshot. */
+  prevGapDays?: number | null;
 }
 
 export interface SignalBriefPayload {
@@ -84,14 +94,13 @@ export interface SignalBriefPayload {
     flowPeriod: string | null;
   };
   scatter: {
+    /** Every held name with whatever legs it carries; each chart filters to the
+     *  names holding BOTH its axes and footnotes the rest. */
     points: ScatterPointDto[];
-    /** Held names missing a leg — footnoted, never plotted at fabricated zeros. */
-    noCoverage: string[];
   };
   earnings: {
-    windowDays: number;
     items: EarningsItemDto[];
-    /** Held names not yet onboarded into the research universe (no ER date stored). */
+    /** Held names not yet onboarded into the research universe (no ER row at all). */
     noDate: string[];
   };
   feed: {
@@ -102,8 +111,6 @@ export interface SignalBriefPayload {
 }
 
 // ─── sentence + link helpers ─────────────────────────────────────────────────
-
-const pctBps = (v: number): string => `${v >= 0 ? "+" : ""}${Math.round(v)}bps`;
 
 function stageTransitionSentence(e: TickerFlowEvent): string {
   const from = e.from ?? "—";
@@ -137,29 +144,29 @@ export async function getSignalBrief(
   const isShortByTicker = new Map(held.map((h) => [h.ticker, h.isShort]));
   const heldSet = new Set(heldTickers);
 
-  // Fan out to the two engines' read layers; each leg degrades independently.
-  const [scores, transitions, earnings, calendar, aggs, events, overview] = await Promise.all([
-    getLatestScoresForTickers(heldTickers).catch(() => ({
-      snapshotDate: null,
-      effectiveWindow: null,
-      scores: [],
-    })),
-    getLatestTransitions().catch(() => ({ snapshotDate: null, rows: [] })),
-    getNextEarningsForTickers(heldTickers, t.earningsWindowDays).catch(() => ({
-      rows: [],
-      coveredTickers: [] as string[],
-    })),
-    getCalendar(t.earningsWindowDays).catch(() => null),
-    getNameAggregatesForTickers(heldTickers).catch(() => ({ filingPeriod: null, rows: [] })),
-    getEventsForTickers(heldTickers).catch(() => ({
-      filingPeriod: null,
-      events: [],
-      stasisBaseRate: null,
-    })),
-    getOverview().catch(() => null),
-  ]);
+  // Fan out to the engines' read layers; each leg degrades independently.
+  const [scores, prevScores, fundamentals, transitions, earnings, aggs, events, companyNames] =
+    await Promise.all([
+      getLatestScoresForTickers(heldTickers).catch(() => ({
+        snapshotDate: null,
+        effectiveWindow: null,
+        scores: [],
+      })),
+      getPrevScoresForTickers(heldTickers).catch(() => ({ snapshotDate: null, gapByTicker: new Map<string, number>() })),
+      getLatestFundamentalScoresForTickers(heldTickers).catch(() => ({ snapshotDate: null, scores: [] })),
+      getLatestTransitions().catch(() => ({ snapshotDate: null, rows: [] })),
+      getHeldEarnings(heldTickers).catch(() => ({ rows: [], coveredTickers: [] as string[] })),
+      getNameAggregatesForTickers(heldTickers).catch(() => ({ filingPeriod: null, rows: [] })),
+      getEventsForTickers(heldTickers).catch(() => ({
+        filingPeriod: null,
+        events: [],
+        stasisBaseRate: null,
+      })),
+      getCompanyNamesByTicker(prisma, heldTickers).catch(() => new Map<string, string>()),
+    ]);
 
   const scoreByTicker = new Map(scores.scores.map((s) => [s.ticker, s]));
+  const inflectionByTicker = new Map(fundamentals.scores.map((s) => [s.ticker, s.composite]));
   const aggByTicker = new Map(aggs.rows.map((a) => [a.ticker, a]));
   const transByTicker = new Map<string, LatestTransitionRow[]>();
   for (const row of transitions.rows) {
@@ -175,9 +182,10 @@ export async function getSignalBrief(
     eventsByTicker.set(e.ticker, list);
   }
 
-  // ── 1. Scatter: verdict per held name; both legs required to plot. ──
+  // ── 1. Scatter: one point per held name carrying whatever legs it has (gap,
+  //       13F flow, inflection). Each chart filters to its two axes; the verdict
+  //       (book-level agreement) drives dot color consistently across all three. ──
   const points: ScatterPointDto[] = [];
-  const noCoverage: string[] = [];
   for (const h of held) {
     const score = scoreByTicker.get(h.ticker);
     const agg = aggByTicker.get(h.ticker);
@@ -196,45 +204,33 @@ export async function getSignalBrief(
       },
       t,
     );
-    if (score?.gapScore != null && agg?.netflowBps != null) {
-      points.push({
-        ticker: h.ticker,
-        weight: h.grossWeight,
-        isShort: h.isShort,
-        gapScore: score.gapScore,
-        netflowBps: agg.netflowBps,
-        verdict,
-      });
-    } else {
-      noCoverage.push(h.ticker);
-    }
+    points.push({
+      ticker: h.ticker,
+      weight: h.grossWeight,
+      isShort: h.isShort,
+      gapScore: score?.gapScore ?? null,
+      netflowBps: agg?.netflowBps ?? null,
+      inflection: inflectionByTicker.get(h.ticker) ?? null,
+      verdict,
+    });
   }
 
-  // ── 2. Earnings timeline: held prints (always) + queue names reporting. ──
+  // ── 2. Earnings table: the whole book, ordered by next print. Names with no
+  //       upcoming date sort last (erDate=null). ──
   const items: EarningsItemDto[] = earnings.rows.map((r) => ({
     ticker: r.ticker,
+    companyName: companyNames.get(r.ticker) ?? null,
     erDate: r.erDate,
     days: r.days,
-    held: true,
     weight: weightByTicker.get(r.ticker) ?? null,
     side: isShortByTicker.get(r.ticker) ? "SHORT" : "LONG",
   }));
-  if (calendar) {
-    for (const week of calendar.weeks) {
-      for (const row of week.rows) {
-        if (row.side == null || heldSet.has(row.ticker)) continue; // queue names only; held already listed
-        items.push({
-          ticker: row.ticker,
-          erDate: row.erDate,
-          days: row.days,
-          held: false,
-          weight: null,
-          side: row.side,
-        });
-      }
-    }
-  }
-  items.sort((a, b) => a.days - b.days || a.ticker.localeCompare(b.ticker));
+  items.sort((a, b) => {
+    if (a.days == null && b.days == null) return a.ticker.localeCompare(b.ticker);
+    if (a.days == null) return 1;
+    if (b.days == null) return -1;
+    return a.days - b.days || a.ticker.localeCompare(b.ticker);
+  });
   const noDate = heldTickers.filter((x) => !earnings.coveredTickers.includes(x));
 
   // ── 3. What-changed feed: merge both engines' events, severity-rule sort. ──
@@ -243,8 +239,8 @@ export async function getSignalBrief(
     if (!row.ticker) continue; // group-level REV triggers stay on the Research tab
     if (row.type === "ER_WITHIN_7D") continue; // the timeline module owns prints
     const isHeld = heldSet.has(row.ticker);
+    if (!isHeld) continue; // holdings-only feed — no non-held "new idea" rows
     const gap = typeof row.payload.gapScore === "number" ? row.payload.gapScore : null;
-    if (!isHeld && row.type !== "NEW_LONG" && row.type !== "NEW_SHORT") continue; // non-held: new ideas only
     candidates.push({
       source: "REV",
       ticker: row.ticker,
@@ -289,57 +285,35 @@ export async function getSignalBrief(
       });
     }
   }
-  // Strongest non-held new flow idea: the quarter's broadest new accumulation.
-  const topNew = overview?.topNew?.[0];
-  if (topNew && !heldSet.has(topNew.ticker)) {
-    candidates.push({
-      source: "13F",
-      ticker: topNew.ticker,
-      held: false,
-      weight: null,
-      positive: true,
-      kind: "NEW_ACCUMULATION",
-      sentence: `BROADEST NEW ACCUMULATION — ${topNew.fundsBought} FUNDS BOUGHT VS ${topNew.fundsSold} SOLD`,
-      severity: topNew.fundsBought,
-      date: overview?.filingPeriod ?? "",
-      href: `/flows?tab=overview&ticker=${topNew.ticker}`,
-    });
-  }
-  // The single most extreme group rotation move (extremity-gated in buildFeed).
-  const rot = overview?.rotation;
-  if (rot) {
-    const tiles = [rot.broadestInflow, rot.broadestOutflow].filter(
-      (x): x is NonNullable<typeof x> => x != null,
-    );
-    const extreme = tiles.sort((a, b) => Math.abs(b.netDiffusionPct) - Math.abs(a.netDiffusionPct))[0];
-    if (extreme) {
-      candidates.push({
-        source: "13F",
-        ticker: null,
-        held: false,
-        weight: null,
-        positive: extreme.netDiffusionPct > 0,
-        kind: "GROUP_ROTATION",
-        sentence: `${extreme.groupKey.toUpperCase()} — BROADEST ${extreme.netDiffusionPct > 0 ? "INFLOW" : "OUTFLOW"} (${extreme.netDiffusionPct > 0 ? "+" : ""}${Math.round(extreme.netDiffusionPct)}% NET DIFFUSION, ${pctBps(extreme.activeBpsAvg)}/FUND)`,
-        severity: Math.abs(extreme.netDiffusionPct),
-        date: overview?.filingPeriod ?? "",
-        href: `/flows?tab=rotation`,
-        isRotation: true,
-      });
-    }
-  }
+  // Calendar-day span between the current and prior revision snapshot, used to
+  // label the prev-gap annotation ("prev 5d: …"). Same for every REV row.
+  const prevGapDays =
+    transitions.snapshotDate && prevScores.snapshotDate
+      ? Math.round(
+          (new Date(`${transitions.snapshotDate}T00:00:00Z`).getTime() -
+            new Date(`${prevScores.snapshotDate}T00:00:00Z`).getTime()) /
+            86_400_000,
+        )
+      : null;
 
-  const feedRows: FeedRowDto[] = buildFeed(candidates, t).map((c) => ({
-    source: c.source,
-    ticker: c.ticker,
-    held: c.held,
-    weight: c.weight,
-    kind: c.kind,
-    sentence: c.sentence,
-    positive: c.positive,
-    date: c.date,
-    href: c.href,
-  }));
+  const feedRows: FeedRowDto[] = buildFeed(candidates, t).map((c) => {
+    const isRev = c.source === "REV" && c.ticker != null;
+    const prevGapScore = isRev ? (prevScores.gapByTicker.get(c.ticker!) ?? null) : null;
+    return {
+      source: c.source,
+      ticker: c.ticker,
+      held: c.held,
+      weight: c.weight,
+      kind: c.kind,
+      sentence: c.sentence,
+      positive: c.positive,
+      date: c.date,
+      href: c.href,
+      gapScore: isRev ? (c.gapScore ?? null) : null,
+      prevGapScore,
+      prevGapDays: prevGapScore != null ? prevGapDays : null,
+    };
+  });
 
   return {
     generatedAt: new Date().toISOString(),
@@ -348,8 +322,8 @@ export async function getSignalBrief(
       effectiveWindow: scores.effectiveWindow,
       flowPeriod: aggs.filingPeriod,
     },
-    scatter: { points, noCoverage },
-    earnings: { windowDays: t.earningsWindowDays, items, noDate },
+    scatter: { points },
+    earnings: { items, noDate },
     feed: { rows: feedRows, sinceDate: transitions.snapshotDate },
   };
 }

@@ -389,7 +389,25 @@ export function QuadrantChart({
       return false;
     };
     const hit = index.nearest(mx, my, searchRadius, accept);
-    return hit ? posByTicker.get(hit.ticker) ?? null : null;
+    if (hit) return posByTicker.get(hit.ticker) ?? null;
+    // Fall back to the visible ticker labels: their text sits offset from the
+    // dot (beyond the dot's hover disc), so hovering the label alone would
+    // otherwise find nothing. Treat each placed label's rect as a hit target for
+    // the same names that are hover-eligible as dots.
+    const eligible = (t: string): boolean =>
+      isolatedSet
+        ? isolatedSet.has(t)
+        : fgSet.has(t) ||
+          promotedByDensity.has(t) ||
+          (searching && (matchSet?.has(t) ?? false)) ||
+          (altHeld && bgSet.has(t));
+    for (const l of labels) {
+      const r = l.rect;
+      if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h && eligible(l.id)) {
+        return posByTicker.get(l.id) ?? null;
+      }
+    }
+    return null;
   }
 
   function localXY(evt: React.MouseEvent<SVGSVGElement>): { x: number; y: number } {
@@ -479,8 +497,8 @@ export function QuadrantChart({
     onHover(null);
   }
 
-  const tickStyle: CSSProperties = { fontSize: 10, fill: "var(--text-secondary)" };
-  const labelStyle: CSSProperties = { fontSize: 10, fill: "var(--text-secondary)" };
+  const tickStyle: CSSProperties = { fontSize: 10, fill: "var(--color-accent)" };
+  const labelStyle: CSSProperties = { fontSize: 10, fill: "var(--color-accent)" };
   const refLabelStyle: CSSProperties = { fontSize: 10, fill: "var(--text-muted)" };
   const labelTextStyle: CSSProperties = { fontSize: QUADRANT_CONFIG.labels.fontSize, fill: "var(--text-primary)", fontWeight: 600 };
   const hoverLabelStyle: CSSProperties = { ...labelTextStyle, fill: "var(--bb-highlight-text)" };

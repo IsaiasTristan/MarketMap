@@ -425,14 +425,14 @@ export function PerStockTimeSeries({
             <ComposedChart data={returnChartData} margin={{ left: -10, right: 8 }}>
               <XAxis
                 dataKey="date"
-                tick={{ fontSize: 9, fill: "var(--text-secondary)" }}
+                tick={{ fontSize: 9, fill: "var(--color-accent)" }}
                 tickFormatter={tickFmt}
                 axisLine={false}
                 tickLine={false}
                 interval="preserveStartEnd"
               />
               <YAxis
-                tick={{ fontSize: 9, fill: "var(--text-secondary)" }}
+                tick={{ fontSize: 9, fill: "var(--color-accent)" }}
                 axisLine={false}
                 tickLine={false}
                 tickFormatter={(v) => `${v.toFixed(0)}%`}
@@ -606,14 +606,14 @@ export function PerStockTimeSeries({
             <AreaChart data={riskChartData} margin={{ left: -10, right: 8 }}>
               <XAxis
                 dataKey="date"
-                tick={{ fontSize: 9, fill: "var(--text-secondary)" }}
+                tick={{ fontSize: 9, fill: "var(--color-accent)" }}
                 tickFormatter={tickFmt}
                 axisLine={false}
                 tickLine={false}
                 interval="preserveStartEnd"
               />
               <YAxis
-                tick={{ fontSize: 9, fill: "var(--text-secondary)" }}
+                tick={{ fontSize: 9, fill: "var(--color-accent)" }}
                 axisLine={false}
                 tickLine={false}
                 tickFormatter={(v) => `${v.toFixed(0)}%`}
@@ -694,14 +694,14 @@ export function PerStockTimeSeries({
             <LineChart data={betaChartData} margin={{ left: -10, right: 8 }}>
               <XAxis
                 dataKey="date"
-                tick={{ fontSize: 9, fill: "var(--text-secondary)" }}
+                tick={{ fontSize: 9, fill: "var(--color-accent)" }}
                 tickFormatter={tickFmt}
                 axisLine={false}
                 tickLine={false}
                 interval="preserveStartEnd"
               />
               <YAxis
-                tick={{ fontSize: 9, fill: "var(--text-secondary)" }}
+                tick={{ fontSize: 9, fill: "var(--color-accent)" }}
                 axisLine={false}
                 tickLine={false}
                 tickFormatter={(v) => v.toFixed(2)}

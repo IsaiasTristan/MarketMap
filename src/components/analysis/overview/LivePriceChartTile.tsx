@@ -259,8 +259,8 @@ export function LivePriceChartTile({
                 domain={xDomain}
                 ticks={xDomain}
                 tickFormatter={(v: number) => extendedSessionFractionToEtLabel(v)}
-                tick={{ fontSize: 7, fill: "var(--text-muted)" }}
-                axisLine={{ stroke: "var(--bg-border)" }}
+                tick={{ fontSize: 7, fill: "var(--color-accent)" }}
+                axisLine={{ stroke: "var(--color-accent)" }}
                 tickLine={false}
                 height={X_AXIS_HEIGHT}
               />

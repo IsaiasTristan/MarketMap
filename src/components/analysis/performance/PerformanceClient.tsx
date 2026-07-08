@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAnalysisStore } from "@/store/analysis";
-import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
+import { bbTooltipStyle, bbAxisTick } from "@/components/analysis/ui/chartStyle";
 import { MetricCard } from "@/components/analysis/ui/MetricCard";
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
@@ -590,8 +590,8 @@ export function PerformanceClient() {
             <ResponsiveContainer width="100%" height={280}>
               {chartView === "cumulative" ? (
                 <LineChart data={navChartData} margin={{ left: 0, right: 16, top: 4, bottom: 0 }}>
-                  <XAxis dataKey="date" tick={{ fontSize: 10, fill: "var(--text-secondary)" }} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
-                  <YAxis tickFormatter={(v) => `${v >= 0 ? "+" : ""}${(v as number).toFixed(0)}%`} tick={{ fontSize: 10, fill: "var(--text-secondary)" }} axisLine={false} tickLine={false} />
+                  <XAxis dataKey="date" tick={bbAxisTick} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
+                  <YAxis tickFormatter={(v) => `${v >= 0 ? "+" : ""}${(v as number).toFixed(0)}%`} tick={bbAxisTick} axisLine={false} tickLine={false} />
                   <ReferenceLine y={0} stroke="var(--bg-border)" strokeDasharray="3 3" />
                   <Tooltip contentStyle={bbTooltipStyle} formatter={(v) => [`${(v as number).toFixed(2)}%`]} />
                   <Legend wrapperStyle={{ fontSize: 12, color: "var(--text-secondary)" }} />
@@ -600,8 +600,8 @@ export function PerformanceClient() {
                 </LineChart>
               ) : chartView === "value" ? (
                 <LineChart data={valueData} margin={{ left: 0, right: 16, top: 4, bottom: 0 }}>
-                  <XAxis dataKey="date" tick={{ fontSize: 10, fill: "var(--text-secondary)" }} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
-                  <YAxis tickFormatter={(v) => fmtDollars(v as number)} tick={{ fontSize: 10, fill: "var(--text-secondary)" }} axisLine={false} tickLine={false} width={52} />
+                  <XAxis dataKey="date" tick={bbAxisTick} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
+                  <YAxis tickFormatter={(v) => fmtDollars(v as number)} tick={bbAxisTick} axisLine={false} tickLine={false} width={52} />
                   <Tooltip
                     contentStyle={bbTooltipStyle}
                     formatter={(v) => [`$${(v as number).toLocaleString("en-US", { maximumFractionDigits: 0 })}`]}
@@ -621,8 +621,8 @@ export function PerformanceClient() {
                           <stop offset="95%" stopColor="var(--chart-1)" stopOpacity={0} />
                         </linearGradient>
                       </defs>
-                      <XAxis dataKey="date" tick={{ fontSize: 10, fill: "var(--text-secondary)" }} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
-                      <YAxis tickFormatter={(v) => (v as number).toFixed(1)} tick={{ fontSize: 10, fill: "var(--text-secondary)" }} axisLine={false} tickLine={false} />
+                      <XAxis dataKey="date" tick={bbAxisTick} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
+                      <YAxis tickFormatter={(v) => (v as number).toFixed(1)} tick={bbAxisTick} axisLine={false} tickLine={false} />
                       <ReferenceLine y={0} stroke="var(--bg-border)" strokeDasharray="3 3" />
                       <ReferenceLine y={1} stroke="color-mix(in srgb, var(--color-positive) 35%, transparent)" strokeDasharray="4 2" label={{ value: "1.0", position: "insideTopRight", fontSize: 10, fill: "var(--color-positive)" }} />
                       {/* Current value line — ties the chart to the metric card */}
@@ -818,8 +818,8 @@ export function PerformanceClient() {
 
                 return (
                   <ComposedChart data={bins} margin={{ left: 0, right: 8, top: 28, bottom: 0 }}>
-                    <XAxis dataKey="label" tick={{ fontSize: 8, fill: "var(--text-secondary)" }} tickLine={false} axisLine={false} interval={4} />
-                    <YAxis tick={{ fontSize: 9, fill: "var(--text-secondary)" }} axisLine={false} tickLine={false} width={28} />
+                    <XAxis dataKey="label" tick={{ fontSize: 8, fill: "var(--color-accent)" }} tickLine={false} axisLine={false} interval={4} />
+                    <YAxis tick={{ fontSize: 9, fill: "var(--color-accent)" }} axisLine={false} tickLine={false} width={28} />
                     <Tooltip
                       contentStyle={bbTooltipStyle}
                       labelFormatter={(binLabel) => `Bin centre: ${String(binLabel ?? "")}`}

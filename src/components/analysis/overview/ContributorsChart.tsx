@@ -34,7 +34,7 @@ const SUB_LABEL_HEIGHT = 18;
 
 const AXIS_TICK = {
   fontSize: 11,
-  fill: "var(--text-secondary)",
+  fill: "var(--color-accent)",
   fontFamily: BB_GRID_FONT_STACK,
 };
 

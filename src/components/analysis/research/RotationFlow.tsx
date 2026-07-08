@@ -104,8 +104,8 @@ export function RotationFlow({
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 4, left: -8 }}>
               <CartesianGrid stroke="var(--chrome-border)" strokeDasharray="2 2" />
-              <XAxis dataKey="date" tick={{ fontSize: 9, fill: "var(--text-muted)" }} />
-              <YAxis tick={{ fontSize: 9, fill: "var(--text-muted)" }} />
+              <XAxis dataKey="date" tick={{ fontSize: 9, fill: "var(--color-accent)" }} />
+              <YAxis tick={{ fontSize: 9, fill: "var(--color-accent)" }} />
               <Tooltip contentStyle={{ background: "var(--bg-base)", border: "1px solid var(--chrome-border)", fontSize: 10 }} />
               {groups.map((g, i) => (
                 <Line

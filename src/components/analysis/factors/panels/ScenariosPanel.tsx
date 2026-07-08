@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
-import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
+import { bbTooltipStyle, bbAxisTick } from "@/components/analysis/ui/chartStyle";
 import { useAnalysisStore } from "@/store/analysis";
 import type { ScenarioDefinition, ScenarioResult, SensitivityEntry } from "@/types/factors";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer, Cell } from "recharts";
@@ -160,7 +160,7 @@ export function ScenariosPanel() {
                       <BarChart data={factorImpacts} layout="vertical" margin={{ left: 60, right: 20 }}>
                         <XAxis
                           type="number"
-                          tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
+                          tick={bbAxisTick}
                           tickFormatter={(v) => `${v.toFixed(1)}%`}
                           axisLine={false}
                           tickLine={false}
@@ -168,7 +168,7 @@ export function ScenariosPanel() {
                         <YAxis
                           type="category"
                           dataKey="label"
-                          tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
+                          tick={bbAxisTick}
                           axisLine={false}
                           tickLine={false}
                           width={56}

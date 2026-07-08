@@ -14,17 +14,14 @@ import { ChartCard } from "@/components/analysis/ui/ChartCard";
 import { Muted } from "@/components/analysis/ui/PanelState";
 import { quarterLabel } from "@/components/analysis/flows/flowsUi";
 import type { SignalBriefPayload } from "@/server/services/signal-brief.service";
-import { RevisionsFlowScatter } from "./RevisionsFlowScatter";
-import { EarningsTimeline } from "./EarningsTimeline";
+import { SignalScatter, type AxisSpec } from "./SignalScatter";
+import { EarningsTable } from "./EarningsTable";
 import { WhatChangedFeed } from "./WhatChangedFeed";
 import { SignalMetricTip } from "./SignalMetricTip";
 
-/** "Q1 2026" → "Q1'26" for compact axis stamps. */
-function shortQuarter(period: string | null): string | null {
-  if (!period) return null;
-  const q = quarterLabel(period);
-  return q.replace(/ 20(\d\d)$/, "'$1");
-}
+const AXIS_GAP: AxisSpec = { key: "gapScore", label: "revision gap", tipId: "revisionGap", format: (v) => v.toFixed(1) };
+const AXIS_FLOW: AxisSpec = { key: "netflowBps", label: "13F flow bps", tipId: "netFlowBps", format: (v) => `${Math.round(v)}` };
+const AXIS_INFLECTION: AxisSpec = { key: "inflection", label: "inflection", tipId: "inflection", format: (v) => v.toFixed(1) };
 
 export function SignalBriefSection({ portfolioId }: { portfolioId: string }) {
   const router = useRouter();
@@ -53,7 +50,11 @@ export function SignalBriefSection({ portfolioId }: { portfolioId: string }) {
     ew && ew.legAWeeks < ew.composite4wWindow
       ? ` (uses ${Math.min(ew.legAWeeks, ew.composite4wWindow)}w of ${ew.composite4wWindow}w)`
       : "";
-  const flowQ = shortQuarter(data.asOf.flowPeriod);
+
+  // If every feed row shares one as-of date, stamp it in the panel title
+  // (rows omit their own date then); otherwise each row shows its own.
+  const feedDates = new Set(data.feed.rows.map((r) => r.date).filter(Boolean));
+  const sharedFeedDate = feedDates.size === 1 ? [...feedDates][0] : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -84,17 +85,38 @@ export function SignalBriefSection({ portfolioId }: { portfolioId: string }) {
         </span>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: 12, alignItems: "stretch" }}>
-        <ChartCard title="Holdings — Revisions × 13F Flows" compact fillHeight>
-          <RevisionsFlowScatter
+      {/* Row 1 — three holdings scatters, one signal pair each. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, alignItems: "stretch" }}>
+        <ChartCard title={`Revisions × 13F Flows${gapSuffix}`} compact fillHeight>
+          <SignalScatter
             points={data.scatter.points}
-            noCoverage={data.scatter.noCoverage}
-            flowQuarterLabel={flowQ}
-            gapSuffix={gapSuffix}
+            x={AXIS_GAP}
+            y={AXIS_FLOW}
+            quadrants={{ tr: "CONFIRMED", tl: "REV SOFT · FUNDS BUYING", br: "REV UP · FUNDS NOT IN", bl: "BOTH AGAINST" }}
           />
         </ChartCard>
+        <ChartCard title="Revisions × Inflection" compact fillHeight>
+          <SignalScatter
+            points={data.scatter.points}
+            x={AXIS_GAP}
+            y={AXIS_INFLECTION}
+            quadrants={{ tr: "REV + FUNDAMENTALS UP", bl: "BOTH DETERIORATING" }}
+          />
+        </ChartCard>
+        <ChartCard title="Inflection × 13F Flows" compact fillHeight>
+          <SignalScatter
+            points={data.scatter.points}
+            x={AXIS_INFLECTION}
+            y={AXIS_FLOW}
+            quadrants={{ tr: "FUNDAMENTALS UP · FUNDS BUYING", bl: "BOTH AGAINST" }}
+          />
+        </ChartCard>
+      </div>
+
+      {/* Row 2 — what changed (left) beside the earnings table (right). */}
+      <div style={{ display: "grid", gridTemplateColumns: "3fr 2fr", gap: 12, alignItems: "stretch" }}>
         <ChartCard
-          title="What Changed"
+          title={`What Changed${sharedFeedDate ? ` — as of ${sharedFeedDate}` : ""}`}
           compact
           fillHeight
           action={
@@ -118,36 +140,32 @@ export function SignalBriefSection({ portfolioId }: { portfolioId: string }) {
         >
           <WhatChangedFeed rows={data.feed.rows} sinceDate={data.feed.sinceDate} />
         </ChartCard>
+        <ChartCard
+          title="Earnings"
+          compact
+          fillHeight
+          action={
+            <button
+              type="button"
+              onClick={() => router.push("/research?tab=calendar")}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "var(--color-accent)",
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: 0.5,
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              CALENDAR →
+            </button>
+          }
+        >
+          <EarningsTable items={data.earnings.items} noDate={data.earnings.noDate} />
+        </ChartCard>
       </div>
-
-      <ChartCard
-        title="Earnings — Next 3 Weeks"
-        compact
-        action={
-          <button
-            type="button"
-            onClick={() => router.push("/research?tab=calendar")}
-            style={{
-              background: "transparent",
-              border: "none",
-              color: "var(--color-accent)",
-              fontSize: 9,
-              fontWeight: 700,
-              letterSpacing: 0.5,
-              cursor: "pointer",
-              padding: 0,
-            }}
-          >
-            CALENDAR →
-          </button>
-        }
-      >
-        <EarningsTimeline
-          items={data.earnings.items}
-          windowDays={data.earnings.windowDays}
-          noDate={data.earnings.noDate}
-        />
-      </ChartCard>
     </div>
   );
 }

@@ -541,15 +541,15 @@ export function StockPriceChart({
                       : (v: number) => sessionFractionToEtLabel(v)
                     : undefined
                 }
-                tick={{ fontSize: 9, fill: "var(--text-muted)" }}
+                tick={{ fontSize: 9, fill: "var(--color-accent)" }}
                 interval={useSessionAxis ? undefined : "preserveStartEnd"}
                 minTickGap={useSessionAxis ? undefined : 48}
-                axisLine={{ stroke: "var(--bg-border)" }}
+                axisLine={{ stroke: "var(--color-accent)" }}
                 tickLine={false}
               />
               <YAxis
                 domain={yDomain ?? ["auto", "auto"]}
-                tick={{ fontSize: 9, fill: "var(--text-muted)" }}
+                tick={{ fontSize: 9, fill: "var(--color-accent)" }}
                 width={48}
                 axisLine={false}
                 tickLine={false}

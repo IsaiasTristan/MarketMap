@@ -1,6 +1,6 @@
 "use client";
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
-import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
+import { bbTooltipStyle, bbAxisTick } from "@/components/analysis/ui/chartStyle";
 import { getFactorDef } from "@/lib/factors/definitions/factor-codes";
 import type { FactorCode, AttributionResult } from "@/types/factors";
 import {
@@ -86,14 +86,14 @@ export function TimeSeriesPanel({ history, attribution }: TimeSeriesPanelProps) 
             <LineChart data={betaChartData} margin={{ left: -10, right: 10 }}>
               <XAxis
                 dataKey="date"
-                tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
+                tick={bbAxisTick}
                 tickFormatter={tickFmt}
                 axisLine={false}
                 tickLine={false}
                 interval="preserveStartEnd"
               />
               <YAxis
-                tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
+                tick={bbAxisTick}
                 axisLine={false}
                 tickLine={false}
                 tickFormatter={(v) => v.toFixed(1)}
@@ -138,14 +138,14 @@ export function TimeSeriesPanel({ history, attribution }: TimeSeriesPanelProps) 
             <AreaChart data={cumulChartData} margin={{ left: -10, right: 10 }}>
               <XAxis
                 dataKey="date"
-                tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
+                tick={bbAxisTick}
                 tickFormatter={tickFmt}
                 axisLine={false}
                 tickLine={false}
                 interval="preserveStartEnd"
               />
               <YAxis
-                tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
+                tick={bbAxisTick}
                 axisLine={false}
                 tickLine={false}
                 tickFormatter={(v) => `${v.toFixed(0)}%`}

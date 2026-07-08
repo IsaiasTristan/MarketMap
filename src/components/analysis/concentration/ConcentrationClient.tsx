@@ -6,7 +6,7 @@ import { ChartCard } from "@/components/analysis/ui/ChartCard";
 import { Gauge } from "@/components/analysis/ui/Gauge";
 import { Heatmap } from "@/components/analysis/ui/Heatmap";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
-import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
+import { bbTooltipStyle, bbAxisTick } from "@/components/analysis/ui/chartStyle";
 import {
   BarChart,
   Bar,
@@ -159,14 +159,14 @@ export function ConcentrationClient() {
               <XAxis
                 type="number"
                 tickFormatter={(v) => `${((v as number) * 100).toFixed(0)}%`}
-                tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
+                tick={bbAxisTick}
                 axisLine={false}
                 tickLine={false}
               />
               <YAxis
                 type="category"
                 dataKey="sector"
-                tick={{ fontSize: 11, fill: "var(--text-secondary)" }}
+                tick={{ fontSize: 11, fill: "var(--color-accent)" }}
                 axisLine={false}
                 tickLine={false}
                 width={130}

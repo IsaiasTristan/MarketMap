@@ -23,6 +23,7 @@ export type { MetricDef };
 export const SIGNAL_METRIC_IDS = [
   "revisionGap",
   "netFlowBps",
+  "inflection",
   "verdictConfirm",
   "verdictAgainst",
   "verdictQuiet",
@@ -58,6 +59,14 @@ export function buildSignalBriefRegistry(
         "Institutional net ACTIVE flow into the name over the latest filed quarter, in basis points of tracked-fund books, from 13F filings. Price appreciation is removed — a positive number means funds actually bought, not that the stock rallied.",
       calculation: "mean(active weight − expected weight) across signal-tier funds, in bps",
       caveats: `13Fs lag quarter end by up to ~${t.flowLagDays} days — a lagging confirmation signal, not live flow.`,
+    },
+    inflection: {
+      id: "inflection",
+      label: "fundamental inflection",
+      short_def:
+        "Engine-2 fundamental inflection composite: the cross-sectional (subsector-relative) z-score of margin, growth, FCF, ROIC and deleveraging trend-changes. Positive = the fundamentals are turning up faster than peers; negative = deteriorating. Comparable in scale to the revision gap (both standardized).",
+      calculation: "z-score, within subsector, of Σ metric second-derivatives (recent slope − prior slope)",
+      basis: "Latest Engine-2 fundamental score snapshot.",
     },
     verdictConfirm: {
       id: "verdictConfirm",

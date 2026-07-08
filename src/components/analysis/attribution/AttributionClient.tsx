@@ -4,7 +4,7 @@ import { useAnalysisStore } from "@/store/analysis";
 import { ChartCard } from "@/components/analysis/ui/ChartCard";
 import { DataTable, type Column } from "@/components/analysis/ui/DataTable";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
-import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
+import { bbTooltipStyle, bbAxisTick } from "@/components/analysis/ui/chartStyle";
 import { Card } from "@/components/analysis/ui/Card";
 import { LogModeMethodology } from "@/components/analysis/factors/panels/LogModeMethodology";
 import {
@@ -268,14 +268,14 @@ export function AttributionClient() {
             >
               <XAxis
                 dataKey="date"
-                tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
+                tick={bbAxisTick}
                 tickFormatter={(d) => d.slice(0, 7)}
                 axisLine={false}
                 tickLine={false}
               />
               <YAxis
                 tickFormatter={(v) => `${(v * 100).toFixed(0)}%`}
-                tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
+                tick={bbAxisTick}
                 axisLine={false}
                 tickLine={false}
               />

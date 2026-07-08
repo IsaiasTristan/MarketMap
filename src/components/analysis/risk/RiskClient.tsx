@@ -7,7 +7,7 @@ import { ChartCard } from "@/components/analysis/ui/ChartCard";
 import { DataTable, type Column } from "@/components/analysis/ui/DataTable";
 import { Heatmap } from "@/components/analysis/ui/Heatmap";
 import { SkeletonCard } from "@/components/analysis/ui/Skeleton";
-import { bbTooltipStyle } from "@/components/analysis/ui/chartStyle";
+import { bbTooltipStyle, bbAxisTick } from "@/components/analysis/ui/chartStyle";
 import {
   AreaChart,
   Area,
@@ -348,8 +348,8 @@ export function RiskClient() {
                     <stop offset="95%" stopColor="#ef4444" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <XAxis dataKey="date" tick={{ fontSize: 10, fill: "var(--text-secondary)" }} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
-                <YAxis tickFormatter={(v) => `${(v as number).toFixed(0)}%`} tick={{ fontSize: 10, fill: "var(--text-secondary)" }} axisLine={false} tickLine={false} />
+                <XAxis dataKey="date" tick={bbAxisTick} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
+                <YAxis tickFormatter={(v) => `${(v as number).toFixed(0)}%`} tick={bbAxisTick} axisLine={false} tickLine={false} />
                 <ReferenceLine y={0} stroke="var(--bg-border)" />
                 <Tooltip
                   contentStyle={bbTooltipStyle}
@@ -403,8 +403,8 @@ export function RiskClient() {
         <ChartCard title="Rolling 252-Day Annualized Volatility" subtitle="Starts once 252 days of history are available">
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={rollingVolData} margin={{ left: 0, right: 0 }}>
-              <XAxis dataKey="date" tick={{ fontSize: 10, fill: "var(--text-secondary)" }} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
-              <YAxis tickFormatter={(v) => `${(v as number).toFixed(0)}%`} tick={{ fontSize: 10, fill: "var(--text-secondary)" }} axisLine={false} tickLine={false} />
+              <XAxis dataKey="date" tick={bbAxisTick} tickFormatter={(d) => d.slice(0, 7)} axisLine={false} tickLine={false} />
+              <YAxis tickFormatter={(v) => `${(v as number).toFixed(0)}%`} tick={bbAxisTick} axisLine={false} tickLine={false} />
               <ReferenceLine y={16} stroke="var(--bg-border)" strokeDasharray="3 3" label={{ value: "Market ~16%", fontSize: 10, fill: "var(--text-muted)" }} />
               <Tooltip contentStyle={bbTooltipStyle} formatter={(v) => [`${(v as number).toFixed(2)}%`, "Annualized Vol"]} />
               <Line type="monotone" dataKey="vol" stroke="#f59e0b" strokeWidth={1.5} dot={false} connectNulls={false} />
