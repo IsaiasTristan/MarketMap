@@ -88,7 +88,13 @@ export async function runCommoditiesDailyPrecompute(
   });
   summary.curves = curves.length;
 
+  let firstCurve = true;
   for (const curve of curves) {
+    // Pace the sweep — AEGIS rate-limits bursty multi-curve pulls (observed
+    // 429s mid-backfill). The per-call gaps live in the provider; this is the
+    // between-curve breather.
+    if (!firstCurve) await new Promise((r) => setTimeout(r, 750));
+    firstCurve = false;
     const ref: CurveRef = {
       code: curve.code,
       providerSymbolRoot: curve.providerSymbolRoot,

@@ -40,6 +40,13 @@ function isoAddDays(iso: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Gap between consecutive AEGIS calls inside one curve's fetch (politeness). */
+const CALL_GAP_MS = 400;
+
 function toPoints(rows: AegisMarketDataRow[], unitScale: number): CurvePoint[] {
   return rows
     .filter((r) => Number.isFinite(r.Price) && typeof r.DeliveryDate === "string")
@@ -60,7 +67,8 @@ export class AegisOdataCurveProvider implements FuturesCurveProvider {
       ? [asOf]
       : Array.from({ length: 7 }, (_, i) => isoAddDays(new Date().toISOString().slice(0, 10), -i));
 
-    for (const day of candidates) {
+    for (const [i, day] of candidates.entries()) {
+      if (i > 0) await sleep(CALL_GAP_MS);
       const rows = await aegisGetValues<AegisMarketDataRow>(
         `/MarketData.ForDate(asOfDate=${day},productCodes='${code}')`,
       );
@@ -101,6 +109,7 @@ export class AegisOdataCurveProvider implements FuturesCurveProvider {
         out.set(settleDate, toPoints(dayRows, curve.unitScale));
       }
       chunkStart = isoAddDays(chunkEnd, 1);
+      if (chunkStart <= asOfEnd) await sleep(CALL_GAP_MS);
     }
     return out;
   }

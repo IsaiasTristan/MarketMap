@@ -55,7 +55,17 @@ export async function aegisGetValues<T>(pathWithQuery: string): Promise<T[]> {
     if (res.status === 429 || res.status >= 500) {
       lastReason = `HTTP ${res.status}`;
       if (attempt === MAX_ATTEMPTS) throw new AegisRequestError(`${url}: ${lastReason}`);
-      await sleep(600 * 2 ** (attempt - 1));
+      // 429s from AEGIS come with a real rate-limit window — honor Retry-After
+      // when present, otherwise back off much harder than for 5xx (observed:
+      // a full 16-curve backfill trips the limiter mid-sweep).
+      const retryAfter = Number(res.headers.get("retry-after"));
+      const backoff =
+        res.status === 429
+          ? Number.isFinite(retryAfter) && retryAfter > 0
+            ? Math.min(retryAfter * 1000, 60_000)
+            : 5_000 * 2 ** (attempt - 1)
+          : 600 * 2 ** (attempt - 1);
+      await sleep(backoff);
       continue;
     }
     if (!res.ok) throw new AegisRequestError(`${url}: HTTP ${res.status}`);

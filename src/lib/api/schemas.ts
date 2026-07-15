@@ -414,3 +414,84 @@ export const flowsFundPatchBody = z.object({
   isActive: z.boolean().optional(),
   notes: z.string().max(500).nullable().optional(),
 });
+
+// ─── COMMODITIES tab (forward curves) ───────────────────────────────────────
+
+const VINTAGE_IDS = ["1D", "1W", "1M", "3M", "6M", "1Y"] as const;
+
+export const commoditiesBasisMode = z.enum(["DIFF", "OUT"]).optional().default("DIFF");
+
+export const commoditiesVintagesQuery = z.object({
+  ids: z
+    .string()
+    .optional()
+    .default("1W,1M,3M,1Y")
+    .transform((s) =>
+      s
+        .split(",")
+        .map((v) => v.trim().toUpperCase())
+        .filter((v): v is (typeof VINTAGE_IDS)[number] =>
+          (VINTAGE_IDS as readonly string[]).includes(v),
+        ),
+    ),
+  basisMode: commoditiesBasisMode,
+  history: z
+    .string()
+    .optional()
+    .default("0")
+    .transform((v) => (v === "24" ? 24 : v === "12" ? 12 : 0)),
+});
+
+export const commoditiesAnalyticsQuery = z.object({
+  basisMode: commoditiesBasisMode,
+});
+
+export const curveSetCreateBody = z.object({
+  name: z.string().min(1).max(60),
+  curveCodes: z.array(z.string().min(1).max(12)).max(40).optional(),
+});
+
+export const curveSetPatchBody = z.object({
+  name: z.string().min(1).max(60).optional(),
+});
+
+export const curveSetItemsPutBody = z.object({
+  items: z
+    .array(
+      z.object({
+        curveCode: z.string().min(1).max(12),
+        pinned: z.boolean().optional().default(false),
+      }),
+    )
+    .max(40),
+});
+
+const deckFields = {
+  name: z.string().min(1).max(60),
+  stripMonths: z.number().int().min(1).max(120),
+  terminalRule: z.enum(["FLAT", "STRIP_AVG", "ESCALATE"]),
+  terminalValueOil: z.number().nullable().optional(),
+  terminalValueGas: z.number().nullable().optional(),
+  terminalValueNgl: z.number().nullable().optional(),
+  escalationPctPerYear: z.number().min(-50).max(50).nullable().optional(),
+  haircutPct: z.number().min(0).max(100).nullable().optional(),
+  horizonMonths: z.number().int().min(12).max(600).optional().default(360),
+};
+
+export const priceDeckCreateBody = z.object(deckFields);
+export const priceDeckPatchBody = z.object(deckFields).partial();
+
+export const deckExpandedQuery = z.object({
+  curve: z.string().min(1).max(12).transform((s) => s.toUpperCase()),
+});
+
+export const commoditiesExportBody = z.object({
+  setId: z.string().optional(),
+  curveCodes: z.array(z.string().min(1).max(12)).max(40).optional(),
+  vintageId: z.enum(["LATEST", ...VINTAGE_IDS]).optional().default("LATEST"),
+  basisMode: z.enum(["DIFF", "OUT"]).optional().default("DIFF"),
+});
+
+export const commoditiesIngestBody = z.object({
+  backfill: z.boolean().optional().default(false),
+});

@@ -206,6 +206,15 @@ interface AnalysisState {
    */
   factorScatterPanelHeight: number;
 
+  // ----- COMMODITIES tab (persisted as one blob) --------------------------
+  /**
+   * Forward-curve workstation UI state: active set, focused curve,
+   * basis/history modes, vintage toggles, deck overlay. Persisted so the
+   * working set survives reloads; ephemeral chart drag-selection stays in
+   * component state.
+   */
+  commoditiesUi: CommoditiesUiState;
+
   setActivePortfolio: (id: string | null) => void;
   setDateRange: (r: DateRange) => void;
   markOnboardingDone: () => void;
@@ -245,7 +254,27 @@ interface AnalysisState {
   setFactorSectorHeatmapEnabled: (enabled: boolean) => void;
   setFactorScatterEnabled: (enabled: boolean) => void;
   setFactorScatterPanelHeight: (height: number) => void;
+  setCommoditiesUi: (patch: Partial<CommoditiesUiState>) => void;
 }
+
+export interface CommoditiesUiState {
+  setId: string | null;
+  focusCode: string | null;
+  basisMode: "DIFF" | "OUT";
+  historyWindow: "OFF" | "1Y" | "2Y";
+  /** Vintage line toggles keyed by vintage id (LATEST always drawn). */
+  vintageToggles: Record<string, boolean>;
+  deckId: string | null;
+}
+
+export const DEFAULT_COMMODITIES_UI: CommoditiesUiState = {
+  setId: null,
+  focusCode: null,
+  basisMode: "DIFF",
+  historyWindow: "1Y",
+  vintageToggles: { LATEST: true, "1D": false, "1W": true, "1M": true, "3M": true, "6M": false, "1Y": true },
+  deckId: null,
+};
 
 export interface Toast {
   id: string;
@@ -301,6 +330,7 @@ export const useAnalysisStore = create<AnalysisState>()(
       factorSectorHeatmapEnabled: true,
       factorScatterEnabled: true,
       factorScatterPanelHeight: 380,
+      commoditiesUi: DEFAULT_COMMODITIES_UI,
       setActivePortfolio: (id) => set({ activePortfolioId: id }),
       setDateRange: (dateRange) => set({ dateRange }),
       markOnboardingDone: () => set({ onboardingDone: true }),
@@ -426,6 +456,8 @@ export const useAnalysisStore = create<AnalysisState>()(
         set({
           factorScatterPanelHeight: Math.max(240, Math.min(800, factorScatterPanelHeight)),
         }),
+      setCommoditiesUi: (patch) =>
+        set((s) => ({ commoditiesUi: { ...s.commoditiesUi, ...patch } })),
     }),
     {
       name: "analysis-store",
@@ -465,7 +497,10 @@ export const useAnalysisStore = create<AnalysisState>()(
       // v14 (2026-06-28): added priceCorrWindow (1M/3M/6M/1Y in trading days)
       // for the Price-correlations tab. Defaults to 252 (1Y); seeds the
       // default when missing on prior sessions.
-      version: 14,
+      // v15 (2026-07-15): added commoditiesUi blob (COMMODITIES tab — set,
+      // focus curve, basis/history modes, vintage toggles, deck overlay).
+      // Seeds the default blob when missing.
+      version: 15,
       partialize: (s) => ({
         activePortfolioId: s.activePortfolioId,
         dateRange: s.dateRange,
@@ -487,6 +522,7 @@ export const useAnalysisStore = create<AnalysisState>()(
         factorSectorHeatmapEnabled: s.factorSectorHeatmapEnabled,
         factorScatterEnabled: s.factorScatterEnabled,
         factorScatterPanelHeight: s.factorScatterPanelHeight,
+        commoditiesUi: s.commoditiesUi,
       }),
       migrate: (persisted, version) => {
         if (!persisted || typeof persisted !== "object") return persisted;
@@ -562,6 +598,9 @@ export const useAnalysisStore = create<AnalysisState>()(
           if (!validPriceCorrWindows.includes(next.priceCorrWindow as number)) {
             next.priceCorrWindow = 252;
           }
+        }
+        if (version < 15) {
+          if (next.commoditiesUi == null) next.commoditiesUi = DEFAULT_COMMODITIES_UI;
         }
         return next;
       },

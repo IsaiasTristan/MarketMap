@@ -17,6 +17,7 @@
     "db:studio": "prisma studio",
     "job:refresh": "node -e \"console.log('Refresh job runner not wired yet.'); process.exit(0)\"",
     "job:daily": "tsx scripts/daily-precompute.ts",
+    "job:commodities": "tsx scripts/commodities-ingest.ts",
     "job:precompute-grid": "tsx scripts/precompute-per-stock-grid.ts",
     "job:backfill-names": "tsx scripts/backfill-security-names.ts",
     "job:revision": "tsx scripts/revision-weekly.ts",
