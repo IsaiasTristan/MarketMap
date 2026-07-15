@@ -469,7 +469,7 @@ export const curveSetItemsPutBody = z.object({
 const deckFields = {
   name: z.string().min(1).max(60),
   stripMonths: z.number().int().min(1).max(120),
-  terminalRule: z.enum(["FLAT", "STRIP_AVG", "ESCALATE"]),
+  terminalRule: z.enum(["FLAT", "STRIP_AVG", "TRAILING_STRIP_AVG", "ESCALATE"]),
   terminalValueOil: z.number().nullable().optional(),
   terminalValueGas: z.number().nullable().optional(),
   terminalValueNgl: z.number().nullable().optional(),
@@ -495,4 +495,5 @@ export const commoditiesExportBody = z.object({
 
 export const commoditiesIngestBody = z.object({
   backfill: z.boolean().optional().default(false),
+  catalog: z.boolean().optional().default(false),
 });

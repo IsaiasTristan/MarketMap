@@ -11,11 +11,11 @@
  * - Prices are already unit-scaled (CommodityCurve.unitScale applied at ingest).
  */
 
-export type CommodityGroupCode = "OIL" | "GAS" | "NGL";
+export type CommodityGroupCode = "OIL" | "GAS" | "NGL" | "OTHER";
 export type CurveKindCode = "FLAT" | "BASIS";
 export type BasisMode = "DIFF" | "OUT";
 export type HistoryWindow = "OFF" | "1Y" | "2Y";
-export type DeckTerminalRuleCode = "FLAT" | "STRIP_AVG" | "ESCALATE";
+export type DeckTerminalRuleCode = "FLAT" | "STRIP_AVG" | "TRAILING_STRIP_AVG" | "ESCALATE";
 
 /** One point on a strip: a contract month and its settle price. */
 export interface CurvePoint {
@@ -32,6 +32,10 @@ export interface CurveInfoDto {
   unit: string;
   decimals: number;
   benchCode: string | null;
+  /** AEGIS Product label ("Natural Gasoline", "RINs") — directory sub-headings. */
+  product: string | null;
+  /** Inactive curves are directory-only until first added to a set. */
+  isActive: boolean;
   sortOrder: number;
   /** Prompt-month price from the latest snapshot (basis curves: the diff). */
   latestPrompt: number | null;

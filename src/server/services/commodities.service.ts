@@ -89,19 +89,28 @@ async function applyBasisMode(
 // ─── registry ────────────────────────────────────────────────────────────────
 
 export async function getCurveRegistry(): Promise<CurveInfoDto[]> {
+  // The registry now spans the full imported AEGIS catalog (~455 rows), so
+  // latest-prompt lookups are restricted to ACTIVE curves (the only ones the
+  // daily ingest snapshots) — inactive directory entries serve null prompts.
   const curves = await prisma.commodityCurve.findMany({
-    where: { isActive: true },
-    orderBy: { sortOrder: "asc" },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     include: { benchCurve: { select: { code: true } } },
   });
   const out: CurveInfoDto[] = [];
   for (const c of curves) {
-    const latest = await prisma.futuresCurveSnapshot.findFirst({
-      where: { curveId: c.id },
-      orderBy: { settleDate: "desc" },
-      select: { settleDate: true, points: true },
-    });
-    const points = latest ? pointsFromJson(latest.points) : [];
+    let latestPrompt: number | null = null;
+    let latestSettleDate: string | null = null;
+    if (c.isActive) {
+      const latest = await prisma.futuresCurveSnapshot.findFirst({
+        where: { curveId: c.id },
+        orderBy: { settleDate: "desc" },
+        select: { settleDate: true, points: true },
+      });
+      if (latest) {
+        latestPrompt = pointsFromJson(latest.points)[0]?.price ?? null;
+        latestSettleDate = isoFromDb(latest.settleDate);
+      }
+    }
     out.push({
       code: c.code,
       name: c.name,
@@ -110,9 +119,11 @@ export async function getCurveRegistry(): Promise<CurveInfoDto[]> {
       unit: c.unit,
       decimals: c.decimals,
       benchCode: c.benchCurve?.code ?? null,
+      product: c.product,
+      isActive: c.isActive,
       sortOrder: c.sortOrder,
-      latestPrompt: points[0]?.price ?? null,
-      latestSettleDate: latest ? isoFromDb(latest.settleDate) : null,
+      latestPrompt,
+      latestSettleDate,
     });
   }
   return out;

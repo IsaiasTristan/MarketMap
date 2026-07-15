@@ -63,9 +63,15 @@ export function buildChartModel(
 ): ChartModel {
   const months = dto.latest.slice(0, STRIP_DISPLAY_MONTHS).map((p) => p.contractMonth);
   const latestValues = dto.latest.slice(0, STRIP_DISPLAY_MONTHS).map((p) => p.price);
+  // History runs up to (not into) the strip's first month — a realized
+  // settle-month row is kept when the prompt has rolled past it.
+  const firstFutMonth = months[0] ?? null;
   const history =
     historyMonths > 0
-      ? dto.history.slice(-historyMonths).map((h) => ({ month: h.month, price: h.avgSettle }))
+      ? dto.history
+          .filter((h) => firstFutMonth === null || h.month < firstFutMonth)
+          .slice(-historyMonths)
+          .map((h) => ({ month: h.month, price: h.avgSettle }))
       : [];
 
   const series: ChartSeries[] = [];

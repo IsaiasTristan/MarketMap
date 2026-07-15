@@ -19,9 +19,11 @@ import { addMonths } from "./format";
  *    haircut (e.g. 5 = 5% off) applies to this portion only.
  *  - i ≥ stripMonths (terminal): FLAT holds the group's terminal value;
  *    STRIP_AVG holds the average of the (haircut) strip-portion prices;
- *    ESCALATE compounds that same average by escalationPctPerYear once per
- *    whole year past the terminal start (floor((i − stripMonths) / 12)),
- *    with a null escalation treated as 0%.
+ *    TRAILING_STRIP_AVG holds the average of the FINAL 12 months of the
+ *    strip window (a 60-mo window ⇒ months 48–59; windows shorter than 12
+ *    average the whole window); ESCALATE compounds the whole-window average
+ *    by escalationPctPerYear once per whole year past the terminal start
+ *    (floor((i − stripMonths) / 12)), with a null escalation treated as 0%.
  */
 
 const DEFAULT_HORIZON_MONTHS = 360;
@@ -37,7 +39,16 @@ function terminalValueForGroup(
       return deck.terminalValueGas;
     case "NGL":
       return deck.terminalValueNgl;
+    case "OTHER":
+      // No per-group flat value is configured for the catch-all group.
+      return null;
   }
+}
+
+function avg(values: number[]): number {
+  let total = 0;
+  for (const v of values) total += v;
+  return values.length > 0 ? total / values.length : 0;
 }
 
 export function expandDeck(
@@ -74,14 +85,10 @@ export function expandDeck(
     if (flatTerminal === null) return { ok: false, reason: "NO_TERMINAL_VALUE" };
   }
 
-  // STRIP_AVG / ESCALATE terminal base: average of the strip-portion prices
-  // (post-haircut).
-  let stripAvg = 0;
-  if (stripPrices.length > 0) {
-    let total = 0;
-    for (const p of stripPrices) total += p;
-    stripAvg = total / stripPrices.length;
-  }
+  // Terminal bases (post-haircut): whole-window average for STRIP_AVG /
+  // ESCALATE, final-12-months-of-window average for TRAILING_STRIP_AVG.
+  const stripAvg = avg(stripPrices);
+  const trailingAvg = avg(stripPrices.slice(Math.max(0, stripPrices.length - 12)));
 
   const escalationPct = deck.escalationPctPerYear ?? 0;
 
@@ -95,6 +102,8 @@ export function expandDeck(
       price = flatTerminal!;
     } else if (deck.terminalRule === "STRIP_AVG") {
       price = stripAvg;
+    } else if (deck.terminalRule === "TRAILING_STRIP_AVG") {
+      price = trailingAvg;
     } else {
       const years = Math.floor((i - stripMonths) / 12);
       price = stripAvg * Math.pow(1 + escalationPct / 100, years);

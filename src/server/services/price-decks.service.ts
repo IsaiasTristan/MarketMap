@@ -29,7 +29,7 @@ function toDto(d: PriceDeck): PriceDeckDto {
 export interface PriceDeckInput {
   name: string;
   stripMonths: number;
-  terminalRule: "FLAT" | "STRIP_AVG" | "ESCALATE";
+  terminalRule: "FLAT" | "STRIP_AVG" | "TRAILING_STRIP_AVG" | "ESCALATE";
   terminalValueOil?: number | null;
   terminalValueGas?: number | null;
   terminalValueNgl?: number | null;

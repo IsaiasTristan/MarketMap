@@ -6,7 +6,7 @@
  * UI spec: docs/mockups/commodities-dashboard-mockup-v4.html.
  */
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import "@/app/(analysis)/commodities/commodities.css";
 import { contractMonthLabel, shortDate } from "@/lib/commodities/format";
 import { useAnalysisStore } from "@/store/analysis";
@@ -18,13 +18,14 @@ import { alignToMonths, buildChartModel, VINTAGE_ORDER, VINTAGE_RAMP } from "./c
 import { copyTsv } from "./clipboard";
 import { CurveChart } from "./CurveChart";
 import { CurveDataModal } from "./CurveDataModal";
+import { CurveDirectoryModal } from "./CurveDirectoryModal";
 import { ManageSetsModal } from "./ManageSetsModal";
 import { PinnedMultiples } from "./PinnedMultiples";
 import { PriceDecksPanel } from "./PriceDecksPanel";
 import { StripChangeTable } from "./StripChangeTable";
 import { useCurveAnalytics, useCurveRegistry, useCurveSetMutations, useCurveSets, useCurveVintages, usePriceDecks } from "./useCommodities";
 
-const GROUPS = ["ALL", "OIL", "GAS", "NGL"] as const;
+const GROUPS = ["ALL", "OIL", "GAS", "NGL", "OTHER"] as const;
 const HISTORY_MONTH_COUNT = { OFF: 0, "1Y": 12, "2Y": 24 } as const;
 
 export function CommoditiesClient() {
@@ -37,7 +38,9 @@ export function CommoditiesClient() {
   const [selection, setSelection] = useState<[number, number] | null>(null);
   const [dataModalOpen, setDataModalOpen] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
+  const [directoryOpen, setDirectoryOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const qc = useQueryClient();
 
   const registryQ = useCurveRegistry();
   const setsQ = useCurveSets();
@@ -97,8 +100,28 @@ export function CommoditiesClient() {
   const addCurveToSet = (code: string) => {
     if (!activeSet) return;
     const items = activeSet.items.map((i) => ({ curveCode: i.curveCode, pinned: i.pinned }));
+    const wasInactive = byCode.get(code)?.isActive === false;
     if (!items.some((i) => i.curveCode === code)) {
-      mutateSetItems([...items, { curveCode: code, pinned: true }]);
+      replaceItems.mutate(
+        { id: activeSet.id, items: [...items, { curveCode: code, pinned: true }] },
+        {
+          onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ["cmdx-curves"] });
+            if (wasInactive) {
+              // The background single-curve ingest lands the strip within a
+              // few seconds — refetch the fresh curve's data when it does.
+              toast(`PULLING ${code} FROM AEGIS — STRIP LANDS IN SECONDS`);
+              for (const delayMs of [4000, 12000, 30000]) {
+                setTimeout(() => {
+                  qc.invalidateQueries({ queryKey: ["cmdx-vintages", code] });
+                  qc.invalidateQueries({ queryKey: ["cmdx-analytics", code] });
+                  qc.invalidateQueries({ queryKey: ["cmdx-curves"] });
+                }, delayMs);
+              }
+            }
+          },
+        },
+      );
     }
     setUi({ focusCode: code });
     setSearch("");
@@ -252,12 +275,19 @@ export function CommoditiesClient() {
               </div>
             );
           })}
-        <div className="cmdx-searchwrap">
+        <button
+          className="cmdx-btn-ghost"
+          style={{ marginLeft: "auto", whiteSpace: "nowrap", fontSize: 11, border: "1px solid #2a2a2a", background: "#0d0d0d", padding: "4px 8px", cursor: "pointer", color: "var(--text-secondary)" }}
+          onClick={() => setDirectoryOpen(true)}
+        >
+          DIRECTORY ▤
+        </button>
+        <div className="cmdx-searchwrap" style={{ marginLeft: 0 }}>
           <span className="mag">⌕</span>
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="SEARCH ALL CURVES — e.g. AECO, CMA, BRENT…"
+            placeholder="SEARCH ALL CURVES — e.g. AECO, RBOB, BRENT…"
             autoComplete="off"
           />
           {searchHits.length > 0 && (
@@ -434,6 +464,16 @@ export function CommoditiesClient() {
         registry={registry}
         activeSetId={activeSet?.id ?? null}
         onSelectSet={(id) => setUi({ setId: id })}
+      />
+      <CurveDirectoryModal
+        open={directoryOpen}
+        onClose={() => setDirectoryOpen(false)}
+        registry={registry}
+        inSetCodes={new Set(setCurves.map((c) => c.code))}
+        onAdd={(code) => {
+          addCurveToSet(code);
+          setDirectoryOpen(false);
+        }}
       />
     </div>
   );

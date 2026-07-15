@@ -8,7 +8,7 @@ describe("mergeHistoryAndStrip", () => {
     { month: "2026-07", avgSettle: 3.0 },
   ];
 
-  it("splits exactly at the settle month: equal-month history is dropped", () => {
+  it("seam sits at the strip's first month: colliding history is dropped", () => {
     const strip = [
       { contractMonth: "2026-07", price: 3.1 },
       { contractMonth: "2026-08", price: 3.2 },
@@ -24,11 +24,14 @@ describe("mergeHistoryAndStrip", () => {
     expect(out[2]!.price).toBeCloseTo(3.1, 9);
   });
 
-  it("drops the settle-month history row even when the strip starts later", () => {
+  it("KEEPS the settle-month realized row when the prompt has rolled past it", () => {
+    // WTI case: settle 7/13/26, strip starts 2026-08 — the realized July
+    // settle belongs in history (this was the missing prompt-month bug).
     const strip = [{ contractMonth: "2026-08", price: 3.2 }];
     const out = mergeHistoryAndStrip(history, strip, "2026-07-13");
-    expect(out.map((p) => p.month)).toEqual(["2026-05", "2026-06", "2026-08"]);
-    expect(out.map((p) => p.type)).toEqual(["HIST", "HIST", "FUT"]);
+    expect(out.map((p) => p.month)).toEqual(["2026-05", "2026-06", "2026-07", "2026-08"]);
+    expect(out.map((p) => p.type)).toEqual(["HIST", "HIST", "HIST", "FUT"]);
+    expect(out[2]!.price).toBeCloseTo(3.0, 9);
   });
 
   it("sorts unsorted history ascending and maps avgSettle to price", () => {
@@ -44,14 +47,16 @@ describe("mergeHistoryAndStrip", () => {
 
   it("never emits duplicate months across the seam", () => {
     const strip = [
-      { contractMonth: "2026-06", price: 3.05 }, // overlaps a pre-settle history month
+      { contractMonth: "2026-06", price: 3.05 }, // overlaps a history month
       { contractMonth: "2026-07", price: 3.1 },
     ];
     const out = mergeHistoryAndStrip(history, strip, "2026-07-13");
     const months = out.map((p) => p.month);
     expect(new Set(months).size).toBe(months.length);
-    // The overlapping month is served by the strip.
+    // The overlapping months are served by the strip (BRN-style current-month
+    // prompt), and no history may leak past the strip start.
     expect(out.find((p) => p.month === "2026-06")!.type).toBe("FUT");
+    expect(out.find((p) => p.month === "2026-07")!.type).toBe("FUT");
   });
 
   it("empty history → all FUT; empty strip → all HIST", () => {

@@ -133,7 +133,11 @@ export class AegisOdataCurveProvider implements FuturesCurveProvider {
           typeof r["Delivery Date"] === "string",
       )
       .map((r) => ({ month: monthKeyFromIso(r["Delivery Date"]), avgSettle: r.Price * curve.unitScale }))
-      .filter((r) => r.month >= fromMonth && r.month < asOfMonth)
+      // Include the as-of month itself: for a curve whose prompt has rolled
+      // (WTI settle 7/13 → strip starts 2026-08) the July contract has already
+      // settled and belongs to realized history. Strip-collision dedup happens
+      // at the bridge (futures win).
+      .filter((r) => r.month >= fromMonth && r.month <= asOfMonth)
       .sort((a, b) => (a.month < b.month ? -1 : 1));
   }
 }

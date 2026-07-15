@@ -6,7 +6,30 @@
  */
 import { prisma } from "@/infrastructure/db/client";
 import type { CurveSetDto } from "@/types/commodities";
+import { ingestSingleCurve } from "./commodities-daily-precompute.service";
 import { ensureDefaultCurveSet } from "./commodity-seed.service";
+
+/**
+ * Directory-only curves activate on first use: set isActive (so the daily
+ * sweep keeps them fresh) and fire a background single-curve ingest so the
+ * chart has a strip within seconds. Fire-and-forget — set CRUD must never
+ * block on AEGIS.
+ */
+async function activateNewCurves(curveIds: string[]): Promise<void> {
+  if (curveIds.length === 0) return;
+  const inactive = await prisma.commodityCurve.findMany({
+    where: { id: { in: curveIds }, isActive: false },
+    select: { id: true, code: true },
+  });
+  if (inactive.length === 0) return;
+  await prisma.commodityCurve.updateMany({
+    where: { id: { in: inactive.map((c) => c.id) } },
+    data: { isActive: true },
+  });
+  for (const c of inactive) {
+    void ingestSingleCurve(c.code);
+  }
+}
 
 function toDto(set: {
   id: string;
@@ -59,6 +82,7 @@ export async function createCurveSet(
     },
     include: includeItems,
   });
+  await activateNewCurves(curves.map((c) => c.id));
   return toDto(set);
 }
 
@@ -108,6 +132,7 @@ export async function replaceCurveSetItems(
       }),
     }),
   ]);
+  await activateNewCurves(curves.map((c) => c.id));
   const set = await prisma.curveSet.findUnique({ where: { id: setId }, include: includeItems });
   return set ? toDto(set) : null;
 }

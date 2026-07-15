@@ -1,25 +1,28 @@
 import type { BridgePoint, CurvePoint, HistoryMonthDto } from "@/types/commodities";
-import { monthKeyFromIso } from "./format";
 
 /**
  * Merges realized monthly history with the forward strip into one series for
- * the bridged chart. The seam sits exactly at the latest settle month:
- * history months strictly BEFORE the settle month are kept as "HIST" (a
- * history row for the settle month itself is dropped — it would be a partial
- * month duplicating the front of the curve), then every strip point follows
- * as "FUT". Output ascending by month with no duplicate months across the
- * seam. Pure.
+ * the bridged chart. The seam sits at the strip's FIRST contract month:
+ * history months strictly before it are kept as "HIST" (so a settle-month
+ * realized row survives when the prompt has already rolled to the next
+ * month — e.g. WTI settle 7/13 with an Aug prompt keeps the realized July
+ * settle), then every strip point follows as "FUT". A history month that
+ * collides with any strip month is dropped — the strip wins. Output
+ * ascending by month with no duplicates across the seam. Pure.
+ *
+ * `latestSettleIso` is accepted for the divider label the callers render but
+ * no longer defines the data boundary.
  */
 export function mergeHistoryAndStrip(
   history: HistoryMonthDto[],
   strip: CurvePoint[],
-  latestSettleIso: string,
+  _latestSettleIso: string,
 ): BridgePoint[] {
-  const settleMonth = monthKeyFromIso(latestSettleIso);
+  const firstFutMonth = strip[0]?.contractMonth ?? null;
   const futMonths = new Set(strip.map((p) => p.contractMonth));
 
   const hist: BridgePoint[] = history
-    .filter((h) => h.month < settleMonth && !futMonths.has(h.month))
+    .filter((h) => (firstFutMonth === null || h.month < firstFutMonth) && !futMonths.has(h.month))
     .sort((a, b) => (a.month < b.month ? -1 : 1))
     .map((h) => ({ month: h.month, price: h.avgSettle, type: "HIST" as const }));
 

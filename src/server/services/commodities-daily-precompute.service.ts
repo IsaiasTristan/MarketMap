@@ -22,7 +22,7 @@ import { AegisOdataCurveProvider } from "@/infrastructure/providers/aegis/aegis-
 import type { CurveRef, FuturesCurveProvider } from "@/infrastructure/providers/futures-curve";
 import { addMonths, monthKeyFromIso } from "@/lib/commodities/format";
 import type { CommoditiesIngestSummary, CurvePoint } from "@/types/commodities";
-import { ensureCommodityCurvesSeeded } from "./commodity-seed.service";
+import { ensureCommodityCurvesSeeded, importAegisCatalog } from "./commodity-seed.service";
 import { withIngestLock } from "./ingest-inflight";
 
 /** Curves with fewer snapshots than this get the one-time vintage backfill. */
@@ -61,6 +61,8 @@ async function upsertSnapshot(
 export interface CommoditiesIngestOptions {
   /** Force the vintage backfill even for curves above the threshold. */
   forceBackfill?: boolean;
+  /** Re-import the full AEGIS Underlyings catalog into the registry. */
+  importCatalog?: boolean;
   log?: (msg: string) => void;
 }
 
@@ -81,6 +83,19 @@ export async function runCommoditiesDailyPrecompute(
   };
 
   await ensureCommodityCurvesSeeded(prisma);
+  // One-time full-catalog import so the directory covers every AEGIS product
+  // (imported curves stay inactive until first used). Also refreshable via
+  // the admin route's { catalog: true } flag.
+  try {
+    const registrySize = await prisma.commodityCurve.count();
+    if (opts.importCatalog || registrySize < 50) {
+      const cat = await importAegisCatalog(prisma);
+      log(`catalog: ${cat.fetched} fetched, ${cat.imported} imported, ${cat.updated} updated, ${cat.skipped.length} skipped`);
+    }
+  } catch (e) {
+    if (e instanceof AegisAuthError) throw e;
+    log(`catalog import failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+  }
   const provider: FuturesCurveProvider = new AegisOdataCurveProvider();
   const curves = await prisma.commodityCurve.findMany({
     where: { isActive: true },
@@ -170,4 +185,52 @@ export async function runCommoditiesDailyPrecomputeLocked(
     runCommoditiesDailyPrecompute(opts),
   );
   return outcome.ran ? { deduped: false, summary: outcome.result } : { deduped: true, summary: null };
+}
+
+/**
+ * On-demand single-curve ingest — fired when a user adds a directory-only
+ * (inactive) curve to a set. Fetches the latest strip synchronously-ish so
+ * the chart populates within seconds, then the ~1Y vintage backfill and
+ * realized history. Per-curve lock so repeated adds don't stampede AEGIS.
+ */
+export async function ingestSingleCurve(code: string): Promise<void> {
+  await withIngestLock(`commodities:curve:${code}`, async () => {
+    const curve = await prisma.commodityCurve.findUnique({ where: { code } });
+    if (!curve) return;
+    const provider: FuturesCurveProvider = new AegisOdataCurveProvider();
+    const ref: CurveRef = {
+      code: curve.code,
+      providerSymbolRoot: curve.providerSymbolRoot,
+      unitScale: curve.unitScale,
+    };
+    const log = (m: string) => console.log(`[commodities-curve-ingest] ${m}`);
+    try {
+      const latest = await provider.fetchCurve(ref);
+      if (latest.kind !== "ok") {
+        log(`${code}: no strip (${latest.kind === "error" ? latest.reason : "silent-empty"})`);
+        return;
+      }
+      await upsertSnapshot(curve.id, latest.settleDate, latest.points, "AEGIS_ODATA");
+
+      const from = isoAddDays(latest.settleDate, -BACKFILL_CALENDAR_DAYS);
+      const vintages = await provider.fetchCurveRange(ref, from, latest.settleDate);
+      for (const [settleDate, points] of vintages) {
+        if (points.length === 0) continue;
+        await upsertSnapshot(curve.id, settleDate, points, "AEGIS_ODATA");
+      }
+
+      const fromMonth = addMonths(monthKeyFromIso(latest.settleDate), -HISTORY_MONTHS);
+      const history = await provider.fetchRealizedMonthly(ref, fromMonth, latest.settleDate);
+      for (const h of history) {
+        await prisma.commodityHistoryMonthly.upsert({
+          where: { curveId_month: { curveId: curve.id, month: h.month } },
+          create: { curveId: curve.id, month: h.month, avgSettle: h.avgSettle, source: "AEGIS_ODATA" },
+          update: { avgSettle: h.avgSettle, source: "AEGIS_ODATA" },
+        });
+      }
+      log(`${code}: latest + ${vintages.size} vintages + ${history.length} history months`);
+    } catch (e) {
+      log(`${code}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  });
 }

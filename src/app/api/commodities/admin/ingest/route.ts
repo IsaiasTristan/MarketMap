@@ -18,6 +18,7 @@ export async function POST(req: Request) {
   try {
     const outcome = await runCommoditiesDailyPrecomputeLocked({
       forceBackfill: parsed.data.backfill,
+      importCatalog: parsed.data.catalog,
     });
     if (outcome.deduped) {
       return NextResponse.json({ deduped: true }, { status: 202 });

@@ -193,3 +193,62 @@ describe("expandDeck paths", () => {
     }
   });
 });
+
+describe("TRAILING_STRIP_AVG terminal rule", () => {
+  it("60-month window: terminal = average of the final 12 strip months", () => {
+    // Prices 1..60 → trailing 12 = months 49..60 (values 49..60), avg 54.5.
+    const prices = Array.from({ length: 60 }, (_, i) => i + 1);
+    const r = expandDeck(
+      mkDeck({ stripMonths: 60, terminalRule: "TRAILING_STRIP_AVG", horizonMonths: 72 }),
+      mk("2026-08", prices),
+      OUTRIGHT,
+      false,
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.months[59]!.price).toBeCloseTo(60, 9); // last strip month
+      expect(r.months[60]!.price).toBeCloseTo(54.5, 9); // terminal starts
+      expect(r.months[71]!.price).toBeCloseTo(54.5, 9); // stays flat
+    }
+  });
+
+  it("windows shorter than 12 average the whole window", () => {
+    const r = expandDeck(
+      mkDeck({ stripMonths: 3, terminalRule: "TRAILING_STRIP_AVG", horizonMonths: 6 }),
+      mk("2026-08", [10, 20, 30]),
+      OUTRIGHT,
+      false,
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.months[3]!.price).toBeCloseTo(20, 9);
+  });
+
+  it("haircut flows into the trailing average", () => {
+    const prices = Array.from({ length: 24 }, () => 100);
+    const r = expandDeck(
+      mkDeck({ stripMonths: 24, terminalRule: "TRAILING_STRIP_AVG", haircutPct: 5, horizonMonths: 30 }),
+      mk("2026-08", prices),
+      OUTRIGHT,
+      false,
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.months[24]!.price).toBeCloseTo(95, 9);
+  });
+
+  it("deck window padded past a short strip uses the padded trailing months", () => {
+    // 20-real-month strip, 24-month window → months 21-24 pad at the last
+    // price (20); trailing 12 = window months 13..24 = [13..20, 20,20,20,20].
+    const prices = Array.from({ length: 20 }, (_, i) => i + 1);
+    const r = expandDeck(
+      mkDeck({ stripMonths: 24, terminalRule: "TRAILING_STRIP_AVG", horizonMonths: 26 }),
+      mk("2026-08", prices),
+      OUTRIGHT,
+      false,
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const expected = ([13, 14, 15, 16, 17, 18, 19, 20, 20, 20, 20, 20].reduce((a, b) => a + b, 0)) / 12;
+      expect(r.months[24]!.price).toBeCloseTo(expected, 9);
+    }
+  });
+});

@@ -125,11 +125,20 @@ export function usePriceDeckMutations() {
       jsonFetch<PriceDeckDto>("/api/commodities/decks", { method: "POST", body: JSON.stringify(input) }),
     onSuccess: invalidate,
   });
+  const update = useMutation({
+    mutationFn: ({ id, ...patch }: { id: string } & Record<string, unknown>) =>
+      jsonFetch<PriceDeckDto>(`/api/commodities/decks/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+    onSuccess: () => {
+      invalidate();
+      // Deck contents changed — any cached expansion is stale.
+      qc.invalidateQueries({ queryKey: ["cmdx-deck-exp"] });
+    },
+  });
   const remove = useMutation({
     mutationFn: (id: string) => jsonFetch(`/api/commodities/decks/${id}`, { method: "DELETE" }),
     onSuccess: invalidate,
   });
-  return { create, remove };
+  return { create, update, remove };
 }
 
 /** Fetch a deck's 360-month expansion (imperatively, for the ⧉ copy button). */

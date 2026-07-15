@@ -1,4 +1,5 @@
 import type { CommodityGroup, CurveKind, PrismaClient } from "@prisma/client";
+import { aegisGetValues } from "@/infrastructure/providers/aegis/aegis-client";
 
 /**
  * Global commodity-curve registry seed. AEGIS OData product codes
@@ -112,4 +113,124 @@ export async function ensureDefaultCurveSet(db: PrismaClient, userId: string): P
       },
     },
   });
+}
+
+// ─── Full AEGIS catalog import (directory) ──────────────────────────────────
+
+interface AegisUnderlying {
+  Id: number;
+  Name: string;
+  Code: string;
+  Product: string;
+}
+
+const NGL_PRODUCTS = new Set([
+  "Ethane",
+  "Propane",
+  "Normal Butane",
+  "IsoButane",
+  "Natural Gasoline",
+]);
+
+function classifyGroup(product: string): CommodityGroup {
+  if (product.startsWith("Crude Oil")) return "OIL";
+  if (product.startsWith("Natural Gas") && product !== "Natural Gasoline") return "GAS";
+  if (NGL_PRODUCTS.has(product)) return "NGL";
+  return "OTHER";
+}
+
+const BASIS_NAME = /\b(basis|diff|vs\.?|v)\b/i;
+
+function classifyUnits(group: CommodityGroup, product: string): { unit: string; decimals: number; unitScale: number } {
+  const cad = product.includes("(CAD)");
+  switch (group) {
+    case "OIL":
+      return { unit: cad ? "C$/BBL" : "$/BBL", decimals: 2, unitScale: 1 };
+    case "GAS":
+      return { unit: cad ? "C$/MMBTU" : "$/MMBTU", decimals: 3, unitScale: 1 };
+    case "NGL":
+      return { unit: "¢/GAL", decimals: 2, unitScale: 100 };
+    case "OTHER":
+      return { unit: "$", decimals: 2, unitScale: 1 };
+  }
+}
+
+export interface CatalogImportSummary {
+  fetched: number;
+  imported: number;
+  updated: number;
+  skipped: string[];
+}
+
+/**
+ * Imports the full AEGIS Underlyings catalog (~455 products) into the curve
+ * registry so every curve is searchable/browsable in the directory. Imported
+ * curves land with `isActive: false` — the daily ingest only snapshots active
+ * curves; adding one to a set activates it (curve-sets.service). Rows whose
+ * AEGIS code is already claimed by a hand-seeded curve (providerSymbolRoot)
+ * are skipped, as are duplicate catalog codes (e.g. "NEI/NGX C5" appears for
+ * both the USD and CAD variant — first wins).
+ */
+export async function importAegisCatalog(db: PrismaClient): Promise<CatalogImportSummary> {
+  const rows = await aegisGetValues<AegisUnderlying>("/Underlyings");
+  const summary: CatalogImportSummary = { fetched: rows.length, imported: 0, updated: 0, skipped: [] };
+
+  const existing = await db.commodityCurve.findMany({
+    select: { code: true, providerSymbolRoot: true },
+  });
+  const claimedProviderCodes = new Set(existing.map((c) => c.providerSymbolRoot).filter(Boolean));
+  const existingCodes = new Set(existing.map((c) => c.code));
+
+  const benches = await db.commodityCurve.findMany({
+    where: { code: { in: ["WTI", "HH", "BRN"] } },
+    select: { id: true, code: true },
+  });
+  const benchId = new Map(benches.map((b) => [b.code, b.id]));
+
+  const seenCodes = new Set<string>();
+  for (const row of rows) {
+    const code = row.Code?.trim();
+    const name = row.Name?.trim();
+    const product = row.Product?.trim() ?? "";
+    if (!code || !name) continue;
+    if (claimedProviderCodes.has(code)) continue; // hand-seeded curve owns it
+    if (seenCodes.has(code)) {
+      summary.skipped.push(`${name} (duplicate code ${code})`);
+      continue;
+    }
+    seenCodes.add(code);
+
+    const group = classifyGroup(product);
+    const kind: CurveKind = BASIS_NAME.test(name) ? "BASIS" : "FLAT";
+    const bench =
+      kind !== "BASIS"
+        ? null
+        : group === "GAS"
+          ? (benchId.get("HH") ?? null)
+          : group === "OIL"
+            ? (benchId.get(/brent/i.test(name) ? "BRN" : "WTI") ?? null)
+            : null;
+    const units = classifyUnits(group, product);
+
+    const data = {
+      name,
+      group,
+      kind,
+      unit: units.unit,
+      decimals: units.decimals,
+      unitScale: units.unitScale,
+      benchCurveId: bench,
+      providerSymbolRoot: code,
+      product,
+      sortOrder: 1000, // after the hand-seeded core set
+    };
+    if (existingCodes.has(code)) {
+      await db.commodityCurve.update({ where: { code }, data });
+      summary.updated += 1;
+    } else {
+      await db.commodityCurve.create({ data: { code, isActive: false, ...data } });
+      summary.imported += 1;
+    }
+  }
+  return summary;
 }

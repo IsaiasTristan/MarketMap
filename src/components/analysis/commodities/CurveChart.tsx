@@ -10,6 +10,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { shortDate } from "@/lib/commodities/format";
 import { DECK_COLOR, HISTORY_COLOR, HISTORY_REGION_FILL, type ChartModel } from "./chartModel";
 
+interface TooltipRow {
+  label: string;
+  sub: string;
+  color: string;
+  value: number;
+}
+
 const H = 400;
 const M_LEFT = 52;
 const M_RIGHT = 12;
@@ -40,6 +47,7 @@ export function CurveChart({
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(820);
   const dragStart = useRef<number | null>(null);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -109,8 +117,9 @@ export function CurveChart({
           onSelectionChange([i, i]);
         }}
         onMouseMove={(e) => {
-          if (dragStart.current === null) return;
           const i = idxFromEvent(e);
+          setHoverIdx(i);
+          if (dragStart.current === null) return;
           onSelectionChange([Math.min(dragStart.current, i), Math.max(dragStart.current, i)]);
         }}
         onMouseUp={() => {
@@ -121,6 +130,7 @@ export function CurveChart({
         }}
         onMouseLeave={() => {
           dragStart.current = null;
+          setHoverIdx(null);
         }}
       >
         {histLen > 0 && xb !== null && (
@@ -210,7 +220,49 @@ export function CurveChart({
             </text>
           </g>
         )}
+        {hoverIdx !== null && (
+          <line x1={X(hoverIdx)} x2={X(hoverIdx)} y1={M_TOP} y2={H - M_BOTTOM} stroke="#5a5a5a" strokeWidth={1} strokeDasharray="2 2" pointerEvents="none" />
+        )}
       </svg>
+      {hoverIdx !== null && (() => {
+        const isHist = hoverIdx < histLen;
+        const rows: TooltipRow[] = [];
+        if (isHist) {
+          rows.push({ label: "REALIZED", sub: "monthly avg", color: HISTORY_COLOR, value: history[hoverIdx]!.price });
+        } else {
+          const j = hoverIdx - histLen;
+          for (const s of series) {
+            const v = s.values[j];
+            if (v !== null && v !== undefined) rows.push({ label: s.id, sub: shortDate(s.resolvedDate), color: s.color, value: v });
+          }
+          const dv = deck?.values[j];
+          if (deck && dv !== null && dv !== undefined) rows.push({ label: "DECK", sub: deck.name, color: DECK_COLOR, value: dv });
+        }
+        if (rows.length === 0) return null;
+        const fracX = total > 1 ? hoverIdx / (total - 1) : 0;
+        const flip = fracX > 0.58;
+        return (
+          <div
+            className="cmdx-tooltip"
+            style={{
+              left: flip ? undefined : `calc(${((M_LEFT + fracX * iw) / width) * 100}% + 12px)`,
+              right: flip ? `calc(${(1 - (M_LEFT + fracX * iw) / width) * 100}% + 12px)` : undefined,
+            }}
+          >
+            <div className="cmdx-tooltip-hd">
+              {labels[hoverIdx]} <span>{isHist ? "REALIZED" : "CONTRACT MONTH"}</span>
+            </div>
+            {rows.map((r) => (
+              <div key={r.label + r.sub} className="cmdx-tooltip-row">
+                <span className="sw" style={{ background: r.color }} />
+                <span className="id">{r.label}</span>
+                <span className="sub">{r.sub}</span>
+                <span className="val">{fmt(r.value, decimals)}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
     </div>
   );
 }

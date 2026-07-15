@@ -1483,6 +1483,7 @@ enum CommodityGroup {
   OIL
   GAS
   NGL
+  OTHER
 }
 
 enum CurveKind {
@@ -1493,6 +1494,7 @@ enum CurveKind {
 enum DeckTerminalRule {
   FLAT
   STRIP_AVG
+  TRAILING_STRIP_AVG
   ESCALATE
 }
 
@@ -1512,6 +1514,9 @@ model CommodityCurve {
   unitScale          Float          @default(1)
   benchCurveId       String?
   providerSymbolRoot String?
+  /// AEGIS "Product" label (e.g. "Natural Gasoline", "RINs") — drives the
+  /// directory modal's sub-headings within each group.
+  product            String?
   isActive           Boolean        @default(true)
   sortOrder          Int            @default(0)
   createdAt          DateTime       @default(now())
