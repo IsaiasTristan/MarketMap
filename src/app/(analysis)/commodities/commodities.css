@@ -1,0 +1,106 @@
+/* COMMODITIES tab — styles ported from docs/mockups/commodities-dashboard-mockup-v4.html.
+   Everything rides the analysis.css token set; cmdx- prefix keeps it scoped. */
+
+.cmdx-controls {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; background: #070707; border-bottom: 1px solid var(--bg-border);
+}
+.cmdx-lbl { color: var(--color-accent); font-weight: 700; letter-spacing: 0.07em; font-size: 10.5px; }
+.cmdx-controls select, .cmdx-controls button, .cmdx-controls input,
+.cmdx-panel button, .cmdx-modal button, .cmdx-chipbar input {
+  font-size: 11.5px; background: #111; color: #fff; border: 1px solid #2a2a2a;
+  padding: 4px 8px; cursor: pointer; border-radius: 0;
+}
+.cmdx-controls select:hover, .cmdx-controls button:hover, .cmdx-panel button:hover, .cmdx-modal button:hover { border-color: var(--bb-amber-bg); }
+.cmdx-btn-primary { background: var(--bb-amber-bg) !important; color: #000 !important; font-weight: 700; border-color: var(--bb-amber-bg) !important; }
+.cmdx-btn-ghost { background: transparent !important; color: var(--text-secondary) !important; }
+.cmdx-panel button:disabled, .cmdx-controls button:disabled { opacity: 0.35; cursor: not-allowed; border-color: #2a2a2a !important; }
+
+.cmdx-seg { display: inline-flex; border: 1px solid #2a2a2a; }
+.cmdx-seg button { border: none !important; border-right: 1px solid #2a2a2a !important; background: #0d0d0d; color: var(--text-secondary); padding: 4px 10px; font-weight: 700; font-size: 10.5px; letter-spacing: 0.05em; }
+.cmdx-seg button:last-child { border-right: none !important; }
+.cmdx-seg button.on { background: #2a1a00; color: var(--bb-amber-bg); }
+
+.cmdx-chipbar { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 12px; background: #050505; border-bottom: 1px solid var(--bg-border); align-items: center; }
+.cmdx-chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px; background: #101010; border: 1px solid #262626; cursor: pointer; font-family: var(--font-mono); font-size: 11px; }
+.cmdx-chip:hover { border-color: #555; }
+.cmdx-chip.focused { border-color: var(--bb-amber-bg); background: #231500; color: #fff; }
+.cmdx-chip .px { color: var(--text-secondary); }
+.cmdx-chip .pin { color: #3a3a3a; font-size: 12px; line-height: 1; }
+.cmdx-chip .pin.pinned { color: var(--bb-amber-bg); }
+.cmdx-chip .rm { color: #4a4a4a; font-size: 11px; }
+.cmdx-chip .rm:hover { color: var(--color-negative); }
+.cmdx-grp { font-size: 9px; font-weight: 600; padding: 1px 4px; letter-spacing: 0.05em; }
+.cmdx-grp.OIL { background: #3a2a00; color: #ffd84d; }
+.cmdx-grp.GAS { background: #00263a; color: #57c8ff; }
+.cmdx-grp.NGL { background: #2a0e33; color: #d8a0ee; }
+
+.cmdx-searchwrap { position: relative; margin-left: auto; }
+.cmdx-searchwrap input { width: 250px; padding: 4px 8px 4px 26px; background: #0d0d0d; cursor: text; font-family: var(--font-mono); }
+.cmdx-searchwrap .mag { position: absolute; left: 8px; top: 5px; color: #5a5a5a; font-size: 11px; }
+.cmdx-sdrop { position: absolute; top: 26px; left: 0; right: 0; background: #0d0d0d; border: 1px solid #3a3a3a; z-index: 40; max-height: 260px; overflow: auto; }
+.cmdx-sopt { display: flex; gap: 8px; align-items: center; padding: 5px 9px; cursor: pointer; font-family: var(--font-mono); font-size: 10.8px; border-bottom: 1px solid #161616; }
+.cmdx-sopt:hover { background: #231500; }
+.cmdx-sopt .nm { color: #e8eef6; }
+.cmdx-sopt .meta { margin-left: auto; color: #5a5a5a; font-size: 9.5px; }
+
+.cmdx-main { display: grid; grid-template-columns: 1fr 320px; gap: 8px; padding: 8px 12px; }
+@media (max-width: 1100px) { .cmdx-main { grid-template-columns: 1fr; } }
+.cmdx-panel { background: var(--panel-bg, #0a0a0a); border: 1px solid var(--bg-border); }
+.cmdx-phead { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--bg-border); background: #0d0d0d; flex-wrap: wrap; }
+.cmdx-phead .t { color: var(--bb-amber-bg); font-weight: 700; letter-spacing: 0.08em; font-size: 11px; }
+.cmdx-phead .sub { color: var(--text-secondary); font-size: 10.5px; }
+.cmdx-phead .right { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.cmdx-pbody { padding: 8px 10px; }
+
+.cmdx-vlegend { display: flex; gap: 4px; flex-wrap: wrap; }
+.cmdx-vbtn { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border: 1px solid #262626; background: #0d0d0d; color: var(--text-secondary); font-family: var(--font-mono); font-size: 10px; cursor: pointer; }
+.cmdx-vbtn .sw { width: 14px; height: 0; border-top: 3px solid; }
+.cmdx-vbtn.on { color: #fff; border-color: #444; background: #161616; }
+.cmdx-vbtn.off { opacity: 0.35; }
+.cmdx-vbtn .dt { color: #6a6a6a; font-size: 9px; }
+.cmdx-vbtn.on .dt { color: #9a9a9a; }
+
+.cmdx-chartwrap { position: relative; user-select: none; }
+.cmdx-chart { display: block; width: 100%; height: 400px; cursor: crosshair; }
+.cmdx-selinfo { position: absolute; top: 8px; right: 10px; background: #231500; border: 1px solid var(--bb-amber-bg); padding: 4px 8px; font-family: var(--font-mono); font-size: 10.5px; color: var(--bb-amber-bg); display: flex; align-items: center; gap: 8px; }
+.cmdx-selinfo button { padding: 2px 8px; font-size: 10px; }
+
+.cmdx-table { border-collapse: collapse; width: 100%; }
+.cmdx-table th { color: var(--color-accent); font-weight: 700; letter-spacing: 0.04em; font-size: 10px; text-align: right; padding: 3px 6px; border-bottom: 1px solid var(--bg-border); white-space: nowrap; }
+.cmdx-table th .thd { display: block; color: #6a6a6a; font-family: var(--font-mono); font-weight: 400; font-size: 9px; }
+.cmdx-table th:first-child, .cmdx-table td:first-child { text-align: left; }
+.cmdx-table td { font-family: var(--font-mono); font-size: 10.8px; text-align: right; padding: 3px 6px; border-bottom: 1px solid #101010; white-space: nowrap; }
+.cmdx-table tr:hover td { background: #101418; }
+.cmdx-table .rowlbl { color: #9eb0c8; }
+.cmdx-table .d2 { display: block; font-size: 9px; opacity: 0.8; }
+.cmdx-table tr.selrow td { background: #1a1200; }
+
+.cmdx-modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.72); z-index: 200; display: flex; align-items: center; justify-content: center; }
+.cmdx-modal { width: 560px; max-width: 92vw; background: var(--panel-bg, #0a0a0a); border: 1px solid #3a3a3a; box-shadow: 0 0 0 1px #000; }
+.cmdx-datatbl { max-height: 68vh; overflow: auto; }
+.cmdx-datatbl thead th { position: sticky; top: 0; background: #0d0d0d; z-index: 2; }
+
+.cmdx-deck { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid #1e1e1e; background: #0d0d0d; margin-bottom: 5px; cursor: pointer; font-family: var(--font-mono); font-size: 10.8px; }
+.cmdx-deck.on { border-color: var(--bb-amber-bg); background: #1a1000; }
+.cmdx-deck.disabled { opacity: 0.35; cursor: not-allowed; }
+.cmdx-deck .name { font-weight: 700; letter-spacing: 0.03em; font-size: 11px; font-family: var(--font-sans); }
+.cmdx-deck .rule { color: var(--text-secondary); font-size: 10px; }
+.cmdx-deck .cta { margin-left: auto; display: flex; gap: 5px; }
+.cmdx-deck button { padding: 2px 7px; font-size: 9.5px; }
+.cmdx-decknote { background: #1a0d02; border: 1px solid #3a2a00; color: #c8a25a; padding: 5px 8px; font-family: var(--font-mono); font-size: 9.8px; margin-bottom: 6px; }
+
+.cmdx-exprow { display: flex; align-items: center; gap: 7px; padding: 3px 4px; font-family: var(--font-mono); font-size: 10.5px; border-bottom: 1px solid #111; cursor: pointer; }
+.cmdx-exprow input[type="checkbox"] { accent-color: #ffb700; margin: 0; padding: 0; width: 12px; height: 12px; }
+.cmdx-exprow .u { margin-left: auto; color: #5a5a5a; font-size: 9.5px; }
+
+.cmdx-smgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 8px; padding: 8px 12px; }
+.cmdx-smcard { background: var(--panel-bg, #0a0a0a); border: 1px solid var(--bg-border); cursor: pointer; }
+.cmdx-smcard:hover { border-color: #3a3a3a; }
+.cmdx-smcard.focused { border-color: var(--bb-amber-bg); }
+.cmdx-smhead { display: flex; align-items: baseline; gap: 6px; padding: 5px 8px 2px; }
+.cmdx-smhead .nm { font-weight: 700; letter-spacing: 0.04em; font-size: 11px; color: #e8eef6; }
+.cmdx-smfoot { display: flex; gap: 10px; padding: 2px 8px 6px; font-family: var(--font-mono); font-size: 10px; }
+
+.cmdx-footnote { font-family: var(--font-mono); font-size: 9.5px; color: #5a5a5a; }
+.cmdx-accruing { padding: 20px; font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
