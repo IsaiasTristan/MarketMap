@@ -483,6 +483,7 @@ export const priceDeckPatchBody = z.object(deckFields).partial();
 
 export const deckExpandedQuery = z.object({
   curve: z.string().min(1).max(12).transform((s) => s.toUpperCase()),
+  basisMode: commoditiesBasisMode,
 });
 
 export const commoditiesExportBody = z.object({

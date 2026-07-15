@@ -9,12 +9,15 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   const { id } = await ctx.params;
 
   const url = new URL(req.url);
-  const parsed = deckExpandedQuery.safeParse({ curve: url.searchParams.get("curve") ?? undefined });
+  const parsed = deckExpandedQuery.safeParse({
+    curve: url.searchParams.get("curve") ?? undefined,
+    basisMode: url.searchParams.get("basisMode") ?? undefined,
+  });
   if (!parsed.success) {
     return NextResponse.json({ ok: false, errors: parsed.error.flatten() }, { status: 400 });
   }
 
-  const out = await expandPriceDeck(auth.user.id, id, parsed.data.curve);
+  const out = await expandPriceDeck(auth.user.id, id, parsed.data.curve, parsed.data.basisMode);
   if (!out) return NextResponse.json({ error: "Price deck or curve not found" }, { status: 404 });
   if (!out.result.ok) {
     // Domain rejection (basis differential, empty strip, missing terminal

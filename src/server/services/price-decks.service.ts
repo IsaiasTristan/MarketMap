@@ -8,6 +8,7 @@
 import type { PriceDeck } from "@prisma/client";
 import { prisma } from "@/infrastructure/db/client";
 import { expandDeck } from "@/lib/commodities/decks";
+import { toOutright } from "@/lib/commodities/outright";
 import type { DeckExpansionResult, PriceDeckDto } from "@/types/commodities";
 
 function toDto(d: PriceDeck): PriceDeckDto {
@@ -84,24 +85,45 @@ export async function deletePriceDeck(userId: string, deckId: string): Promise<b
 
 /**
  * Expand a deck against a curve's latest strip. Not-found and ownership
- * failures return null; domain-level rejections (basis curve, no strip,
- * missing terminal value) come back as the typed error from expandDeck.
+ * failures return null; domain-level rejections (basis differential, no
+ * strip, missing terminal value) come back as the typed error from
+ * expandDeck. Decks never apply to a differential: a BASIS curve in DIFF
+ * mode is rejected, and in OUT mode the deck expands against the outright
+ * strip (bench + basis, aligned by contract month).
  */
 export async function expandPriceDeck(
   userId: string,
   deckId: string,
   curveCode: string,
+  basisMode: "DIFF" | "OUT" = "DIFF",
 ): Promise<{ deck: PriceDeckDto; result: DeckExpansionResult } | null> {
   const deck = await prisma.priceDeck.findFirst({ where: { id: deckId, userId } });
   if (!deck) return null;
-  const curve = await prisma.commodityCurve.findUnique({ where: { code: curveCode } });
+  const curve = await prisma.commodityCurve.findUnique({
+    where: { code: curveCode },
+    include: { benchCurve: { select: { id: true } } },
+  });
   if (!curve) return null;
   const latest = await prisma.futuresCurveSnapshot.findFirst({
     where: { curveId: curve.id },
     orderBy: { settleDate: "desc" },
-    select: { points: true },
+    select: { settleDate: true, points: true },
   });
-  const points = Array.isArray(latest?.points) ? (latest.points as { contractMonth: string; price: number }[]) : [];
-  const result = expandDeck(toDto(deck), points, { kind: curve.kind, group: curve.group }, false);
+  let points = Array.isArray(latest?.points) ? (latest.points as { contractMonth: string; price: number }[]) : [];
+
+  const basisModeIsDiff = curve.kind === "BASIS" && basisMode === "DIFF";
+  if (curve.kind === "BASIS" && basisMode === "OUT" && curve.benchCurve && latest) {
+    const bench = await prisma.futuresCurveSnapshot.findFirst({
+      where: { curveId: curve.benchCurve.id, settleDate: { lte: latest.settleDate } },
+      orderBy: { settleDate: "desc" },
+      select: { points: true },
+    });
+    const benchPoints = Array.isArray(bench?.points)
+      ? (bench.points as { contractMonth: string; price: number }[])
+      : [];
+    points = toOutright(points, benchPoints);
+  }
+
+  const result = expandDeck(toDto(deck), points, { kind: curve.kind, group: curve.group }, basisModeIsDiff);
   return { deck: toDto(deck), result };
 }

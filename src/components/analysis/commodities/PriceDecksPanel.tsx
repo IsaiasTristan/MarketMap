@@ -28,6 +28,7 @@ export function PriceDecksPanel({
   activeDeckId,
   onToggleDeck,
   focusCode,
+  basisMode,
   curveName,
   unit,
   decimals,
@@ -38,6 +39,7 @@ export function PriceDecksPanel({
   activeDeckId: string | null;
   onToggleDeck: (id: string | null) => void;
   focusCode: string | null;
+  basisMode: "DIFF" | "OUT";
   curveName: string;
   unit: string;
   decimals: number;
@@ -50,7 +52,7 @@ export function PriceDecksPanel({
   const copyExpansion = async (deck: PriceDeckDto) => {
     if (!focusCode) return;
     try {
-      const { months } = await fetchDeckExpansion(deck.id, focusCode);
+      const { months } = await fetchDeckExpansion(deck.id, focusCode, basisMode);
       const rows: (string | number)[][] = [
         ["MONTH", `${curveName} DECK — ${deck.name} (${unit})`],
         ...months.map((m) => [contractMonthLabel(m.month), m.price.toFixed(decimals)]),

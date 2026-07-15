@@ -69,11 +69,11 @@ export function CommoditiesClient() {
   const deckAllowed = !!focusCurve && !(focusCurve.kind === "BASIS" && ui.basisMode === "DIFF");
   const activeDeck = (decksQ.data?.decks ?? []).find((d) => d.id === ui.deckId) ?? null;
   const deckExpQ = useQuery({
-    queryKey: ["cmdx-deck-exp", ui.deckId, focusCode],
+    queryKey: ["cmdx-deck-exp", ui.deckId, focusCode, ui.basisMode],
     enabled: !!activeDeck && !!focusCode && deckAllowed,
     staleTime: 5 * 60_000,
     queryFn: async () => {
-      const r = await fetch(`/api/commodities/decks/${ui.deckId}/expanded?curve=${focusCode}`);
+      const r = await fetch(`/api/commodities/decks/${ui.deckId}/expanded?curve=${focusCode}&basisMode=${ui.basisMode}`);
       if (!r.ok) return null;
       return (await r.json()) as { months: { month: string; price: number }[] };
     },
@@ -384,6 +384,7 @@ export function CommoditiesClient() {
             activeDeckId={ui.deckId}
             onToggleDeck={(id) => setUi({ deckId: id })}
             focusCode={focusCode}
+            basisMode={ui.basisMode}
             curveName={focusCurve?.name ?? ""}
             unit={focusCurve?.unit ?? ""}
             decimals={focusCurve?.decimals ?? 2}

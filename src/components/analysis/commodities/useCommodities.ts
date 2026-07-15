@@ -136,8 +136,9 @@ export function usePriceDeckMutations() {
 export async function fetchDeckExpansion(
   deckId: string,
   curveCode: string,
+  basisMode: "DIFF" | "OUT" = "DIFF",
 ): Promise<{ months: { month: string; price: number }[] }> {
-  return jsonFetch(`/api/commodities/decks/${deckId}/expanded?curve=${curveCode}`);
+  return jsonFetch(`/api/commodities/decks/${deckId}/expanded?curve=${curveCode}&basisMode=${basisMode}`);
 }
 
 /** Fetch the futures-only export table. */
