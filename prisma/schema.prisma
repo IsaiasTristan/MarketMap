@@ -82,23 +82,23 @@ model Universe {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  constituents UniverseConstituent[]
+  constituents       UniverseConstituent[]
   analyticsSnapshots AnalyticsSnapshot[]
 }
 
 /// One row per ticker in a universe; hierarchy fields drive map + rollups.
 model UniverseConstituent {
-  id          String   @id @default(cuid())
-  universeId  String
-  securityId  String
-  sector      String
-  subTheme    String
-  sortOrder   Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String   @id @default(cuid())
+  universeId String
+  securityId String
+  sector     String
+  subTheme   String
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  universe  Universe @relation(fields: [universeId], references: [id], onDelete: Cascade)
-  security  Security @relation(fields: [securityId], references: [id], onDelete: Restrict)
+  universe Universe @relation(fields: [universeId], references: [id], onDelete: Cascade)
+  security Security @relation(fields: [securityId], references: [id], onDelete: Restrict)
 
   @@unique([universeId, securityId])
   @@index([universeId, sector])
@@ -107,15 +107,15 @@ model UniverseConstituent {
 
 /// Normalized tradable / listed instrument (equity or benchmark proxy).
 model Security {
-  id        String   @id @default(cuid())
-  ticker    String   @unique // uppercase normalized in app layer
-  name      String
-  isActive  Boolean  @default(true)
+  id                   String    @id @default(cuid())
+  ticker               String    @unique // uppercase normalized in app layer
+  name                 String
+  isActive             Boolean   @default(true)
   // Profile fields backfilled from Yahoo assetProfile
-  sector    String?
-  country   String?
-  currency  String?
-  assetClass String?
+  sector               String?
+  country              String?
+  currency             String?
+  assetClass           String?
   // Delist tracking. Yahoo signals "delisted" via chart.error / 404 / 0-bar
   // pulls; we ratchet a counter here and only flag a candidate after a
   // sustained miss window so transient throttles don't poison the universe.
@@ -125,8 +125,8 @@ model Security {
   delistCandidate      Boolean   @default(false)
   delistedAt           DateTime?
   suggestedReplacement String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   priceHistory       PriceHistory[]
   universeRows       UniverseConstituent[]
@@ -139,13 +139,13 @@ model Security {
 }
 
 model PriceHistory {
-  id          String   @id @default(cuid())
-  securityId  String
-  tradeDate   DateTime @db.Date
-  adjClose    Decimal  @db.Decimal(20, 8)
+  id         String   @id @default(cuid())
+  securityId String
+  tradeDate  DateTime @db.Date
+  adjClose   Decimal  @db.Decimal(20, 8)
   // optional raw fields for future use
-  close       Decimal? @db.Decimal(20, 8)
-  volume      BigInt?
+  close      Decimal? @db.Decimal(20, 8)
+  volume     BigInt?
 
   security Security @relation(fields: [securityId], references: [id], onDelete: Cascade)
 
@@ -154,22 +154,22 @@ model PriceHistory {
 }
 
 model Benchmark {
-  id           String         @id @default(cuid())
-  code         BenchmarkCode  @unique
-  displayName  String
-  proxyTicker  String // e.g. ^GSPC — also stored as Security if we ingest as series
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  id          String        @id @default(cuid())
+  code        BenchmarkCode @unique
+  displayName String
+  proxyTicker String // e.g. ^GSPC — also stored as Security if we ingest as series
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
   priceHistory         BenchmarkPriceHistory[]
   analyticsMetricCells AnalyticsMetricCell[]
 }
 
 model BenchmarkPriceHistory {
-  id           String   @id @default(cuid())
-  benchmarkId  String
-  tradeDate    DateTime @db.Date
-  adjClose     Decimal  @db.Decimal(20, 8)
+  id          String   @id @default(cuid())
+  benchmarkId String
+  tradeDate   DateTime @db.Date
+  adjClose    Decimal  @db.Decimal(20, 8)
 
   benchmark Benchmark @relation(fields: [benchmarkId], references: [id], onDelete: Cascade)
 
@@ -189,13 +189,15 @@ enum UserRole {
 /// users are auto-provisioned on first visit; only the admin controls the
 /// global universe / securities. `lastLoginAt` is throttled (<= 1 write/hour).
 model User {
-  id          String     @id @default(cuid())
-  email       String     @unique
-  role        UserRole   @default(USER)
-  createdAt   DateTime   @default(now())
+  id          String    @id @default(cuid())
+  email       String    @unique
+  role        UserRole  @default(USER)
+  createdAt   DateTime  @default(now())
   lastLoginAt DateTime?
 
-  portfolios  Portfolio[]
+  portfolios Portfolio[]
+  curveSets  CurveSet[]
+  priceDecks PriceDeck[]
 }
 
 // --- Portfolio ---
@@ -209,10 +211,10 @@ model Portfolio {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user               User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  positions          PortfolioPosition[]
-  factorSnapshots    FactorExposureSnapshot[]
-  stressRuns         StressScenarioRun[]
+  user            User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  positions       PortfolioPosition[]
+  factorSnapshots FactorExposureSnapshot[]
+  stressRuns      StressScenarioRun[]
 
   @@index([userId])
 }
@@ -230,7 +232,7 @@ model PortfolioPosition {
   isShort     Boolean  @default(false)
   isCash      Boolean  @default(false)
   cashAmount  Decimal? @db.Decimal(20, 8)
-  sector      String?  // optional override; falls back to Security.sector
+  sector      String? // optional override; falls back to Security.sector
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -243,19 +245,19 @@ model PortfolioPosition {
 
 /// Fundamental data per security per date (for factor scoring).
 model SecurityFundamentals {
-  id               String   @id @default(cuid())
-  securityId       String
-  asOfDate         DateTime @db.Date
-  marketCap        Decimal? @db.Decimal(30, 2)
-  bookToPrice      Decimal? @db.Decimal(20, 8)
-  earningsToPrice  Decimal? @db.Decimal(20, 8)
-  fcfYield         Decimal? @db.Decimal(20, 8)
-  roe              Decimal? @db.Decimal(20, 8)
-  grossMargin      Decimal? @db.Decimal(20, 8)
-  debtToEquity     Decimal? @db.Decimal(20, 8)
+  id                String   @id @default(cuid())
+  securityId        String
+  asOfDate          DateTime @db.Date
+  marketCap         Decimal? @db.Decimal(30, 2)
+  bookToPrice       Decimal? @db.Decimal(20, 8)
+  earningsToPrice   Decimal? @db.Decimal(20, 8)
+  fcfYield          Decimal? @db.Decimal(20, 8)
+  roe               Decimal? @db.Decimal(20, 8)
+  grossMargin       Decimal? @db.Decimal(20, 8)
+  debtToEquity      Decimal? @db.Decimal(20, 8)
   earningsStability Decimal? @db.Decimal(20, 8)
-  shortRatio       Decimal? @db.Decimal(20, 8)
-  createdAt        DateTime @default(now())
+  shortRatio        Decimal? @db.Decimal(20, 8)
+  createdAt         DateTime @default(now())
 
   security Security @relation(fields: [securityId], references: [id], onDelete: Cascade)
 
@@ -288,8 +290,8 @@ enum FactorCode {
 }
 
 enum FactorSource {
-  FF     // official Fama-French published
-  PROXY  // ETF-based proxy (gap period)
+  FF // official Fama-French published
+  PROXY // ETF-based proxy (gap period)
 }
 
 /// Daily factor returns from the unified factor pipeline.
@@ -306,18 +308,18 @@ model FactorReturnDaily {
 
 /// Singleton status record for the factor data pipeline.
 model FactorPipelineStatus {
-  id               String   @id @default(cuid())
-  lastFrenchDate   DateTime? @db.Date
-  gapTradingDays   Int      @default(0)
-  activeProxiesJson Json    @default("{}")
-  lastRefreshAt    DateTime?
-  updatedAt        DateTime @updatedAt
+  id                String    @id @default(cuid())
+  lastFrenchDate    DateTime? @db.Date
+  gapTradingDays    Int       @default(0)
+  activeProxiesJson Json      @default("{}")
+  lastRefreshAt     DateTime?
+  updatedAt         DateTime  @updatedAt
 }
 
 /// Daily risk-free rate from FRED TB3MS (annualized).
 model RiskFreeRate {
   id         String   @id @default(cuid())
-  tradeDate  DateTime @db.Date @unique
+  tradeDate  DateTime @unique @db.Date
   annualRate Decimal  @db.Decimal(10, 6) // e.g. 0.0525 = 5.25%
 
   @@index([tradeDate])
@@ -353,7 +355,7 @@ model Alert {
   id          String        @id @default(cuid())
   at          DateTime      @default(now())
   severity    AlertSeverity
-  type        String        // "drawdown" | "stop_loss" | "factor_breach" | "crowding"
+  type        String // "drawdown" | "stop_loss" | "factor_breach" | "crowding"
   message     String
   contextJson Json?
   dismissedAt DateTime?
@@ -363,12 +365,12 @@ model Alert {
 
 /// Cached historical scenario results per portfolio.
 model StressScenarioRun {
-  id           String   @id @default(cuid())
-  portfolioId  String
-  scenarioKey  String   // e.g. "2008_crisis" or "custom"
-  asOfDate     DateTime @db.Date
-  resultJson   Json
-  createdAt    DateTime @default(now())
+  id          String   @id @default(cuid())
+  portfolioId String
+  scenarioKey String // e.g. "2008_crisis" or "custom"
+  asOfDate    DateTime @db.Date
+  resultJson  Json
+  createdAt   DateTime @default(now())
 
   portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
 
@@ -383,22 +385,22 @@ model AnalyticsSnapshot {
   id               String    @id @default(cuid())
   universeId       String
   asOfTradeDate    DateTime? @db.Date // latest common date used in calcs
-  methodologyLabel String    // e.g. version string for Sharpe/r_f
+  methodologyLabel String // e.g. version string for Sharpe/r_f
   createdAt        DateTime  @default(now())
 
-  universe Universe           @relation(fields: [universeId], references: [id], onDelete: Cascade)
+  universe Universe              @relation(fields: [universeId], references: [id], onDelete: Cascade)
   cells    AnalyticsMetricCell[]
 }
 
 model AnalyticsMetricCell {
-  id              String       @id @default(cuid())
-  snapshotId      String
-  rowLevel        RowLevel
-  rowKey          String // sector name, sub-theme, or ticker
-  metric          MetricKind
-  horizon         Horizon
-  benchmarkId     String?      // for excess return vs benchmark; null for others
-  value           Decimal?     @db.Decimal(20, 10) // null if undefined (e.g. missing data)
+  id          String     @id @default(cuid())
+  snapshotId  String
+  rowLevel    RowLevel
+  rowKey      String // sector name, sub-theme, or ticker
+  metric      MetricKind
+  horizon     Horizon
+  benchmarkId String? // for excess return vs benchmark; null for others
+  value       Decimal?   @db.Decimal(20, 10) // null if undefined (e.g. missing data)
 
   snapshot  AnalyticsSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
   benchmark Benchmark?        @relation(fields: [benchmarkId], references: [id], onDelete: SetNull)
@@ -408,14 +410,14 @@ model AnalyticsMetricCell {
 
 model FactorExposureSnapshot {
   id          String   @id @default(cuid())
-  securityId  String?  // null if portfolio-level factor model later
+  securityId  String? // null if portfolio-level factor model later
   portfolioId String?
   asOfDate    DateTime @db.Date
   modelName   String
-  factorsJson Json     // { "marketBeta": ..., "size": ..., ... }
+  factorsJson Json // { "marketBeta": ..., "size": ..., ... }
   createdAt   DateTime @default(now())
 
-  security Security? @relation(fields: [securityId], references: [id], onDelete: Cascade)
+  security  Security?  @relation(fields: [securityId], references: [id], onDelete: Cascade)
   portfolio Portfolio? @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
 
   @@index([asOfDate])
@@ -538,14 +540,14 @@ model FactorPerformanceSnapshot {
 // --- Operations ---
 
 model RefreshJob {
-  id          String             @id @default(cuid())
-  type        RefreshJobType
-  status      RefreshJobStatus   @default(PENDING)
-  startedAt   DateTime?
-  finishedAt  DateTime?
+  id           String           @id @default(cuid())
+  type         RefreshJobType
+  status       RefreshJobStatus @default(PENDING)
+  startedAt    DateTime?
+  finishedAt   DateTime?
   errorMessage String?
-  metadata    Json?
-  createdAt   DateTime           @default(now())
+  metadata     Json?
+  createdAt    DateTime         @default(now())
 
   @@index([status, createdAt])
 }
@@ -566,8 +568,8 @@ model RefreshJob {
 /// the market-map Universe/Security). Populated from FMP screener + profile.
 /// Shared by a future Engine 2.
 model RevisionReference {
-  id              String   @id @default(cuid())
-  ticker          String   @unique // uppercase normalized in app layer
+  id              String    @id @default(cuid())
+  ticker          String    @unique // uppercase normalized in app layer
   companyName     String
   cik             String?
   sector          String? // FMP sector
@@ -575,11 +577,11 @@ model RevisionReference {
   exchange        String?
   country         String?
   currency        String?
-  marketCap       Decimal? @db.Decimal(20, 2)
+  marketCap       Decimal?  @db.Decimal(20, 2)
   identifiersJson Json? // { isin, cusip, ... } — extensible, often spotty
-  isActive        Boolean  @default(true)
-  addedAt         DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  isActive        Boolean   @default(true)
+  addedAt         DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
   lastSeenAt      DateTime?
 
   @@index([sector])
@@ -592,26 +594,26 @@ model RevisionReference {
 /// revision history. A few leading metrics are typed for fast querying; the
 /// spotty multi-period estimate matrix lives in estimatesJson.
 model RevisionSnapshot {
-  id                 String   @id @default(cuid())
+  id                 String    @id @default(cuid())
   ticker             String
-  snapshotDate       DateTime @db.Date
+  snapshotDate       DateTime  @db.Date
   // Leg A — leading estimate consensus (forward fiscal period), absolute $.
-  revenueAvg         Decimal? @db.Decimal(24, 4)
-  epsAvg             Decimal? @db.Decimal(20, 6)
+  revenueAvg         Decimal?  @db.Decimal(24, 4)
+  epsAvg             Decimal?  @db.Decimal(20, 6)
   numAnalystsRevenue Int?
   numAnalystsEps     Int?
   // Leg B — current consensus snapshot.
-  ptConsensus        Decimal? @db.Decimal(20, 6)
-  ptHigh             Decimal? @db.Decimal(20, 6)
-  ptLow              Decimal? @db.Decimal(20, 6)
-  ptMedian           Decimal? @db.Decimal(20, 6)
+  ptConsensus        Decimal?  @db.Decimal(20, 6)
+  ptHigh             Decimal?  @db.Decimal(20, 6)
+  ptLow              Decimal?  @db.Decimal(20, 6)
+  ptMedian           Decimal?  @db.Decimal(20, 6)
   numPriceTargets    Int?
   nextEarningsDate   DateTime? @db.Date
   // Spotty / multi-field detail.
   estimatesJson      Json? // per fiscal period: revenue/ebitda/ebit/netIncome/sga/eps {low,avg,high} + counts
   ratingsJson        Json? // grades-consensus distribution + price-target-summary periods
-  source             String   @default("FMP")
-  createdAt          DateTime @default(now())
+  source             String    @default("FMP")
+  createdAt          DateTime  @default(now())
 
   @@unique([ticker, snapshotDate])
   @@index([snapshotDate])
@@ -639,16 +641,16 @@ model RatingEvent {
 /// Leg B event-level price-target changes (FMP /price-target-news).
 /// Backfilled on first run, tailed weekly. Append-only.
 model PriceTargetEvent {
-  id              String    @id @default(cuid())
+  id              String   @id @default(cuid())
   ticker          String
   publishedDate   DateTime
   analystCompany  String?
   analystName     String?
-  priceTarget     Decimal?  @db.Decimal(20, 6)
-  priceWhenPosted Decimal?  @db.Decimal(20, 6)
+  priceTarget     Decimal? @db.Decimal(20, 6)
+  priceWhenPosted Decimal? @db.Decimal(20, 6)
   newsPublisher   String?
-  source          String    @default("FMP")
-  createdAt       DateTime  @default(now())
+  source          String   @default("FMP")
+  createdAt       DateTime @default(now())
 
   @@unique([ticker, publishedDate, analystCompany, priceTarget])
   @@index([ticker, publishedDate])
@@ -658,15 +660,15 @@ model PriceTargetEvent {
 /// Sector / subsector aggregate weekly snapshot (rotation + breadth heatmap
 /// inputs). Append-only, keyed by (groupType, groupKey, snapshotDate).
 model RevisionSectorAggregate {
-  id            String            @id @default(cuid())
-  groupType     RevisionGroupType
-  groupKey      String // sector name or subsector (industry) name
-  snapshotDate  DateTime          @db.Date
-  breadth       Float?
-  compositeMean Float?
-  nameCount     Int?
+  id             String            @id @default(cuid())
+  groupType      RevisionGroupType
+  groupKey       String // sector name or subsector (industry) name
+  snapshotDate   DateTime          @db.Date
+  breadth        Float?
+  compositeMean  Float?
+  nameCount      Int?
   aggregatesJson Json? // per-signal means / breadth detail
-  createdAt     DateTime          @default(now())
+  createdAt      DateTime          @default(now())
 
   @@unique([groupType, groupKey, snapshotDate])
   @@index([groupType, snapshotDate])
@@ -914,32 +916,32 @@ model FundamentalPeriod {
 /// the signals consume and the own-history valuation percentiles. Keyed
 /// (ticker, snapshotDate), never overwritten.
 model FundamentalSnapshot {
-  id               String   @id @default(cuid())
+  id               String    @id @default(cuid())
   ticker           String
-  snapshotDate     DateTime @db.Date
+  snapshotDate     DateTime  @db.Date
   latestFiscalDate DateTime? @db.Date
   // typed leading metrics known as-of (TTM / latest)
-  revenueTtm       Decimal? @db.Decimal(24, 4)
+  revenueTtm       Decimal?  @db.Decimal(24, 4)
   grossMargin      Float?
   ebitdaMargin     Float?
   operatingMargin  Float?
   netMargin        Float?
   roic             Float?
   roe              Float?
-  fcfTtm           Decimal? @db.Decimal(24, 4)
+  fcfTtm           Decimal?  @db.Decimal(24, 4)
   fcfMargin        Float?
   revenueGrowthYoy Float?
   netDebtToEbitda  Float?
   accrualsRatio    Float?
   // current valuation multiples (priced at snapshot via live quote)
-  peRatio          Decimal? @db.Decimal(20, 6)
-  evToEbitda       Decimal? @db.Decimal(20, 6)
-  priceToSales     Decimal? @db.Decimal(20, 6)
-  marketCap        Decimal? @db.Decimal(30, 2)
-  enterpriseValue  Decimal? @db.Decimal(30, 2)
+  peRatio          Decimal?  @db.Decimal(20, 6)
+  evToEbitda       Decimal?  @db.Decimal(20, 6)
+  priceToSales     Decimal?  @db.Decimal(20, 6)
+  marketCap        Decimal?  @db.Decimal(30, 2)
+  enterpriseValue  Decimal?  @db.Decimal(30, 2)
   metricsJson      Json?
-  source           String   @default("FMP")
-  createdAt        DateTime @default(now())
+  source           String    @default("FMP")
+  createdAt        DateTime  @default(now())
 
   @@unique([ticker, snapshotDate])
   @@index([snapshotDate])
@@ -952,24 +954,24 @@ model FundamentalSnapshot {
 /// fallback); the valuation-vs-own-history signal is intra-ticker (percentile,
 /// not z-scored). Quality filters set trapFlag / compounderScore.
 model FundamentalScore {
-  id              String            @id @default(cuid())
-  ticker          String
-  snapshotDate    DateTime          @db.Date
-  peerGroupType   RevisionGroupType
-  peerGroupKey    String
-  composite       Float?
-  subsectorDecile Int?
-  sectorDecile    Int?
-  rank            Int?
-  newArrival      Boolean           @default(false)
-  trapFlag        Boolean           @default(false)
-  compounderScore Float?
-  valuationPercentile Float?
+  id                      String            @id @default(cuid())
+  ticker                  String
+  snapshotDate            DateTime          @db.Date
+  peerGroupType           RevisionGroupType
+  peerGroupKey            String
+  composite               Float?
+  subsectorDecile         Int?
+  sectorDecile            Int?
+  rank                    Int?
+  newArrival              Boolean           @default(false)
+  trapFlag                Boolean           @default(false)
+  compounderScore         Float?
+  valuationPercentile     Float?
   /// Calculation-version identifier (e.g. "discovery_9_box_v1.0") so methodology
   /// changes do not silently alter prior historical scores.
   scoreMethodologyVersion String?
-  scoreJson       Json?
-  createdAt       DateTime          @default(now())
+  scoreJson               Json?
+  createdAt               DateTime          @default(now())
 
   @@unique([ticker, snapshotDate])
   @@index([snapshotDate])
@@ -1170,21 +1172,21 @@ model FundStyleVector {
 /// Fact table: one aggregated long-equity position per (fund, ticker, period).
 /// Append-only / write-once per key. `action` is set by the diff layer.
 model FundHoldingSnapshot {
-  id           String              @id @default(cuid())
-  fundId       String
-  cik          String
-  filingPeriod DateTime            @db.Date // quarter-end / period-of-report
-  ticker       String
-  cusip        String?
-  nameOfIssuer String?
-  shares       Decimal             @db.Decimal(24, 2) // common shares (puts/calls excluded)
-  value        Decimal             @db.Decimal(24, 2) // reported $ value
-  pctOfBook    Float? // value / fund total book — the conviction dimension
-  action       InstitutionalAction
-  prevShares   Decimal?            @db.Decimal(24, 2)
-  filingDate   DateTime?           @db.Date
-  acceptedDate DateTime?           @db.Date
-  rawJson      Json? // put/call + share-class rows retained for reconciliation
+  id                 String              @id @default(cuid())
+  fundId             String
+  cik                String
+  filingPeriod       DateTime            @db.Date // quarter-end / period-of-report
+  ticker             String
+  cusip              String?
+  nameOfIssuer       String?
+  shares             Decimal             @db.Decimal(24, 2) // common shares (puts/calls excluded)
+  value              Decimal             @db.Decimal(24, 2) // reported $ value
+  pctOfBook          Float? // value / fund total book — the conviction dimension
+  action             InstitutionalAction
+  prevShares         Decimal?            @db.Decimal(24, 2)
+  filingDate         DateTime?           @db.Date
+  acceptedDate       DateTime?           @db.Date
+  rawJson            Json? // put/call + share-class rows retained for reconciliation
   // ── Config-independent precomputed leaderboard ingredients (signal-tier only) ──
   // Split-adjusted QoQ share delta % (null at a fund's first period for this name).
   adjShareDeltaPct   Float?
@@ -1201,7 +1203,7 @@ model FundHoldingSnapshot {
   // quarter, so true tenure is longer (rendered "≥N").
   tenureQuarters     Int?
   tenureCensored     Boolean?
-  createdAt    DateTime            @default(now())
+  createdAt          DateTime            @default(now())
 
   fund InstitutionalFund @relation(fields: [fundId], references: [id], onDelete: Cascade)
 
@@ -1315,7 +1317,7 @@ model InstitutionalNameAggregate {
   lifecycleStage         String?
   // Breadth crossed the cross-sectional p75 this quarter (CROWDED escalation flag;
   // retains the underlying lifecycle stage).
-  crowded                Boolean @default(false)
+  crowded                Boolean  @default(false)
   quadrant               String? // early | crowded | ignored | broad-low
   marketInvestorsHolding Int? // secondary market-wide crowding (context only)
   newArrival             Boolean  @default(false) // change detector
@@ -1393,14 +1395,14 @@ model CorporateAction {
 /// unresolved splits (detector fired but corroboration failed → data hold), and
 /// derived-split audit rows. Surfaced for review; `status` tracks resolution.
 model DataQualityEvent {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   kind      String // tier_review | missing_mcap | unresolved_split | derived_split | tier_change | source_conflict
   ticker    String?
   fundId    String?
   period    DateTime? @db.Date
   payload   Json?
-  status    String   @default("open") // open | resolved | ignored
-  createdAt DateTime @default(now())
+  status    String    @default("open") // open | resolved | ignored
+  createdAt DateTime  @default(now())
 
   @@index([kind, status])
   @@index([ticker])
@@ -1473,4 +1475,136 @@ model InstitutionalBaseRate {
   computedAt   DateTime @default(now())
 
   @@unique([pattern, horizon, benchmark])
+}
+
+// --- Commodities: forward curves (COMMODITIES tab) ---
+
+enum CommodityGroup {
+  OIL
+  GAS
+  NGL
+}
+
+enum CurveKind {
+  FLAT
+  BASIS
+}
+
+enum DeckTerminalRule {
+  FLAT
+  STRIP_AVG
+  ESCALATE
+}
+
+/// Global curve registry (admin-owned, like Security/Benchmark — no userId).
+/// `providerSymbolRoot` holds the AEGIS OData product code (e.g. WTI→CL, HH→H,
+/// WAHA→M.GH9J); verified against /odata/Underlyings 2026-07-14. `unitScale`
+/// multiplies raw provider prices into display units (NGLs arrive in $/GAL but
+/// display in ¢/GAL → 100). BASIS curves require `benchCurveId`.
+model CommodityCurve {
+  id                 String         @id @default(cuid())
+  code               String         @unique // WTI, MID, MEH, CMA, HH, WAHA, ...
+  name               String
+  group              CommodityGroup
+  kind               CurveKind
+  unit               String // "$/BBL" | "$/MMBTU" | "¢/GAL"
+  decimals           Int            @default(2)
+  unitScale          Float          @default(1)
+  benchCurveId       String?
+  providerSymbolRoot String?
+  isActive           Boolean        @default(true)
+  sortOrder          Int            @default(0)
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  benchCurve  CommodityCurve?           @relation("CurveBench", fields: [benchCurveId], references: [id], onDelete: SetNull)
+  basisCurves CommodityCurve[]          @relation("CurveBench")
+  snapshots   FuturesCurveSnapshot[]
+  history     CommodityHistoryMonthly[]
+  setItems    CurveSetItem[]
+}
+
+/// One row per (curve, settle date): the full strip as of that settle. This is
+/// the vintage store — "the curve 1M ago" = the snapshot at the resolved settle
+/// date (nearest earlier row, never interpolated). Points are already
+/// unit-scaled: [{ contractMonth: "2026-08", price: number }].
+model FuturesCurveSnapshot {
+  id         String   @id @default(cuid())
+  curveId    String
+  settleDate DateTime @db.Date
+  points     Json
+  source     String // "AEGIS_ODATA" | "MANUAL_CSV"
+  computedAt DateTime @default(now())
+
+  curve CommodityCurve @relation(fields: [curveId], references: [id], onDelete: Cascade)
+
+  @@unique([curveId, settleDate])
+  @@index([settleDate])
+}
+
+/// Realized monthly history for the history→futures bridge: monthly average of
+/// daily prompt/spot settles. For BASIS curves this stores the realized
+/// differential. `month` is a "YYYY-MM" key.
+model CommodityHistoryMonthly {
+  id        String   @id @default(cuid())
+  curveId   String
+  month     String
+  avgSettle Float
+  source    String   @default("AEGIS_ODATA")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  curve CommodityCurve @relation(fields: [curveId], references: [id], onDelete: Cascade)
+
+  @@unique([curveId, month])
+}
+
+/// Per-user named curve set (like Portfolio: nullable userId, scoped by the
+/// authenticated user on every read/write). Each user gets a seeded default.
+model CurveSet {
+  id        String   @id @default(cuid())
+  name      String
+  userId    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items CurveSetItem[]
+
+  @@index([userId])
+}
+
+model CurveSetItem {
+  id        String  @id @default(cuid())
+  setId     String
+  curveId   String
+  sortOrder Int     @default(0)
+  pinned    Boolean @default(false)
+
+  set   CurveSet       @relation(fields: [setId], references: [id], onDelete: Cascade)
+  curve CommodityCurve @relation(fields: [curveId], references: [id], onDelete: Cascade)
+
+  @@unique([setId, curveId])
+}
+
+/// Per-user price deck preset: strip for `stripMonths`, then a terminal rule
+/// out to `horizonMonths`. Applies to FLAT prices only (never basis diffs).
+model PriceDeck {
+  id                   String           @id @default(cuid())
+  name                 String
+  userId               String?
+  stripMonths          Int              @default(36)
+  terminalRule         DeckTerminalRule @default(FLAT)
+  terminalValueOil     Float?
+  terminalValueGas     Float?
+  terminalValueNgl     Float?
+  escalationPctPerYear Float?
+  haircutPct           Float?
+  horizonMonths        Int              @default(360)
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
