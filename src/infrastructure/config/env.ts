@@ -41,6 +41,29 @@ export function fmpCallsPerMinute(): number {
   return readNumber("FMP_CALLS_PER_MINUTE", fmpTier() === "premium" ? 700 : 2800);
 }
 
+// ─── AEGIS OData (commodities forward curves) ──────────────────────────────
+
+/**
+ * AEGIS "OData Auth" JWT (from the platform: click username, bottom-left).
+ * Used as the HTTP Basic password. Empty string when unset (callers fail
+ * loudly). NOTE: these tokens expire (~quarterly) — the ingest surfaces an
+ * authFailed flag when AEGIS returns 401 so the refresh is never silent.
+ */
+export function aegisOdataToken(): string {
+  return process.env.AEGIS_ODATA_TOKEN?.trim() ?? "";
+}
+
+/** AEGIS platform login email — the HTTP Basic username for the OData feed. */
+export function aegisOdataUser(): string {
+  return process.env.AEGIS_ODATA_USER?.trim() || "isaias@mountainlp.com";
+}
+
+/** AEGIS OData service root (no trailing slash). */
+export function aegisOdataBaseUrl(): string {
+  const v = process.env.AEGIS_ODATA_URL?.trim();
+  return v && v.length ? v.replace(/\/$/, "") : "https://platform.aegis-hedging.com/odata";
+}
+
 // ─── Cloudflare Access identity / admin role ──────────────────────────────
 
 /**

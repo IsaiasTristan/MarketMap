@@ -38,6 +38,8 @@ import {
   precomputeAllFactorPerformance,
   type FactorPerformancePrecomputeEntry,
 } from "./factor-performance-cache.service";
+import { runCommoditiesDailyPrecomputeLocked } from "./commodities-daily-precompute.service";
+import type { CommoditiesIngestSummary } from "@/types/commodities";
 import { runFactorEngine } from "./factor-engine.service";
 import type { ModelPresetName } from "@/types/factors";
 
@@ -71,6 +73,7 @@ export interface DailyPrecomputeSummary {
   portfolioSnapshots: PortfolioFactorSnapshotEntry[];
   marketMaps: MarketMapPrecomputeEntry[];
   factorPerformance: FactorPerformancePrecomputeEntry[];
+  commodities: CommoditiesIngestSummary | null;
 }
 
 /**
@@ -268,6 +271,23 @@ export async function runDailyPrecompute(
     `[daily-precompute] factor performance: ${fpOk}/${factorPerf.entries.length} (metric,benchmark) grids cached in ${(factorPerf.totalMs / 1000).toFixed(1)}s.`,
   );
 
+  // --- Step 7: commodities forward-curve ingest (AEGIS) ---------------------
+  let commodities: CommoditiesIngestSummary | null = null;
+  try {
+    const outcome = await runCommoditiesDailyPrecomputeLocked({ log });
+    commodities = outcome.summary;
+    if (outcome.deduped) {
+      log(`[daily-precompute] commodities: skipped (ingest already running)`);
+    } else if (commodities) {
+      log(
+        `[daily-precompute] commodities: ${commodities.snapshotsUpserted} snapshots, ` +
+          `${commodities.failed.length} failed${commodities.authFailed ? " — AEGIS AUTH FAILED (refresh AEGIS_ODATA_TOKEN)" : ""}.`,
+      );
+    }
+  } catch (e) {
+    log(`[daily-precompute] commodities — ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   const finishedAt = new Date();
   const totalMs = finishedAt.getTime() - startedAt.getTime();
   log(
@@ -290,5 +310,6 @@ export async function runDailyPrecompute(
     portfolioSnapshots: portfolioSnaps.entries,
     marketMaps: marketMaps.entries,
     factorPerformance: factorPerf.entries,
+    commodities,
   };
 }
