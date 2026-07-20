@@ -15,12 +15,10 @@
  *   - maybeRunStartupCatchUp()  freshness-guarded fire-and-forget; called
  *                               from src/instrumentation.ts on boot.
  */
-import { spawn } from "node:child_process";
-import { createWriteStream, mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { prisma } from "@/infrastructure/db/client";
 import type { DailyPrecomputeSummary } from "./factor-daily-precompute.service";
 import { getPrecomputeFreshness } from "@/lib/factors/diagnostics/precompute-freshness";
+import { runJobChild } from "./job-spawner";
 
 export type RunnerStatus = "idle" | "running" | "done" | "error";
 
@@ -68,10 +66,12 @@ export function getRunnerState(): RunnerState {
  * regression chain (~10 min) runs on its own core and never blocks the web
  * server's single-threaded event loop. This is the same entry point the
  * 17:00 Windows Scheduled Task uses, so both run paths share one impl.
+ * The spawn goes through the shared job queue (job-spawner) so it serializes
+ * with the other heavy background jobs instead of stacking children.
  *
- * Never throws: spawn failures and non-zero exits are recorded in the runner
- * state. The child's stdout/stderr are teed to a timestamped file under
- * `logs/` and mirrored to the server console.
+ * Never throws: spawn failures, non-zero exits, and queue skips are recorded
+ * in the runner state. The child's stdout/stderr are teed to a timestamped
+ * file under `logs/` and mirrored to the server console.
  */
 export function startPrecompute(
   trigger: "startup-catchup" | "manual" = "manual",
@@ -87,64 +87,23 @@ export function startPrecompute(
   state.lastSummary = null;
   state.pid = null;
 
-  try {
-    const repoRoot = process.cwd();
-    const logDir = join(repoRoot, "logs");
-    mkdirSync(logDir, { recursive: true });
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const logPath = join(logDir, `precompute-${trigger}-${stamp}.log`);
-    const logStream = createWriteStream(logPath, { flags: "a" });
-
-    // shell:true is required on Windows so `npm` resolves to npm.cmd.
-    // windowsHide prevents a console window from flashing up.
-    const child = spawn("npm", ["run", "job:daily"], {
-      cwd: repoRoot,
-      shell: true,
-      windowsHide: true,
-    });
-    state.pid = child.pid ?? null;
-    console.log(
-      `[precompute-runner] spawned child pid=${state.pid} (${trigger}); logging to ${logPath}`,
-    );
-
-    child.stdout?.on("data", (d: Buffer) => {
-      logStream.write(d);
-      process.stdout.write(d);
-    });
-    child.stderr?.on("data", (d: Buffer) => {
-      logStream.write(d);
-      process.stderr.write(d);
-    });
-    child.on("error", (e) => {
-      logStream.end();
-      state.error = e instanceof Error ? e.message : String(e);
-      state.status = "error";
-      state.finishedAt = new Date().toISOString();
-      state.pid = null;
-      console.error("[precompute-runner] child spawn failed:", e);
-    });
-    child.on("exit", (code, signal) => {
-      logStream.end();
-      state.finishedAt = new Date().toISOString();
-      state.pid = null;
-      if (code === 0) {
-        state.status = "done";
-        console.log("[precompute-runner] child precompute completed.");
-      } else {
-        state.status = "error";
-        state.error = `precompute exited with ${
-          code != null ? `code ${code}` : `signal ${signal}`
-        }`;
-        console.error(`[precompute-runner] ${state.error}`);
-      }
-    });
-  } catch (e) {
-    state.error = e instanceof Error ? e.message : String(e);
-    state.status = "error";
+  void runJobChild(`precompute-${trigger}`, "job:daily", [], {
+    mode: "enqueue",
+    onSpawn: (pid) => {
+      state.pid = pid;
+    },
+  }).then((r) => {
     state.finishedAt = new Date().toISOString();
     state.pid = null;
-    console.error("[precompute-runner] failed to spawn child:", e);
-  }
+    if (r.ok) {
+      state.status = "done";
+      console.log("[precompute-runner] child precompute completed.");
+    } else {
+      state.status = "error";
+      state.error = `precompute ${r.error ?? "failed"}`;
+      console.error(`[precompute-runner] ${state.error}`);
+    }
+  });
 
   return { started: true };
 }

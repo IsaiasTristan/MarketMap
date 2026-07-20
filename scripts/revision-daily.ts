@@ -14,11 +14,21 @@
  */
 import { prisma } from "../src/infrastructure/db/client";
 import { runRevisionDailyEvents } from "../src/server/services/revision/revision-daily-events.service";
+import { runDailyTransitionScan } from "../src/server/services/revision/revision-transitions.service";
 
 async function main() {
   const log = (msg: string) => console.log(msg);
   const summary = await runRevisionDailyEvents({ log });
   console.log("[revision-daily] summary:", JSON.stringify(summary, null, 2));
+
+  // ER-window scan (ER_WITHIN_7D transitions), mirroring the in-app runner's
+  // daily path. Non-fatal: a scan failure must not fail the event tail.
+  try {
+    const scan = await runDailyTransitionScan({ log });
+    console.log(`[revision-daily] ER scan: ${scan.fired} transitions fired`);
+  } catch (e) {
+    console.error("[revision-daily] ER scan failed:", e);
+  }
 }
 
 main()

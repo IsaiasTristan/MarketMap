@@ -26,9 +26,8 @@ import { tradeDateEtFromUnix } from "@/lib/market-map/market-session";
 import {
   latestSettledQuarter,
   quarterEnd,
-  runInstitutionalIngest,
 } from "./institutional/institutional-ingest.service";
-import { runInstitutionalAggregate } from "./institutional/institutional-aggregate.service";
+import { runJobChild } from "./job-spawner";
 
 /** Hourly tick. Work is gated by ET-date + DB state, not the interval. */
 const TICK_INTERVAL_MS = 60 * 60_000;
@@ -160,15 +159,24 @@ async function tick(): Promise<void> {
     console.log(
       `[institutional-runner] ${reason}: ingesting ${quarters}q (store at ${latestPeriodEnd ?? "empty"})`,
     );
-    const ingest = await runInstitutionalIngest({ quarters, log: (m) => console.log(m) });
-    const agg = await runInstitutionalAggregate({ log: (m) => console.log(m) });
-    lastRunAt = new Date().toISOString();
-    lastRunReason = reason;
-    console.log(
-      `[institutional-runner] ${reason} done: ingest ${JSON.stringify(ingest)}, aggregate ${JSON.stringify(agg)}`,
+    // Child process: job:institutional runs ingest + aggregate by default,
+    // matching the old in-process path. 13F bursts are the heaviest ingest in
+    // the app; the child returns its memory to the OS on exit.
+    const r = await runJobChild(
+      "institutional",
+      "job:institutional",
+      [`--quarters=${quarters}`],
+      { mode: "enqueue" },
     );
-
-    lastError = null;
+    if (r.ok) {
+      lastRunAt = new Date().toISOString();
+      lastRunReason = reason;
+      lastError = null;
+      console.log(`[institutional-runner] ${reason} child completed.`);
+    } else if (!r.skipped) {
+      lastError = r.error;
+      console.error(`[institutional-runner] ${reason} child failed: ${r.error}`);
+    }
   } catch (e) {
     lastError = e instanceof Error ? e.message : String(e);
     console.error("[institutional-runner] tick failed:", e);

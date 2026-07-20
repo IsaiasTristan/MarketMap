@@ -12,11 +12,18 @@
  *
  * The heavy factor catch-up (precompute-runner) does refresh the tail as its
  * first step, but it is gated on factor-grid freshness, deferred ~180s, and
- * takes ~10 min. This lightweight catch-up runs promptly and independently:
- * refresh the price tail, then rewrite the market-map cache on the now-complete
- * tape. It skips the factor regressions entirely.
+ * takes ~10 min. This lightweight catch-up runs promptly and independently.
  *
- * Singleton + idempotent: runs at most once per process (boot), and the tail
+ * The heavy work (tail ingest + market-map recompute) runs in a CHILD process
+ * (`npm run job:price-tail` -> scripts/price-tail-catchup.ts), serialized by
+ * the shared job queue: running it in the web process at boot used to drive
+ * the server straight to its heap ceiling, and a crash mid-run left freshness
+ * stale so every supervisor restart re-triggered the full run - a crash-loop
+ * amplifier. Only the two cheap staleness aggregates run here; the child
+ * REPEATS them and exits early when fresh, so a duplicate spawn across a
+ * crash-restart is a near-no-op.
+ *
+ * Singleton + idempotent: checks at most once per process (boot), and the tail
  * refresh / cache writes are idempotent with the daily job (per-row upserts,
  * last writer wins). Never throws - failures are logged.
  */
@@ -25,13 +32,7 @@ import {
   isPriceTailStale,
   isStaleSinceLastClose,
 } from "@/lib/factors/diagnostics/precompute-freshness";
-import {
-  refreshBenchmarksTail,
-  refreshUniverseTail,
-} from "./ingest-universe.service";
-import { precomputeAllMarketMaps } from "./market-map-cache.service";
-
-const TAIL_DAYS = 10;
+import { runJobChild } from "./job-spawner";
 
 let started = false;
 
@@ -44,7 +45,7 @@ let started = false;
  *      can be fresh while the cache still holds an older grid (e.g. the daily
  *      job's market-map step was interrupted), which is exactly the case that
  *      leaves the grid showing the prior session's returns.
- * Recomputes the cache when EITHER is stale; no-ops only when both are fresh.
+ * Spawns the catch-up child when EITHER is stale; no-ops only when both are fresh.
  */
 export async function maybeRunPriceTailCatchUp(): Promise<void> {
   if (started) return;
@@ -59,39 +60,6 @@ export async function maybeRunPriceTailCatchUp(): Promise<void> {
       : null;
     const tapeStale = isPriceTailStale(maxIso);
 
-    if (tapeStale) {
-      console.log(
-        `[price-tail-catchup] tape stale (latest bar ${maxIso ?? "none"}); refreshing price tail...`,
-      );
-      const universes = await prisma.universe.findMany({
-        select: { id: true, name: true },
-        orderBy: { createdAt: "asc" },
-      });
-      if (universes.length === 0) {
-        console.warn("[price-tail-catchup] no universes configured; skipping.");
-        return;
-      }
-      let totalBars = 0;
-      try {
-        const r = await refreshBenchmarksTail(prisma, TAIL_DAYS);
-        totalBars += r.bars;
-      } catch (e) {
-        console.error("[price-tail-catchup] benchmark tail failed:", e);
-      }
-      for (const u of universes) {
-        try {
-          const r = await refreshUniverseTail(prisma, u.id, TAIL_DAYS);
-          totalBars += r.bars;
-        } catch (e) {
-          console.error(`[price-tail-catchup] ${u.name} tail failed:`, e);
-        }
-      }
-      console.log(`[price-tail-catchup] ingested ${totalBars} bars.`);
-    }
-
-    // Cache staleness: the freshest the cache could legitimately be is "since
-    // the last completed close". Use the OLDEST computedAt across all combos so
-    // a single stale row triggers a rebuild.
     const cacheAgg = await prisma.marketMapSnapshot.aggregate({
       _min: { computedAt: true },
     });
@@ -105,13 +73,16 @@ export async function maybeRunPriceTailCatchUp(): Promise<void> {
     }
 
     console.log(
-      `[price-tail-catchup] recomputing market-map cache (tapeStale=${tapeStale}, cacheStale=${cacheStale})...`,
+      `[price-tail-catchup] stale (tapeStale=${tapeStale}, cacheStale=${cacheStale}); spawning catch-up job...`,
     );
-    const mm = await precomputeAllMarketMaps();
-    const ok = mm.entries.filter((e) => e.status === "ok").length;
-    console.log(
-      `[price-tail-catchup] done: ${ok}/${mm.entries.length} market-map grids cached.`,
-    );
+    const r = await runJobChild("price-tail", "job:price-tail", [], {
+      mode: "enqueue",
+    });
+    if (r.ok) {
+      console.log("[price-tail-catchup] catch-up job completed.");
+    } else {
+      console.error(`[price-tail-catchup] catch-up job failed: ${r.error}`);
+    }
   } catch (e) {
     console.error("[price-tail-catchup] catch-up failed:", e);
   }

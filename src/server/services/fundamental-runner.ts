@@ -21,12 +21,10 @@
  * same constraint as the other runners (in-memory gate, not multi-instance).
  */
 import { prisma } from "@/infrastructure/db/client";
-import { fetchEarningsCalendar, type EarningsCalendarEntry } from "@/infrastructure/providers/fmp";
+import type { EarningsCalendarEntry } from "@/infrastructure/providers/fmp";
 import { tradeDateEtFromUnix } from "@/lib/market-map/market-session";
 import { isDailyDue, isWeeklyStale } from "./revision-runner";
-import { runFundamentalWeekly } from "./fundamental/fundamental-weekly-job.service";
-import { scoreFundamentalBoxesWeek } from "./fundamental/fundamental-box-scoring.service";
-import { loadActiveUniverseTickers } from "./revision/reference-ingest.service";
+import { runJobChild } from "./job-spawner";
 
 /** Hourly tick. Daily/weekly work is gated by ET-date/staleness, not the interval. */
 const TICK_INTERVAL_MS = 60 * 60_000;
@@ -132,6 +130,7 @@ async function tick(): Promise<void> {
   if (running) return;
   running = true;
   const today = etToday();
+  const errors: string[] = [];
   try {
     // Weekly: full-universe sweep + re-score when the snapshot store is stale.
     // Attempted at most once per ET day so a transient FMP outage cannot
@@ -140,22 +139,31 @@ async function tick(): Promise<void> {
     if (lastWeeklyRunDate !== today) {
       const latest = await latestSnapshotDate();
       if (isWeeklyStale(latest?.getTime() ?? null, Date.now(), WEEKLY_STALE_DAYS)) {
-        const ingest = await runFundamentalWeekly({ log: (m) => console.log(m) });
-        if (ingest.snapshotsWritten > 0) {
-          await scoreFundamentalBoxesWeek({ snapshotDate: ingest.snapshotDate, log: (m) => console.log(m) });
+        // Child process: job:fundamental with no flags runs the same sweep +
+        // scoring the old in-process path did. Gates advance only on a clean
+        // exit so a failed sweep retries on the next hourly tick.
+        const r = await runJobChild("fundamental-weekly", "job:fundamental", [], {
+          mode: "enqueue",
+        });
+        if (r.ok) {
+          lastWeeklyAt = new Date().toISOString();
+          lastWeeklyRunDate = today;
+          lastDailyRunDate = today; // the sweep re-fetches every ticker
+          lastCoveredDate = today;
+          console.log("[fundamental-runner] weekly sweep child completed.");
+        } else if (!r.skipped) {
+          errors.push(`weekly: ${r.error}`);
+          console.error(`[fundamental-runner] weekly sweep child failed: ${r.error}`);
         }
-        lastWeeklyAt = new Date().toISOString();
-        lastDailyRunDate = today;
-        lastCoveredDate = today;
-        console.log(
-          `[fundamental-runner] weekly sweep: ${ingest.snapshotsWritten} snapshots (${ingest.universeSize} tickers, ${ingest.failures.length} failures)`,
-        );
+      } else {
+        lastWeeklyRunDate = today; // checked today; don't re-query hourly
       }
-      lastWeeklyRunDate = today; // checked (or ran) today; don't re-query hourly
     }
 
-    // Daily: earnings-driven incremental once per ET calendar day. Patches the
-    // latest EXISTING snapshot date so the scored cohort stays full-universe.
+    // Daily: earnings-driven incremental once per ET calendar day, in a child
+    // process (scripts/fundamental-daily.ts patches the latest EXISTING
+    // snapshot date so the scored cohort stays full-universe). Only --since is
+    // passed on the command line; the child derives the ticker list itself.
     if (isDailyDue(lastDailyRunDate, today)) {
       const latest = await latestSnapshotDate();
       if (latest === null) {
@@ -163,35 +171,28 @@ async function tick(): Promise<void> {
         lastDailyRunDate = today;
       } else {
         const since = lastCoveredDate ?? addDaysIso(today, -DAILY_LOOKBACK_DAYS);
-        const [entries, universe] = await Promise.all([
-          fetchEarningsCalendar(since, today),
-          loadActiveUniverseTickers(),
-        ]);
-        const reported = selectReportedTickers(entries, universe, since);
-        let snapshotsWritten = 0;
-        if (reported.length > 0) {
-          const snapshotDate = latest.toISOString().slice(0, 10);
-          const ingest = await runFundamentalWeekly({
-            tickers: reported,
-            snapshotDate,
-            log: (m) => console.log(m),
-          });
-          snapshotsWritten = ingest.snapshotsWritten;
-          if (ingest.snapshotsWritten > 0) {
-            await scoreFundamentalBoxesWeek({ snapshotDate, log: (m) => console.log(m) });
-          }
-        }
-        lastDailyRunDate = today;
-        lastCoveredDate = today;
-        lastDailyAt = new Date().toISOString();
-        lastDailySummary = { reported: reported.length, snapshotsWritten };
-        console.log(
-          `[fundamental-runner] daily incremental: ${reported.length} reported since ${since}, ${snapshotsWritten} snapshots patched`,
+        const r = await runJobChild(
+          "fundamental-daily",
+          "job:fundamental-daily",
+          [`--since=${since}`],
+          { mode: "enqueue" },
         );
+        if (r.ok) {
+          lastDailyRunDate = today;
+          lastCoveredDate = today;
+          lastDailyAt = new Date().toISOString();
+          lastDailySummary = null; // structured summary lives in the child's log
+          console.log(
+            `[fundamental-runner] daily incremental child completed (since ${since}).`,
+          );
+        } else if (!r.skipped) {
+          errors.push(`daily: ${r.error}`);
+          console.error(`[fundamental-runner] daily incremental child failed: ${r.error}`);
+        }
       }
     }
 
-    lastError = null;
+    lastError = errors.length > 0 ? errors.join("; ") : null;
   } catch (e) {
     lastError = e instanceof Error ? e.message : String(e);
     console.error("[fundamental-runner] tick failed:", e);

@@ -19,12 +19,8 @@
  */
 import { prisma } from "@/infrastructure/db/client";
 import { tradeDateEtFromUnix } from "@/lib/market-map/market-session";
-import {
-  runRevisionDailyEvents,
-  type RevisionDailyEventsSummary,
-} from "./revision/revision-daily-events.service";
-import { runRevisionPipeline } from "./revision/revision-weekly-job.service";
-import { runDailyTransitionScan } from "./revision/revision-transitions.service";
+import type { RevisionDailyEventsSummary } from "./revision/revision-daily-events.service";
+import { runJobChild } from "./job-spawner";
 
 /** Hourly tick. Daily/weekly work is gated by ET-date, not by this interval. */
 const TICK_INTERVAL_MS = 60 * 60_000;
@@ -114,45 +110,50 @@ async function tick(): Promise<void> {
   if (running) return;
   running = true;
   const today = etToday();
+  const errors: string[] = [];
   try {
-    // Daily: tail rating / price-target events once per ET calendar day,
-    // then scan for names entering the earnings window (ER_WITHIN_7D).
+    // Daily: tail rating / price-target events + ER-window scan once per ET
+    // calendar day, in a child process (scripts/revision-daily.ts mirrors the
+    // old in-process path). The date gate advances only on a clean exit so a
+    // failed run retries on the next hourly tick.
     if (isDailyDue(lastDailyRunDate, today)) {
-      const summary = await runRevisionDailyEvents({
-        log: (m) => console.log(m),
+      const r = await runJobChild("revision-daily", "job:revision-daily", [], {
+        mode: "enqueue",
       });
-      lastDailyRunDate = today;
-      lastDailyAt = new Date().toISOString();
-      lastDailySummary = summary;
-      console.log(
-        `[revision-runner] daily events: +${summary.ratingEvents} ratings, +${summary.priceTargetEvents} PTs over ${summary.universeSize} tickers (${summary.failures} failed)`,
-      );
-      try {
-        const scan = await runDailyTransitionScan({ log: (m) => console.log(m) });
-        console.log(`[revision-runner] ER scan: ${scan.fired} transitions fired`);
-      } catch (e) {
-        console.error("[revision-runner] ER scan failed:", e);
+      if (r.ok) {
+        lastDailyRunDate = today;
+        lastDailyAt = new Date().toISOString();
+        lastDailySummary = null; // structured summary lives in the child's log
+        console.log("[revision-runner] daily events child completed.");
+      } else if (!r.skipped) {
+        errors.push(`daily: ${r.error}`);
+        console.error(`[revision-runner] daily events child failed: ${r.error}`);
       }
     }
 
     // Weekly: the full pipeline (snapshot -> prices -> Leg-B append -> score ->
-    // validation cache) when the consensus snapshot is stale. Attempted at
-    // most once per ET day so a transient FMP outage cannot hammer hourly.
+    // validation cache) when the consensus snapshot is stale, in a child
+    // process (job:revision with no flags matches runRevisionPipeline
+    // defaults). Attempted at most once per ET day so a transient FMP outage
+    // cannot hammer hourly; the date gate advances only on a clean exit.
     if (lastWeeklyRunDate !== today && (await weeklySnapshotIsStale())) {
-      const pipeline = await runRevisionPipeline({ log: (m) => console.log(m) });
-      lastWeeklyRunDate = today;
-      lastWeeklyAt = new Date().toISOString();
-      console.log(
-        `[revision-runner] weekly pipeline: ${pipeline.ingest.snapshotsWritten} snapshots, ` +
-          `${pipeline.scoring?.scored ?? 0} scored, ${pipeline.scoring?.transitionsWritten ?? 0} transitions` +
-          (pipeline.stepErrors.length ? ` (step errors: ${pipeline.stepErrors.join("; ")})` : ""),
-      );
+      const r = await runJobChild("revision-weekly", "job:revision", [], {
+        mode: "enqueue",
+      });
+      if (r.ok) {
+        lastWeeklyRunDate = today;
+        lastWeeklyAt = new Date().toISOString();
+        console.log("[revision-runner] weekly pipeline child completed.");
+      } else if (!r.skipped) {
+        errors.push(`weekly: ${r.error}`);
+        console.error(`[revision-runner] weekly pipeline child failed: ${r.error}`);
+      }
     } else if (lastWeeklyRunDate !== today) {
       // Not stale yet; record that we checked today so we don't re-query hourly.
       lastWeeklyRunDate = today;
     }
 
-    lastError = null;
+    lastError = errors.length > 0 ? errors.join("; ") : null;
   } catch (e) {
     lastError = e instanceof Error ? e.message : String(e);
     console.error("[revision-runner] tick failed:", e);
