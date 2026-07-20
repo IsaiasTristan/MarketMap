@@ -165,6 +165,7 @@ export function ConfluenceTable({
             <th style={th}>
               <ConfluenceMetricTip id="stackDepth">RANK</ConfluenceMetricTip>
             </th>
+            <th style={th}>COMPANY</th>
             <th style={th}>TICKER</th>
             <th style={th}>
               <ConfluenceMetricTip id="noCoverage">F · R · 13F</ConfluenceMetricTip>
@@ -204,6 +205,18 @@ export function ConfluenceTable({
             return (
               <tr key={r.ticker}>
                 <td style={{ ...td, color: "var(--text-muted)" }}>{r.rank}</td>
+                <td
+                  style={{
+                    ...td,
+                    color: "var(--text-secondary)",
+                    maxWidth: 160,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                  title={r.companyName ?? undefined}
+                >
+                  {r.companyName ?? "—"}
+                </td>
                 <td style={td}>
                   <button
                     type="button"
