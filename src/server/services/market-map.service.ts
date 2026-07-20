@@ -129,6 +129,19 @@ function pickMetric(
   }
 }
 
+/**
+ * Replace the D1 return with an overlay print (AH / live regular) while keeping
+ * the z-score consistent: the pre-window σ scale (zDenom) is unchanged by the
+ * override, so the overlaid move is re-scored against the same denominator.
+ */
+function overrideD1Return(
+  m: ReturnType<typeof securityHorizonMetrics>,
+  value: number,
+): void {
+  m.D1.return = value;
+  m.D1.returnZ = m.D1.zDenom != null && m.D1.zDenom > 0 ? value / m.D1.zDenom : null;
+}
+
 function averageNullable(values: (number | null)[]): number | null {
   const nums = values.filter((v): v is number => v != null && Number.isFinite(v));
   if (nums.length === 0) return null;
@@ -142,6 +155,12 @@ export type MarketMapApiRow = {
   subTheme?: string;
   ticker?: string;
   cells: Record<Horizon, number | null>;
+  /**
+   * Volatility-adjusted ("z-scored") per-horizon returns — return ÷
+   * (own trailing σ_daily × √N). Populated only for metric=RETURN COMPANY
+   * rows (the payload Top Movers consumes); other metrics/levels omit it.
+   */
+  zCells?: Record<Horizon, number | null>;
   /** Last trade-date represented in this row's underlying series (COMPANY only). */
   lastDate?: string | null;
   /**
@@ -514,18 +533,18 @@ export async function computeMarketMap(
       // cell — the row is tagged `d1Source: "REGULAR"` so the grid can dim it
       // and the leaderboard can tell the two apart.
       if (overlayApplied && ahOnly1D != null && Number.isFinite(ahOnly1D)) {
-        metrics.D1.return = ahOnly1D;
+        overrideD1Return(metrics, ahOnly1D);
         d1Source = "AH";
       } else {
         d1Source = "REGULAR";
         d1FallbackToRegular++;
       }
     } else if (ahOnly1D != null && Number.isFinite(ahOnly1D)) {
-      metrics.D1.return = ahOnly1D;
+      overrideD1Return(metrics, ahOnly1D);
     } else if (liveOnly1D != null && Number.isFinite(liveOnly1D)) {
       // Regular-session: anchor 1D to price / prevClose so it stays correct
       // even when the close-to-close chain is missing the prior trading day.
-      metrics.D1.return = liveOnly1D;
+      overrideD1Return(metrics, liveOnly1D);
     }
     companies.push({
       ticker: c.security.ticker,
@@ -577,6 +596,15 @@ export async function computeMarketMap(
     return cells;
   };
 
+  const buildZCells = (m: ReturnType<typeof securityHorizonMetrics>) => {
+    const cells = {} as Record<Horizon, number | null>;
+    for (const h of HORIZON_ORDER) {
+      const z = m[h]?.returnZ;
+      cells[h] = z != null && Number.isFinite(z) ? z : null;
+    }
+    return cells;
+  };
+
   const allNullRows = companies.reduce(
     (n, co) =>
       HORIZON_ORDER.some((h) => pickMetric(co.metrics, h, metric) != null)
@@ -613,6 +641,7 @@ export async function computeMarketMap(
         subTheme: co.subTheme,
         ticker: co.ticker,
         cells: buildCells(co.metrics),
+        ...(metric === "RETURN" ? { zCells: buildZCells(co.metrics) } : {}),
         lastDate: co.lastDate,
         d1Source: co.d1Source,
       })),

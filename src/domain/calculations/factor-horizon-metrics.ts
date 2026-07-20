@@ -31,7 +31,16 @@ export function factorHorizonMetrics(
 ): HorizonMetrics {
   const out = {} as HorizonMetrics;
   for (const h of HORIZON_ORDER) {
-    out[h] = { return: null, excessReturn: null, volatility: null, sharpe: null };
+    // returnZ/zDenom stay null for factors — the z-scored Top Movers section
+    // only ranks stocks, and factor cells never render a sigma value.
+    out[h] = {
+      return: null,
+      excessReturn: null,
+      volatility: null,
+      sharpe: null,
+      returnZ: null,
+      zDenom: null,
+    };
   }
   if (factorDaily.length === 0) return out;
 

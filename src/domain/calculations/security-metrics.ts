@@ -6,8 +6,18 @@ import {
   totalReturnForHorizon,
 } from "./returns";
 import { annualizedRealizedVolatility } from "./volatility";
+import { standardDeviationSample } from "./math";
 import { sharpeRatio } from "./sharpe";
 import { excessReturn } from "./excess";
+
+/**
+ * Z-score denominator estimation window: σ_daily is the sample std of daily
+ * returns strictly BEFORE the horizon window (so the move being scored never
+ * deflates its own denominator), capped to the most recent Z_LOOKBACK obs and
+ * requiring at least Z_MIN_OBS. z(h) = return(h) / (σ_daily × √N).
+ */
+const Z_LOOKBACK = 252;
+const Z_MIN_OBS = 40;
 
 export type HorizonMetrics = Record<
   Horizon,
@@ -16,6 +26,11 @@ export type HorizonMetrics = Record<
     excessReturn: number | null;
     volatility: number | null;
     sharpe: number | null;
+    /** Volatility-adjusted ("sigma move") return: return / zDenom. */
+    returnZ: number | null;
+    /** σ_daily × √N scale, kept so callers overriding `return` (live/AH 1D
+     *  overlays) can re-derive a consistent returnZ. */
+    zDenom: number | null;
   }
 >;
 
@@ -36,6 +51,8 @@ export function securityHorizonMetrics(
         excessReturn: null,
         volatility: null,
         sharpe: null,
+        returnZ: null,
+        zDenom: null,
       };
     }
     return o;
@@ -74,6 +91,16 @@ export function securityHorizonMetrics(
       const window = stockDaily.slice(-td);
       out[h].volatility = annualizedRealizedVolatility(window);
       out[h].sharpe = sharpeRatio(window, riskFreeAnnual);
+    }
+
+    const preWindow = stockDaily.slice(0, -td).slice(-Z_LOOKBACK);
+    if (preWindow.length >= Z_MIN_OBS) {
+      const sigma = standardDeviationSample(preWindow);
+      if (sigma > 0) {
+        const denom = sigma * Math.sqrt(td);
+        out[h].zDenom = denom;
+        if (ret != null) out[h].returnZ = ret / denom;
+      }
     }
   }
 

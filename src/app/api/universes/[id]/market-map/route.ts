@@ -115,6 +115,15 @@ export async function GET(req: Request, ctx: Ctx) {
       // poll (and concurrent viewers) onto one compute.
       refreshing = true;
       void revalidateMarketMap(id, metric, benchmark);
+    } else if (
+      metric === "RETURN" &&
+      cached.rows.length > 0 &&
+      cached.rows[0]!.zCells === undefined
+    ) {
+      // Blob predates the zCells field (z-scored Top Movers). Serve it as-is
+      // and refresh out-of-band so the z section fills on the next poll.
+      refreshing = true;
+      void revalidateMarketMap(id, metric, benchmark);
     }
     rows = cached.rows;
     asOf = cached.asOf;

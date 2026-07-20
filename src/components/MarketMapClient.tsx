@@ -17,6 +17,7 @@ import { FloatingPerStockDetail } from "@/components/analysis/factors/panels/Flo
 import type { PerStockResult } from "@/server/services/factor-per-stock.service";
 import { isExcludedSector } from "@/lib/market-map/excluded-sectors";
 import type { MarketSession } from "@/lib/market-map/market-session";
+import { fetchJson } from "@/lib/api/fetch-json";
 
 type ApiRow = {
   key: string;
@@ -244,12 +245,10 @@ export function MarketMapClient({
     setLoading(true);
     setErr(null);
     try {
-      const res = await fetch(
+      const j = await fetchJson<ApiPayload & { error?: string }>(
         `/api/universes/${universeId}/market-map?${qs}`,
         { cache: "no-store" }
       );
-      const j = (await res.json()) as ApiPayload & { error?: string };
-      if (!res.ok) throw new Error(j.error ?? res.statusText);
       // Drop sectors we explicitly hide from the Performance page (e.g.
       // INDEX & MACRO) at the boundary so every downstream surface — main
       // grid, Top Movers, top-bar telemetry — sees the same filtered universe.
@@ -660,6 +659,18 @@ export function MarketMapClient({
         onSelectTicker={handleSelectTicker}
         selectedTickers={openTickerSet}
         marketScale={ranges.COMPANY}
+      />
+
+      <TopMoversTable
+        mode="zscore"
+        universeId={universeId}
+        reloadToken={reloadToken}
+        // Z-mode always own-fetches the RETURN payload (warm server cache) so
+        // it can read the server-computed zCells — the grid's tree leaves only
+        // carry the raw metric cells.
+        companyLeaves={null}
+        onSelectTicker={handleSelectTicker}
+        selectedTickers={openTickerSet}
       />
 
       <FactorTopMoversTable

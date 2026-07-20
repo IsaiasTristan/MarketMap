@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Horizon } from "@/domain/entities/horizons";
 import { HORIZON_ORDER } from "@/domain/entities/horizons";
 import { heatmapRgb, resolveHeatRange } from "@/domain/calculations/heatmap";
+import { quantileSorted } from "@/domain/calculations/percentile-range";
 import { HORIZON_LABEL, formatMetricValue } from "@/lib/format";
 import { isExcludedSector } from "@/lib/market-map/excluded-sectors";
 import { sectorColor, subThemeColor } from "@/lib/market-map/sector-colors";
@@ -26,9 +27,17 @@ import { sectorColor, subThemeColor } from "@/lib/market-map/sector-colors";
  * Rows are clickable and reuse the same `onSelectTicker` callback used by
  * the main hierarchy grid; clicking opens the factors-tab floating
  * per-stock popup (or closes it if already open).
+ *
+ * `mode="zscore"` renders the same section ranked by the volatility-adjusted
+ * return (the server's `zCells`: return ÷ own trailing σ_daily × √N), so it
+ * surfaces *unusual* moves instead of the perma-volatile names that dominate
+ * the raw list. Z-mode always own-fetches the RETURN payload (warm cache) and
+ * maps `cells` to `zCells`, so all ranking/heat logic below is shared.
  */
 
 const RANK_LIMIT = 20;
+
+type MoversMode = "return" | "zscore";
 
 type CompanyLeaf = {
   ticker: string;
@@ -36,6 +45,8 @@ type CompanyLeaf = {
   sector: string;
   subTheme: string;
   cells: Record<Horizon, number | null>;
+  /** Raw per-horizon returns, kept in z-mode for the value-cell tooltip. */
+  rawCells?: Record<Horizon, number | null>;
   lastDate?: string | null;
 };
 
@@ -46,7 +57,17 @@ type ApiRow = {
   subTheme?: string;
   ticker?: string;
   cells: Record<Horizon, number | null>;
+  zCells?: Record<Horizon, number | null>;
   lastDate?: string | null;
+};
+
+const EMPTY_CELLS: Record<Horizon, number | null> = {
+  D1: null,
+  D5: null,
+  M1: null,
+  M3: null,
+  M6: null,
+  Y1: null,
 };
 
 type ApiPayload = {
@@ -64,13 +85,18 @@ interface TopMoversTableProps {
   universeId: string;
   reloadToken?: number;
   /** Pre-loaded company leaves from the parent grid when the parent's metric
-   * is RETURN. When provided, no extra fetch is issued. */
+   * is RETURN. When provided, no extra fetch is issued. Ignored in z-mode
+   * (grid leaves carry raw returns, not zCells). */
   companyLeaves: CompanyLeaf[] | null;
   onSelectTicker: (ticker: string) => void;
   selectedTickers: Set<string>;
   /** Market map company-level per-horizon range, so movers share the grid's
-   * scale instead of self-scaling against the displayed leaves. */
+   * scale instead of self-scaling against the displayed leaves. Ignored in
+   * z-mode (the grid scale is %-denominated; z uses its own local range). */
   marketScale?: Record<Horizon, { min: number; max: number }>;
+  /** "return" (default) ranks raw trailing returns; "zscore" ranks the
+   * volatility-adjusted returns from the payload's `zCells`. */
+  mode?: MoversMode;
 }
 
 export function TopMoversTable({
@@ -80,13 +106,15 @@ export function TopMoversTable({
   onSelectTicker,
   selectedTickers,
   marketScale,
+  mode = "return",
 }: TopMoversTableProps) {
   const [horizon, setHorizon] = useState<Horizon>("D1");
   const [ownData, setOwnData] = useState<CompanyLeaf[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const needOwnFetch = companyLeaves == null;
+  const isZ = mode === "zscore";
+  const needOwnFetch = isZ || companyLeaves == null;
 
   const load = useCallback(async () => {
     if (!needOwnFetch) return;
@@ -109,7 +137,12 @@ export function TopMoversTable({
           : r.label,
         sector: r.sector ?? "Unknown",
         subTheme: r.subTheme ?? "Unknown",
-        cells: r.cells,
+        // Z-mode ranks the volatility-adjusted cells; the raw returns ride
+        // along for the value-cell tooltip. A pre-feature cached blob has no
+        // zCells yet \u2014 empty cells render the hint until the background
+        // revalidate lands (the route marks such responses `refreshing`).
+        cells: isZ ? (r.zCells ?? EMPTY_CELLS) : r.cells,
+        ...(isZ ? { rawCells: r.cells } : {}),
         lastDate: r.lastDate ?? null,
       }));
       setOwnData(leaves);
@@ -119,14 +152,14 @@ export function TopMoversTable({
     } finally {
       setLoading(false);
     }
-  }, [needOwnFetch, universeId]);
+  }, [needOwnFetch, universeId, isZ]);
 
   useEffect(() => {
     if (needOwnFetch) void load();
     else setOwnData(null);
   }, [needOwnFetch, load, reloadToken]);
 
-  const leaves = companyLeaves ?? ownData ?? [];
+  const leaves = (isZ ? ownData : (companyLeaves ?? ownData)) ?? [];
 
   // Rank desc by the selected horizon's return; null cells go to the bottom
   // of both lists so they never spuriously appear as "best" or "worst".
@@ -141,21 +174,38 @@ export function TopMoversTable({
     const top = sortedDesc.slice(0, RANK_LIMIT);
     const bottom = sortedDesc.slice(-RANK_LIMIT).reverse();
     const vals = withVal.map((c) => c.cells[horizon] as number);
-    const min = vals.length ? Math.min(...vals) : 0;
-    const max = vals.length ? Math.max(...vals) : 0;
+    let min = 0;
+    let max = 0;
+    if (vals.length) {
+      if (isZ) {
+        // Winsorized p5/p95 span (same convention as the server's column
+        // ranges) so a single extreme-σ artifact can't wash out the ramp.
+        const sorted = [...vals].sort((a, b) => a - b);
+        min = quantileSorted(sorted, 0.05);
+        max = quantileSorted(sorted, 0.95);
+      } else {
+        min = Math.min(...vals);
+        max = Math.max(...vals);
+      }
+    }
     return { gainers: top, losers: bottom, range: { min, max } };
-  }, [leaves, horizon]);
+  }, [leaves, horizon, isZ]);
 
   // Prefer the shared market-map company scale for the selected horizon; fall
-  // back to the locally computed leaf range when it is unavailable.
-  const heatRange = resolveHeatRange(marketScale?.[horizon], range);
+  // back to the locally computed leaf range when it is unavailable. Z-mode
+  // always self-scales — the grid scale is in % units, not sigmas.
+  const heatRange = resolveHeatRange(isZ ? undefined : marketScale?.[horizon], range);
 
   return (
     <div style={section}>
       <div style={headerStrip}>
-        <h2 style={sectionTitle}>Top Movers</h2>
+        <h2 style={sectionTitle}>
+          {isZ ? "Top Movers (Z-Scored)" : "Top Movers"}
+        </h2>
         <span style={subtitle}>
-          Top {RANK_LIMIT} gainers and losers by trailing return
+          {isZ
+            ? `Top ${RANK_LIMIT} gainers and losers by z-scored trailing return (move \u00f7 own trailing vol)`
+            : `Top ${RANK_LIMIT} gainers and losers by trailing return`}
           {loading ? " \u00b7 Loading\u2026" : ""}
         </span>
         <div style={horizonToggleRow} role="tablist" aria-label="Horizon">
@@ -190,18 +240,28 @@ export function TopMoversTable({
           rows={gainers}
           horizon={horizon}
           range={heatRange}
+          mode={mode}
           onSelectTicker={onSelectTicker}
           selectedTickers={selectedTickers}
-          emptyHint="No return data available for the selected horizon."
+          emptyHint={
+            isZ
+              ? "No z-score data for the selected horizon (refresh in progress or insufficient history)."
+              : "No return data available for the selected horizon."
+          }
         />
         <MoversList
           title={`Top ${RANK_LIMIT} Losers`}
           rows={losers}
           horizon={horizon}
           range={heatRange}
+          mode={mode}
           onSelectTicker={onSelectTicker}
           selectedTickers={selectedTickers}
-          emptyHint="No return data available for the selected horizon."
+          emptyHint={
+            isZ
+              ? "No z-score data for the selected horizon (refresh in progress or insufficient history)."
+              : "No return data available for the selected horizon."
+          }
         />
       </div>
     </div>
@@ -213,6 +273,7 @@ function MoversList({
   rows,
   horizon,
   range,
+  mode,
   onSelectTicker,
   selectedTickers,
   emptyHint,
@@ -221,10 +282,12 @@ function MoversList({
   rows: CompanyLeaf[];
   horizon: Horizon;
   range: { min: number; max: number };
+  mode: MoversMode;
   onSelectTicker: (ticker: string) => void;
   selectedTickers: Set<string>;
   emptyHint: string;
 }) {
+  const isZ = mode === "zscore";
   return (
     <div style={tableWrap}>
       <table style={tableStyle}>
@@ -287,8 +350,13 @@ function MoversList({
                     background: bg,
                     color: pickTextColor(bg),
                   }}
+                  title={
+                    isZ
+                      ? `${HORIZON_LABEL[horizon]} return: ${formatMetricValue(c.rawCells?.[horizon] ?? null, "RETURN")}`
+                      : undefined
+                  }
                 >
-                  {formatMetricValue(v, "RETURN")}
+                  {formatMetricValue(v, isZ ? "RETURN_Z" : "RETURN")}
                 </td>
               </tr>
             );

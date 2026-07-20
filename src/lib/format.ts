@@ -11,11 +11,14 @@ export const HORIZON_LABEL: Record<Horizon, string> = {
 
 export function formatMetricValue(
   v: number | null,
-  metric: "RETURN" | "EXCESS_RETURN" | "VOLATILITY" | "SHARPE"
+  metric: "RETURN" | "EXCESS_RETURN" | "VOLATILITY" | "SHARPE" | "RETURN_Z"
 ): string {
   if (v == null || !Number.isFinite(v)) return "—";
   if (metric === "VOLATILITY" || metric === "RETURN" || metric === "EXCESS_RETURN") {
     return `${(v * 100).toFixed(2)}%`;
+  }
+  if (metric === "RETURN_Z") {
+    return `${v >= 0 ? "+" : ""}${v.toFixed(2)}σ`;
   }
   return v.toFixed(2);
 }
