@@ -8,6 +8,7 @@ import type { MetricKind, BenchmarkCode } from "@/domain/entities/analytics";
 import { heatmapRgb, resolveHeatRange } from "@/domain/calculations/heatmap";
 import { HORIZON_LABEL, formatMetricValue } from "@/lib/format";
 import { WarningsChip } from "@/components/WarningsChip";
+import { fetchJson } from "@/lib/api/fetch-json";
 
 type ApiRow = {
   key: string;
@@ -68,14 +69,12 @@ export function FactorPerformanceTable({
     setLoading(true);
     setErr(null);
     try {
-      const res = await fetch(`/api/analysis/factors/performance?${qs}`, {
-        cache: "no-store",
-      });
-      const j = (await res.json()) as ApiPayload & { error?: string };
-      if (!res.ok || !j.ok) {
-        throw new Error(
-          typeof j.error === "string" ? j.error : res.statusText,
-        );
+      const j = await fetchJson<ApiPayload & { error?: string }>(
+        `/api/analysis/factors/performance?${qs}`,
+        { cache: "no-store" },
+      );
+      if (!j.ok) {
+        throw new Error(typeof j.error === "string" ? j.error : "Request failed");
       }
       setData(j);
     } catch (e) {
