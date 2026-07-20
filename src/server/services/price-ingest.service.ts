@@ -32,6 +32,12 @@ function calendarDaysBetween(a: Date, b: Date): number {
 const DELIST_MIN_CONSECUTIVE_MISSES = 5;
 const DELIST_MIN_CALENDAR_DAYS = 90;
 
+/** Stored-vs-fetched adjClose disagreement (fractional) beyond which a tail
+ *  refresh escalates to a full-history re-pull. Dividend re-adjustments move
+ *  historical adjCloses by well under 2%; the smallest real split is 3:2
+ *  (±33%), so 10% cleanly separates the two. */
+const SPLIT_RESCALE_TOLERANCE = 0.1;
+
 /**
  * Outcome of a single per-ticker ingest attempt — exposed so the universe
  * loop can build a richer error report.
@@ -225,6 +231,34 @@ export async function ingestSecurityTail(
       reason: result.reason,
       flagged,
     };
+  }
+
+  // Split self-heal: Yahoo retro-adjusts the entire adjclose history when a
+  // split lands, but the tail only rewrites the last ~10 sessions — bars
+  // beyond the window would stay at the pre-split scale forever and blow up
+  // every trailing return (a 1:10 reverse split reads as +900% 1D). If any
+  // overlapping bar disagrees with what we have stored by more than the
+  // dividend-adjustment noise band, escalate to a full-history re-pull.
+  if (result.bars.length > 0) {
+    const stored = await db.priceHistory.findMany({
+      where: {
+        securityId: security.id,
+        tradeDate: { in: result.bars.map((b) => toDateOnly(b.date)) },
+      },
+      select: { tradeDate: true, adjClose: true },
+    });
+    const storedByDate = new Map(
+      stored.map((r) => [r.tradeDate.toISOString().slice(0, 10), Number(r.adjClose)])
+    );
+    const rescaled = result.bars.some((b) => {
+      const prev = storedByDate.get(b.date);
+      if (prev === undefined || prev <= 0 || b.adjClose <= 0) return false;
+      const ratio = b.adjClose / prev;
+      return ratio > 1 + SPLIT_RESCALE_TOLERANCE || ratio < 1 / (1 + SPLIT_RESCALE_TOLERANCE);
+    });
+    if (rescaled) {
+      return ingestSecurityHistory(db, upper);
+    }
   }
 
   for (const b of result.bars) {
