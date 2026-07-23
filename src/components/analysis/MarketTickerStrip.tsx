@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { SessionSeamSparkline } from "@/components/analysis/ui/SessionSeamSparkline";
 import type { MarketStripQuote } from "@/server/services/market-strip.service";
 
@@ -106,13 +106,18 @@ function Chip({ quote, "aria-hidden": ariaHidden }: { quote: MarketStripQuote; "
 export function MarketTickerStrip() {
   const { data } = useQuery<{ quotes: MarketStripQuote[] } | null>({
     queryKey: ["market-strip"],
-    queryFn: async () => {
-      const r = await fetch("/api/market/strip");
+    queryFn: async ({ signal }) => {
+      const r = await fetch("/api/market/strip", {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+      });
       if (!r.ok) return null;
       return (await r.json()) as { quotes: MarketStripQuote[] };
     },
     refetchInterval: 60_000,
     staleTime: 60_000,
+    // Keep the last quotes visible through a transient failure instead of
+    // reverting to "Loading market data…".
+    placeholderData: keepPreviousData,
   });
 
   const quotes = data?.quotes ?? [];

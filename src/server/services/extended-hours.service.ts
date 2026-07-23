@@ -11,6 +11,11 @@ import type { PrismaClient } from "@prisma/client";
 import type { MarketSession } from "@/lib/market-map/market-session";
 import { tradeDateEtFromUnix } from "@/lib/market-map/market-session";
 import { fetchYahooExtendedQuotes } from "@/infrastructure/providers/yahoo-chart-http";
+import {
+  readSnapshotFile,
+  snapshotFileMtimeMs,
+  writeSnapshotFile,
+} from "./live-snapshot-store";
 
 /** Per-ticker extended-hours quote stored in the snapshot. */
 export type ExtendedTickerQuote = {
@@ -47,8 +52,64 @@ if (!globalForExt.__extendedHoursSnapshot) {
   globalForExt.__extendedHoursSnapshot = emptySnapshot();
 }
 
+// ── Out-of-process bridge ──────────────────────────────────────────────────
+// The heavy per-ticker extended-hours sweep runs in the live-sweep daemon
+// (LIVE_SWEEP_DAEMON=1), which writes each result to a shared file. The web
+// process never sweeps; its getter refreshes from that file (mtime-gated) so
+// the snapshot API and every consumer stay unchanged. In the daemon the getter
+// returns its own freshly-swept in-memory snapshot (no read-through).
+
+const IS_DAEMON = process.env.LIVE_SWEEP_DAEMON === "1";
+const EXT_SNAPSHOT_FILE = "extended-hours";
+const FILE_CHECK_INTERVAL_MS = 2_000;
+
+interface SerializedExtended {
+  session: MarketSession | null;
+  asOf: string | null;
+  quotes: Array<[string, ExtendedTickerQuote]>;
+}
+
+let lastFileCheckAt = 0;
+let lastLoadedMtime = 0;
+
+/** Persist the current snapshot for the web process to read (daemon only). */
+function persistExtendedSnapshot(snap: ExtendedSnapshot): void {
+  const payload: SerializedExtended = {
+    session: snap.session,
+    asOf: snap.asOf,
+    quotes: [...snap.quotes.entries()],
+  };
+  writeSnapshotFile(EXT_SNAPSHOT_FILE, payload);
+}
+
+/** Write the snapshot to memory, and — in the daemon — to the shared file. */
+function setExtendedSnapshot(snap: ExtendedSnapshot): void {
+  globalForExt.__extendedHoursSnapshot = snap;
+  if (IS_DAEMON) persistExtendedSnapshot(snap);
+}
+
+/** Web-process read-through: reload globalThis from the file when the daemon
+ *  has written a newer one. Throttled to one stat per FILE_CHECK_INTERVAL_MS;
+ *  parses only when the mtime actually changes (~once per 60s sweep). */
+function maybeReloadExtendedFromFile(): void {
+  const now = Date.now();
+  if (now - lastFileCheckAt < FILE_CHECK_INTERVAL_MS) return;
+  lastFileCheckAt = now;
+  const mtime = snapshotFileMtimeMs(EXT_SNAPSHOT_FILE);
+  if (mtime == null || mtime === lastLoadedMtime) return;
+  const ser = readSnapshotFile<SerializedExtended>(EXT_SNAPSHOT_FILE);
+  if (!ser || !Array.isArray(ser.quotes)) return; // partial/parse miss — keep current
+  lastLoadedMtime = mtime;
+  globalForExt.__extendedHoursSnapshot = {
+    session: ser.session,
+    asOf: ser.asOf,
+    quotes: new Map(ser.quotes),
+  };
+}
+
 /** Read-only accessor — returns the most recent snapshot. */
 export function getExtendedSnapshot(): ExtendedSnapshot {
+  if (!IS_DAEMON) maybeReloadExtendedFromFile();
   const snap = globalForExt.__extendedHoursSnapshot!;
   // Hot-reload / schema migration: prior builds stored `prices` only.
   // Drop the stale shape so the runner's next BACKFILL repopulates quotes.
@@ -61,7 +122,7 @@ export function getExtendedSnapshot(): ExtendedSnapshot {
 
 /** Wipe the cache. Called by the runner when leaving an extended window. */
 export function clearExtendedSnapshot(): void {
-  globalForExt.__extendedHoursSnapshot = emptySnapshot();
+  setExtendedSnapshot(emptySnapshot());
 }
 
 export interface SweepResult {
@@ -91,11 +152,11 @@ export async function sweepExtendedHours(
   const snapshotSession: "PRE" | "POST" = mode === "PRE" ? "PRE" : "POST";
 
   if (tickers.length === 0) {
-    globalForExt.__extendedHoursSnapshot = {
+    setExtendedSnapshot({
       session: snapshotSession,
       asOf: new Date().toISOString(),
       quotes: new Map(),
-    };
+    });
     return { attempted: 0, applied: 0, results: [] };
   }
 
@@ -129,11 +190,11 @@ export async function sweepExtendedHours(
       ? new Date(latestBarUnix * 1000).toISOString()
       : new Date().toISOString();
 
-  globalForExt.__extendedHoursSnapshot = {
+  setExtendedSnapshot({
     session: snapshotSession,
     asOf,
     quotes,
-  };
+  });
 
   return { attempted: tickers.length, applied: quotes.size, results };
 }

@@ -44,13 +44,17 @@ export async function register() {
       );
     }
     try {
-      const { startExtendedHoursRunner } = await import(
-        "@/server/services/extended-hours-runner"
+      // The extended-hours sweep (heavy per-ticker Yahoo fetch every 60s during
+      // PRE/POST) runs in a separate long-lived child so its fetch + JSON parse
+      // never touch the web server's event loop. The web reads its results from
+      // a shared file via getExtendedSnapshot().
+      const { startLiveSweepDaemon } = await import(
+        "@/server/services/live-sweep-daemon-runner"
       );
-      startExtendedHoursRunner();
+      startLiveSweepDaemon();
     } catch (e) {
       console.error(
-        "[instrumentation] failed to start extended-hours runner:",
+        "[instrumentation] failed to start live-sweep daemon:",
         e,
       );
     }

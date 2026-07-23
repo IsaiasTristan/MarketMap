@@ -19,6 +19,7 @@
     "job:daily": "tsx scripts/daily-precompute.ts",
     "job:price-tail": "tsx scripts/price-tail-catchup.ts",
     "job:snapshot-hotset": "tsx scripts/snapshot-refresh-hotset.ts",
+    "job:live-sweep-daemon": "tsx scripts/live-sweep-daemon.ts",
     "job:fundamental-daily": "tsx scripts/fundamental-daily.ts",
     "job:commodities": "tsx scripts/commodities-ingest.ts",
     "job:precompute-grid": "tsx scripts/precompute-per-stock-grid.ts",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { getUsMarketSession } from "@/lib/market-map/market-session";
 import { useAnalysisStore } from "@/store/analysis";
 import { FloatingPerStockDetail } from "@/components/analysis/factors/panels/FloatingPerStockDetail";
@@ -50,9 +50,10 @@ export function OverviewClient() {
 
   const { data, isLoading, error } = useQuery<PnlData>({
     queryKey: ["pnl", activePortfolioId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const r = await fetch(
         `/api/analysis/portfolio/pnl?portfolioId=${activePortfolioId}`,
+        { signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]) },
       );
       if (!r.ok) throw new Error("Failed to load portfolio data");
       const body = await r.json();
@@ -63,6 +64,9 @@ export function OverviewClient() {
     },
     enabled: !!activePortfolioId,
     refetchInterval: 60_000,
+    // Keep the last successful snapshot on screen through a transient refetch
+    // failure instead of wiping to the red error state.
+    placeholderData: keepPreviousData,
   });
 
   const {
@@ -172,7 +176,10 @@ export function OverviewClient() {
     );
   }
 
-  if (error || !data) {
+  // Only hard-fail when we have NOTHING to show. With keepPreviousData a
+  // transient refetch error keeps `data` populated, so we fall through and
+  // render the last known snapshot with a small "stale" banner instead.
+  if (!data) {
     return (
       <div style={{ color: "var(--color-negative)", padding: 24 }}>
         Failed to load portfolio data
@@ -185,6 +192,19 @@ export function OverviewClient() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      {error && (
+        <div
+          style={{
+            fontSize: 11,
+            color: "var(--text-muted)",
+            padding: "4px 8px",
+            border: "1px solid var(--chrome-border)",
+            borderRadius: 4,
+          }}
+        >
+          ⚠ Live data unavailable — showing last known values
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
         <MetricCard
           label="Daily P&L"

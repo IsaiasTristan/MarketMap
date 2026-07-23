@@ -23,6 +23,7 @@
  * monitoring can report which path served each sweep.
  */
 import { toYahooSymbol } from "@/infrastructure/providers/yahoo-chart-http";
+import { yahooFetchRetry } from "./yahoo-fetch";
 
 /** One live quote for a single ticker. */
 export interface BulkQuote {
@@ -161,28 +162,13 @@ async function fetchSparkChunk(
   const symbolParam = encodeURIComponent(symbols.join(","));
   const url = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${symbolParam}&range=1d&interval=1d`;
 
-  let res: Response | undefined;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      res = await fetch(url, {
-        headers: {
-          "User-Agent": "MarketMap/1.0 (+https://localhost)",
-          Accept: "application/json",
-        },
-        signal: AbortSignal.timeout(15_000),
-      });
-    } catch {
-      if (attempt === MAX_ATTEMPTS) return null;
-      await sleep(250 * 2 ** (attempt - 1));
-      continue;
-    }
-    if (res.status === 401 || res.status === 429 || res.status >= 500) {
-      if (attempt === MAX_ATTEMPTS) return null;
-      await sleep(400 * 2 ** (attempt - 1));
-      continue;
-    }
-    break;
-  }
+  // Retry/backoff + shared circuit breaker (the same one the chart client uses,
+  // so background sweeps and user-facing fetches back off together when Yahoo
+  // throttles this IP).
+  const res = await yahooFetchRetry(url, {
+    timeoutMs: 15_000,
+    maxAttempts: MAX_ATTEMPTS,
+  });
   if (!res) return null;
   if (!res.ok) {
     // Non-retryable upstream rejection (e.g. HTTP 400 if Yahoo lowers the

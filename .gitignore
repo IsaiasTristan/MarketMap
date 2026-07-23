@@ -36,5 +36,8 @@ coverage
 logs
 .server.log
 
+# Live-quote snapshots written by the live-sweep daemon (ephemeral IPC)
+.live-snapshots
+
 # TypeScript
 *.tsbuildinfo

@@ -2,7 +2,7 @@
 
 import { BloombergModuleTabs, isModulePathActive } from "@/components/analysis/BloombergModuleTabs";
 import { useAnalysisStore } from "@/store/analysis";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 
@@ -23,10 +23,11 @@ export function TopBar() {
     snapshotDate: string;
   } | null>({
     queryKey: ["pnl-summary", activePortfolioId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       if (!activePortfolioId) return null;
       const r = await fetch(
         `/api/analysis/portfolio/pnl?portfolioId=${activePortfolioId}`,
+        { signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]) },
       );
       if (!r.ok) return null;
       const d = await r.json();
@@ -41,6 +42,7 @@ export function TopBar() {
     },
     enabled: !!activePortfolioId,
     refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
   });
 
   const handleRefresh = async () => {

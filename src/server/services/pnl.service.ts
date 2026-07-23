@@ -5,11 +5,14 @@
  * stored PriceHistory for period P&L calculations.
  */
 
+import { Prisma } from "@prisma/client";
 import { prisma as db } from "@/infrastructure/db/client";
 import {
   fetchYahooQuotesViaChart,
   toYahooSymbol,
 } from "@/infrastructure/providers/yahoo-chart-http";
+import { getUsMarketSession } from "@/lib/market-map/market-session";
+import { getLiveRegularSnapshot } from "./live-regular.service";
 import type { PositionRow } from "./position.service";
 import { computePositionRisk } from "./risk.service";
 
@@ -150,6 +153,175 @@ async function getLastStoredPrices(
   };
 }
 
+// ── Batched PriceHistory reads (avoid the per-position N+1) ────────────────
+// One query per shape across ALL securities, replacing the former
+// getPriceAt/getAdv20d/getLastStoredPrices called once per position inside a
+// sequential loop (5 queries × P positions serialized into P round-trip waves).
+
+/**
+ * Latest stored adjClose at or before each boundary date, for every security.
+ * Returns `date -> (securityId -> adjClose)`. One `DISTINCT ON` query per
+ * distinct date (Postgres returns the first row per securityId, which — ordered
+ * by tradeDate DESC — is the most recent close on or before the cutoff).
+ * Mirrors the single-row `getPriceAt`.
+ */
+async function batchPriceAt(
+  securityIds: string[],
+  dates: string[],
+): Promise<Map<string, Map<string, number>>> {
+  const out = new Map<string, Map<string, number>>();
+  const uniqueDates = [...new Set(dates)];
+  for (const d of uniqueDates) out.set(d, new Map());
+  if (!securityIds.length) return out;
+
+  await Promise.all(
+    uniqueDates.map(async (date) => {
+      const rows = await db.$queryRaw<
+        Array<{ securityId: string; adjClose: number }>
+      >(Prisma.sql`
+        SELECT DISTINCT ON ("securityId") "securityId", "adjClose"::float8 AS "adjClose"
+        FROM "PriceHistory"
+        WHERE "securityId" IN (${Prisma.join(securityIds)})
+          AND "tradeDate" <= ${new Date(date)}
+        ORDER BY "securityId", "tradeDate" DESC
+      `);
+      const m = out.get(date)!;
+      for (const r of rows) m.set(r.securityId, r.adjClose);
+    }),
+  );
+  return out;
+}
+
+/**
+ * 20-day average volume (positive volumes only), for every security. Mirrors
+ * the single-row `getAdv20d`: take the last 20 rows per security, keep the
+ * positive volumes, average them.
+ */
+async function batchAdv20d(
+  securityIds: string[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (!securityIds.length) return out;
+  const rows = await db.$queryRaw<
+    Array<{ securityId: string; adv: number }>
+  >(Prisma.sql`
+    SELECT "securityId", AVG("volume")::float8 AS "adv"
+    FROM (
+      SELECT "securityId", "volume",
+        ROW_NUMBER() OVER (PARTITION BY "securityId" ORDER BY "tradeDate" DESC) AS rn
+      FROM "PriceHistory"
+      WHERE "securityId" IN (${Prisma.join(securityIds)})
+    ) ranked
+    WHERE rn <= 20 AND "volume" > 0
+    GROUP BY "securityId"
+  `);
+  for (const r of rows) out.set(r.securityId, r.adv ?? 0);
+  return out;
+}
+
+/**
+ * Latest two stored closes + latest trade date, for every security. Mirrors the
+ * single-row `getLastStoredPrices`: only securities with ≥2 stored rows appear.
+ */
+async function batchLastStoredPrices(
+  securityIds: string[],
+): Promise<
+  Map<string, { currentPrice: number; prevClose: number; date: string }>
+> {
+  const out = new Map<
+    string,
+    { currentPrice: number; prevClose: number; date: string }
+  >();
+  if (!securityIds.length) return out;
+  const rows = await db.$queryRaw<
+    Array<{ securityId: string; adjClose: number; tradeDate: Date }>
+  >(Prisma.sql`
+    SELECT "securityId", "adjClose"::float8 AS "adjClose", "tradeDate"
+    FROM (
+      SELECT "securityId", "adjClose", "tradeDate",
+        ROW_NUMBER() OVER (PARTITION BY "securityId" ORDER BY "tradeDate" DESC) AS rn
+      FROM "PriceHistory"
+      WHERE "securityId" IN (${Prisma.join(securityIds)})
+    ) ranked
+    WHERE rn <= 2
+    ORDER BY "securityId", rn
+  `);
+  const bySec = new Map<string, Array<{ adjClose: number; tradeDate: Date }>>();
+  for (const r of rows) {
+    if (!bySec.has(r.securityId)) bySec.set(r.securityId, []);
+    bySec.get(r.securityId)!.push({ adjClose: r.adjClose, tradeDate: r.tradeDate });
+  }
+  for (const [secId, arr] of bySec) {
+    if (arr.length < 2) continue;
+    out.set(secId, {
+      currentPrice: arr[0].adjClose,
+      prevClose: arr[1].adjClose,
+      date: arr[0].tradeDate.toISOString().slice(0, 10),
+    });
+  }
+  return out;
+}
+
+// ── Live marks without request-path Yahoo ──────────────────────────────────
+
+/** Current + prior-close mark for one ticker, plus the date it represents. */
+export interface LiveMark {
+  price: number;
+  prevClose: number;
+  /** ET trade date of the snapshot bar; null when freshly fetched (today). */
+  asOfDate: string | null;
+}
+
+/**
+ * Resolve live current/prior-close marks WITHOUT hitting Yahoo on the request
+ * path when avoidable. Prefers the in-process regular-session snapshot (swept
+ * every ~60s by the regular-hours runner, frozen at the 4pm close after hours);
+ * only tickers the snapshot doesn't cover (off-universe holdings) fall through
+ * to a bounded, never-throwing live fetch. A Yahoo throttle therefore degrades
+ * to the caller's stored-price fallback instead of stalling or failing the
+ * route. Returns a Map keyed by PLAIN ticker.
+ */
+export async function resolveLiveMarks(
+  tickers: string[],
+): Promise<Map<string, LiveMark>> {
+  const unique = [...new Set(tickers)];
+  const marks = new Map<string, LiveMark>();
+  if (!unique.length) return marks;
+
+  const snap = getLiveRegularSnapshot();
+  for (const t of unique) {
+    const q = snap.quotes.get(t);
+    if (q && q.price > 0 && q.prevClose > 0) {
+      marks.set(t, { price: q.price, prevClose: q.prevClose, asOfDate: q.tradeDateEt });
+    }
+  }
+
+  // Only reach for live Yahoo during the REGULAR session — and even then only
+  // for the residual (off-universe holdings the snapshot doesn't sweep). Off
+  // hours (PRE/POST/CLOSED/weekend) the correct current mark IS the last
+  // regular close, which the caller reads from stored PriceHistory; skipping
+  // the fetch keeps a cold off-hours boot (empty snapshot) instant and matches
+  // the prior behavior (the old per-request fetch returned the frozen regular
+  // close off-hours anyway).
+  const residual = unique.filter((t) => !marks.has(t));
+  if (residual.length > 0 && getUsMarketSession(new Date()) === "REGULAR") {
+    try {
+      const symToTicker = new Map(residual.map((t) => [toYahooSymbol(t), t]));
+      const fetched = await fetchYahooQuotesViaChart(residual);
+      for (const [sym, q] of fetched) {
+        const t = symToTicker.get(sym);
+        if (t && q.price > 0 && q.prevClose > 0) {
+          marks.set(t, { price: q.price, prevClose: q.prevClose, asOfDate: null });
+        }
+      }
+    } catch {
+      // Yahoo throttled/unavailable — residual tickers fall back to stored prices.
+    }
+  }
+
+  return marks;
+}
+
 // ── Main entry points ──────────────────────────────────────────────────────
 
 export async function getPortfolioPnl(
@@ -172,14 +344,12 @@ export async function getPortfolioPnl(
     return { summary: zero, positionsWithPnl: [] };
   }
 
-  // On weekends markets are closed — use stored prices rather than live Yahoo quotes.
-  // Weekdays use the v8 chart endpoint (v7 /quote returns 401 without a session crumb).
-  const weekend = isWeekend();
   const equityTickers = positions.filter((p) => !p.isCash).map((p) => p.ticker);
   const tickers = [...new Set(equityTickers)];
-  const quotes = weekend
-    ? new Map<string, { price: number; prevClose: number }>()
-    : await fetchYahooQuotesViaChart(tickers);
+
+  // Live marks come from the in-process regular-session snapshot (no live Yahoo
+  // on the request path); off-snapshot residuals fall back to stored prices.
+  const marks = await resolveLiveMarks(tickers);
 
   // Look up security IDs for DB queries
   const securities = await db.security.findMany({
@@ -204,6 +374,15 @@ export async function getPortfolioPnl(
   const qtdStart = boundaryIso("QTD");
   const ytdStart = boundaryIso("YTD");
 
+  // Batched PriceHistory reads — one query per shape across ALL securities,
+  // replacing the former per-position N+1 (5 queries × P positions).
+  const secIds = securities.map((s) => s.id);
+  const [boundaryByDate, advBySecId, storedBySecId] = await Promise.all([
+    batchPriceAt(secIds, [mtdStart, qtdStart, ytdStart]),
+    batchAdv20d(secIds),
+    batchLastStoredPrices(secIds),
+  ]);
+
   // totalValue is GROSS (sums |shares × price|) — used as the dollar base
   // for weights and as the headline "capital deployed" tile.
   // netValue is signed (longs − shorts) — the mark-to-market NAV.
@@ -215,7 +394,9 @@ export async function getPortfolioPnl(
   let netMtdStart = 0;
   let netQtdStart = 0;
   let netYtdStart = 0;
-  let snapshotDate = todayIso();
+  // Freshest ET trade date among the marks actually used — dates the summary
+  // (today during a live weekday session, Friday's close over a weekend).
+  let latestMarkDate = "";
 
   const positionsWithPnl: PositionWithPnl[] = [];
 
@@ -250,36 +431,32 @@ export async function getPortfolioPnl(
     const sec = secMap.get(pos.ticker);
     const secId = sec?.id;
 
-    // Period start prices + ADV + stored-price fallback (weekends + missing live quotes)
-    const [mtdPrice, qtdPrice, ytdPrice, adv, storedPrices] = await Promise.all([
-      secId ? getPriceAt(secId, mtdStart) : null,
-      secId ? getPriceAt(secId, qtdStart) : null,
-      secId ? getPriceAt(secId, ytdStart) : null,
-      secId ? getAdv20d(secId) : Promise.resolve(0),
-      secId ? getLastStoredPrices(secId) : Promise.resolve(null),
-    ]);
+    // Period start prices + ADV + stored-price fallback, read from the batched
+    // maps above (no per-position DB round-trips).
+    const mtdPrice = secId ? boundaryByDate.get(mtdStart)?.get(secId) ?? null : null;
+    const qtdPrice = secId ? boundaryByDate.get(qtdStart)?.get(secId) ?? null : null;
+    const ytdPrice = secId ? boundaryByDate.get(ytdStart)?.get(secId) ?? null : null;
+    const adv = secId ? advBySecId.get(secId) ?? 0 : 0;
+    const storedPrices = secId ? storedBySecId.get(secId) ?? null : null;
 
     let currentPrice: number;
     let prevClose: number;
+    let markDate: string | null = null;
 
-    if (weekend && storedPrices) {
+    const mark = marks.get(pos.ticker);
+    if (mark) {
+      currentPrice = mark.price;
+      prevClose = mark.prevClose;
+      markDate = mark.asOfDate; // snapshot bar's ET date, or null when freshly fetched
+    } else if (storedPrices) {
       currentPrice = storedPrices.currentPrice;
       prevClose = storedPrices.prevClose;
-      snapshotDate = storedPrices.date; // last market close date (e.g. Friday)
+      markDate = storedPrices.date; // last market close date (e.g. Friday)
     } else {
-      const quote = quotes.get(toYahooSymbol(pos.ticker));
-      if (quote) {
-        currentPrice = quote.price;
-        prevClose = quote.prevClose;
-      } else if (storedPrices) {
-        currentPrice = storedPrices.currentPrice;
-        prevClose = storedPrices.prevClose;
-        snapshotDate = storedPrices.date;
-      } else {
-        currentPrice = 0;
-        prevClose = 0;
-      }
+      currentPrice = 0;
+      prevClose = 0;
     }
+    if (markDate && markDate > latestMarkDate) latestMarkDate = markDate;
 
     // Direction sign: short positions invert P&L (gain when price drops).
     const sign = pos.isShort ? -1 : 1;
@@ -329,6 +506,10 @@ export async function getPortfolioPnl(
   const mtdPnl = netValue - netMtdStart;
   const qtdPnl = netValue - netQtdStart;
   const ytdPnl = netValue - netYtdStart;
+
+  // Date the summary by the freshest mark used (today intraday / Friday on a
+  // weekend); todayIso when a portfolio has no priced positions.
+  const snapshotDate = latestMarkDate || todayIso();
 
   // P&L percentages anchor to gross capital (totalValue) — for a market-
   // neutral book net values can be ~0, so anchoring to net would blow up.
@@ -593,8 +774,8 @@ export async function getReturnRiskAllocation(
   const weekend = isWeekend();
   const equityPositions = positions.filter((p) => !p.isCash && p.securityId);
   const tickers = equityPositions.map((p) => p.security!.ticker);
-  const quotes =
-    horizon === "1D" && !weekend ? await fetchYahooQuotesViaChart(tickers) : null;
+  const marks =
+    horizon === "1D" && !weekend ? await resolveLiveMarks(tickers) : null;
 
   // Single risk pass per request — sqrt-time scaling below derives every
   // horizon's VaR from the 1-day baseline without re-fitting volatility.
@@ -648,7 +829,7 @@ export async function getReturnRiskAllocation(
           startPrice = stored.prevClose;
         }
       } else {
-        const q = quotes?.get(toYahooSymbol(ticker));
+        const q = marks?.get(ticker);
         if (q) {
           currentPrice = q.price;
           startPrice = q.prevClose;

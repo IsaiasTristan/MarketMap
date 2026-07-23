@@ -9,6 +9,7 @@ import {
   type TodaySessionPoint,
 } from "@/lib/holdings/intraday-split";
 import { classifyEtTimeOfDay, tradeDateEtFromUnix } from "@/lib/market-map/market-session";
+import { yahooFetchRetry } from "./yahoo-fetch";
 
 function toYahooDate(unix: number): string {
   return new Date(unix * 1000).toISOString().slice(0, 10);
@@ -118,38 +119,10 @@ export async function fetchYahooChartDailyResult(
   const sym = encodeURIComponent(toYahooSymbol(ticker));
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?period1=${p1}&period2=${p2}&interval=1d`;
 
-  const MAX_ATTEMPTS = 4;
-  let lastReason = "";
-  let res: Response | undefined;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      res = await fetch(url, {
-        headers: {
-          "User-Agent": "MarketMap/1.0 (+https://localhost)",
-          Accept: "application/json",
-        },
-      });
-    } catch (e) {
-      lastReason = e instanceof Error ? e.message : String(e);
-      if (attempt === MAX_ATTEMPTS) {
-        return { kind: "throttled", reason: lastReason, bars: [] };
-      }
-      await sleep(250 * 2 ** (attempt - 1));
-      continue;
-    }
-    // 401 here is Yahoo's throttle response, not a real auth failure.
-    if (res.status === 401 || res.status === 429 || res.status >= 500) {
-      lastReason = `HTTP ${res.status}`;
-      if (attempt === MAX_ATTEMPTS) {
-        return { kind: "throttled", reason: lastReason, bars: [] };
-      }
-      await sleep(400 * 2 ** (attempt - 1));
-      continue;
-    }
-    break;
-  }
+  // Retry/backoff + shared circuit breaker (skips Yahoo entirely while OPEN).
+  const res = await yahooFetchRetry(url, { timeoutMs: 15_000, maxAttempts: 4 });
   if (!res) {
-    return { kind: "throttled", reason: lastReason || "no response", bars: [] };
+    return { kind: "throttled", reason: "throttled or timed out", bars: [] };
   }
   // 404: Yahoo doesn't recognize the symbol — that's a hard delist signal.
   if (res.status === 404) {
@@ -254,37 +227,9 @@ export async function fetchYahooIntraday(
   const includePrePost = options.includePrePost ? "true" : "false";
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=${range}&interval=${interval}&includePrePost=${includePrePost}`;
 
-  const MAX_ATTEMPTS = 4;
-  let lastReason = "";
-  let res: Response | undefined;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      res = await fetch(url, {
-        headers: {
-          "User-Agent": "MarketMap/1.0 (+https://localhost)",
-          Accept: "application/json",
-        },
-      });
-    } catch (e) {
-      lastReason = e instanceof Error ? e.message : String(e);
-      if (attempt === MAX_ATTEMPTS) {
-        return { kind: "throttled", reason: lastReason, points: [], previousClose: null };
-      }
-      await sleep(250 * 2 ** (attempt - 1));
-      continue;
-    }
-    if (res.status === 401 || res.status === 429 || res.status >= 500) {
-      lastReason = `HTTP ${res.status}`;
-      if (attempt === MAX_ATTEMPTS) {
-        return { kind: "throttled", reason: lastReason, points: [], previousClose: null };
-      }
-      await sleep(400 * 2 ** (attempt - 1));
-      continue;
-    }
-    break;
-  }
+  const res = await yahooFetchRetry(url, { timeoutMs: 15_000, maxAttempts: 4 });
   if (!res) {
-    return { kind: "throttled", reason: lastReason || "no response", points: [], previousClose: null };
+    return { kind: "throttled", reason: "throttled or timed out", points: [], previousClose: null };
   }
   if (res.status === 404) {
     return { kind: "delisted", reason: "HTTP 404", points: [], previousClose: null };
@@ -518,29 +463,7 @@ async function fetchQuoteChartResult(
   const includePrePost = options.includePrePost ? "true" : "false";
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=${range}&interval=5m&includePrePost=${includePrePost}`;
 
-  const MAX_ATTEMPTS = 3;
-  let res: Response | undefined;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      res = await fetch(url, {
-        headers: {
-          "User-Agent": "MarketMap/1.0 (+https://localhost)",
-          Accept: "application/json",
-        },
-        signal: AbortSignal.timeout(10_000),
-      });
-    } catch {
-      if (attempt === MAX_ATTEMPTS) return null;
-      await sleep(250 * 2 ** (attempt - 1));
-      continue;
-    }
-    if (res.status === 401 || res.status === 429 || res.status >= 500) {
-      if (attempt === MAX_ATTEMPTS) return null;
-      await sleep(400 * 2 ** (attempt - 1));
-      continue;
-    }
-    break;
-  }
+  const res = await yahooFetchRetry(url, { timeoutMs: 10_000, maxAttempts: 3 });
   if (!res || !res.ok) return null;
 
   const json = (await res.json()) as {
@@ -962,29 +885,7 @@ export async function fetchYahooExtendedQuote(
   // widens the search window for backfill (see JSDoc above).
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?range=${range}&interval=5m&includePrePost=true`;
 
-  const MAX_ATTEMPTS = 3;
-  let res: Response | undefined;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      res = await fetch(url, {
-        headers: {
-          "User-Agent": "MarketMap/1.0 (+https://localhost)",
-          Accept: "application/json",
-        },
-        signal: AbortSignal.timeout(10_000),
-      });
-    } catch {
-      if (attempt === MAX_ATTEMPTS) return null;
-      await sleep(250 * 2 ** (attempt - 1));
-      continue;
-    }
-    if (res.status === 401 || res.status === 429 || res.status >= 500) {
-      if (attempt === MAX_ATTEMPTS) return null;
-      await sleep(400 * 2 ** (attempt - 1));
-      continue;
-    }
-    break;
-  }
+  const res = await yahooFetchRetry(url, { timeoutMs: 10_000, maxAttempts: 3 });
   if (!res || !res.ok) return null;
 
   let json: { chart?: { result?: ExtendedChartResult[] } };

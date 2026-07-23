@@ -19,6 +19,7 @@ import {
   fetchYahooQuotesWithSparkline,
   toYahooSymbol,
 } from "@/infrastructure/providers/yahoo-chart-http";
+import { getUsMarketSession } from "@/lib/market-map/market-session";
 import type { SparklineTimeMode } from "@/lib/market/sparkline-session-layout";
 
 export type StripInstrumentKind = "price" | "yield";
@@ -135,4 +136,100 @@ export async function getMarketStrip(): Promise<MarketStripQuote[]> {
       timeMode: inst.timeMode,
     };
   });
+}
+
+// ── Server-side stale-while-revalidate cache ───────────────────────────────
+//
+// The strip's 12 macro instruments are NOT part of the universe sweep, so they
+// have no background snapshot to read from. Instead of fetching live Yahoo on
+// every request (which stalls the strip for minutes when Yahoo throttles the
+// prod IP), wrap `getMarketStrip()` in a shared cache that:
+//   • returns the cached value immediately — even when stale — so a request
+//     never blocks on live Yahoo after the first successful fill;
+//   • refreshes in the background under a single-flight guard (concurrent
+//     requests share one in-flight fetch);
+//   • serves the LAST GOOD value on a throttle/empty response, so the strip
+//     never reverts to "Loading market data…" once populated.
+// globalThis-singleton so Next.js dev's separate route bundles share one cache
+// (same pattern as the Prisma client / the factor-top-movers cache).
+
+const STRIP_TTL_REGULAR_MS = 30_000;
+const STRIP_TTL_OFFHOURS_MS = 5 * 60_000;
+/** Floor between refresh attempts so a fast-failing fetch can't hot-loop. */
+const STRIP_REFRESH_MIN_GAP_MS = 5_000;
+
+interface StripCacheState {
+  entry: { at: number; quotes: MarketStripQuote[] } | null;
+  inflight: Promise<void> | null;
+  lastTryAt: number;
+}
+
+const globalForStrip = globalThis as unknown as {
+  __marketStripCache?: StripCacheState;
+};
+const stripCache: StripCacheState =
+  globalForStrip.__marketStripCache ?? {
+    entry: null,
+    inflight: null,
+    lastTryAt: 0,
+  };
+if (process.env.NODE_ENV !== "production") {
+  globalForStrip.__marketStripCache = stripCache;
+}
+
+/** Reset the strip cache. Test-only hook. */
+export function _resetMarketStripCache(): void {
+  stripCache.entry = null;
+  stripCache.inflight = null;
+  stripCache.lastTryAt = 0;
+}
+
+function startStripRefresh(): Promise<void> {
+  if (stripCache.inflight) return stripCache.inflight;
+  stripCache.lastTryAt = Date.now();
+  const run = (async () => {
+    try {
+      const quotes = await getMarketStrip();
+      // Only overwrite on a usable response — a throttled fetch that yields all
+      // null prices must not clobber the last good values (serve-stale).
+      if (quotes.some((q) => q.price != null)) {
+        stripCache.entry = { at: Date.now(), quotes };
+      }
+    } catch {
+      // Keep the last good value; the next poll retries.
+    } finally {
+      stripCache.inflight = null;
+    }
+  })();
+  stripCache.inflight = run;
+  return run;
+}
+
+/**
+ * Stale-while-revalidate accessor used by the `/api/market/strip` route.
+ * Never blocks on live Yahoo once the cache has been filled once.
+ */
+export async function getMarketStripCached(): Promise<MarketStripQuote[]> {
+  const now = Date.now();
+  const ttl =
+    getUsMarketSession(new Date()) === "REGULAR"
+      ? STRIP_TTL_REGULAR_MS
+      : STRIP_TTL_OFFHOURS_MS;
+  const { entry } = stripCache;
+  const fresh = entry && now - entry.at < ttl;
+
+  if (fresh) return entry!.quotes;
+
+  // Stale or cold — kick off a background refresh (throttled + single-flight).
+  const shouldTry =
+    !stripCache.inflight && now - stripCache.lastTryAt >= STRIP_REFRESH_MIN_GAP_MS;
+  const refresh = shouldTry ? startStripRefresh() : stripCache.inflight;
+
+  // Have a (stale) value → serve it immediately without waiting on the refresh.
+  if (entry) return entry.quotes;
+
+  // Cold cache: wait on the in-flight fetch so the very first load returns data
+  // rather than an empty strip. Bounded by getMarketStrip's own request timeouts.
+  if (refresh) await refresh;
+  return stripCache.entry?.quotes ?? [];
 }
