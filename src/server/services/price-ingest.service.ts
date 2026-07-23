@@ -233,44 +233,72 @@ export async function ingestSecurityTail(
     };
   }
 
-  // Split self-heal: Yahoo retro-adjusts the entire adjclose history when a
-  // split lands, but the tail only rewrites the last ~10 sessions — bars
-  // beyond the window would stay at the pre-split scale forever and blow up
-  // every trailing return (a 1:10 reverse split reads as +900% 1D). If any
-  // overlapping bar disagrees with what we have stored by more than the
-  // dividend-adjustment noise band, escalate to a full-history re-pull.
-  if (result.bars.length > 0) {
-    const stored = await db.priceHistory.findMany({
-      where: {
-        securityId: security.id,
-        tradeDate: { in: result.bars.map((b) => toDateOnly(b.date)) },
-      },
-      select: { tradeDate: true, adjClose: true },
-    });
-    const storedByDate = new Map(
-      stored.map((r) => [r.tradeDate.toISOString().slice(0, 10), Number(r.adjClose)])
-    );
-    const rescaled = result.bars.some((b) => {
-      const prev = storedByDate.get(b.date);
-      if (prev === undefined || prev <= 0 || b.adjClose <= 0) return false;
-      const ratio = b.adjClose / prev;
-      return ratio > 1 + SPLIT_RESCALE_TOLERANCE || ratio < 1 / (1 + SPLIT_RESCALE_TOLERANCE);
-    });
-    if (rescaled) {
-      return ingestSecurityHistory(db, upper);
-    }
+  // Split self-heal (see upsertTailBars): a rescaled tail means a split landed;
+  // escalate to a full-history re-pull rather than upsert a rescaled tail onto
+  // an unscaled history.
+  const { rescaled } = await upsertTailBars(db, security.id, result.bars);
+  if (rescaled) {
+    return ingestSecurityHistory(db, upper);
   }
 
-  for (const b of result.bars) {
+  return { kind: "ok", securityId: security.id, bars: result.bars.length };
+}
+
+/** A daily bar to persist — the shared shape for both the Yahoo per-symbol and
+ *  FMP bulk tail paths. */
+export interface TailBar {
+  date: string;
+  adjClose: number;
+  close?: number | null;
+}
+
+/**
+ * Upsert tail bars into PriceHistory for one security, with split self-heal.
+ *
+ * Yahoo/FMP retro-adjust the entire adjclose history when a split lands, but a
+ * tail refresh only rewrites the last ~10 sessions — bars beyond the window
+ * would stay at the pre-split scale forever and blow up every trailing return
+ * (a 1:10 reverse split reads as +900% 1D). When any overlapping bar disagrees
+ * with what we have stored by more than the dividend-adjustment noise band, we
+ * do NOT upsert; we return `{ rescaled: true }` so the caller escalates to a
+ * full-history re-pull. Otherwise we upsert every bar and reset the
+ * delist-miss counters (a successful pull is proof the symbol is alive).
+ *
+ * Shared by `ingestSecurityTail` (Yahoo per-symbol) and the FMP bulk-EOD tail
+ * so the two sources persist bars identically.
+ */
+export async function upsertTailBars(
+  db: PrismaClient,
+  securityId: string,
+  bars: TailBar[],
+): Promise<{ upserted: number; rescaled: boolean }> {
+  if (bars.length === 0) return { upserted: 0, rescaled: false };
+
+  const stored = await db.priceHistory.findMany({
+    where: {
+      securityId,
+      tradeDate: { in: bars.map((b) => toDateOnly(b.date)) },
+    },
+    select: { tradeDate: true, adjClose: true },
+  });
+  const storedByDate = new Map(
+    stored.map((r) => [r.tradeDate.toISOString().slice(0, 10), Number(r.adjClose)])
+  );
+  const rescaled = bars.some((b) => {
+    const prev = storedByDate.get(b.date);
+    if (prev === undefined || prev <= 0 || b.adjClose <= 0) return false;
+    const ratio = b.adjClose / prev;
+    return ratio > 1 + SPLIT_RESCALE_TOLERANCE || ratio < 1 / (1 + SPLIT_RESCALE_TOLERANCE);
+  });
+  if (rescaled) return { upserted: 0, rescaled: true };
+
+  for (const b of bars) {
     await db.priceHistory.upsert({
       where: {
-        securityId_tradeDate: {
-          securityId: security.id,
-          tradeDate: toDateOnly(b.date),
-        },
+        securityId_tradeDate: { securityId, tradeDate: toDateOnly(b.date) },
       },
       create: {
-        securityId: security.id,
+        securityId,
         tradeDate: toDateOnly(b.date),
         adjClose: new Decimal(b.adjClose),
         close: b.close != null ? new Decimal(b.close) : null,
@@ -282,12 +310,8 @@ export async function ingestSecurityTail(
       },
     });
   }
-
-  if (result.bars.length > 0) {
-    await clearDelistMisses(db, security.id);
-  }
-
-  return { kind: "ok", securityId: security.id, bars: result.bars.length };
+  await clearDelistMisses(db, securityId);
+  return { upserted: bars.length, rescaled: false };
 }
 
 export async function ingestBenchmarkHistory(

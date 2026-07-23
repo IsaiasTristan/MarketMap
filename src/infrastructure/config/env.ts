@@ -14,6 +14,22 @@ export function marketDataProviderId(): string {
   return process.env.MARKET_DATA_PROVIDER ?? "yahoo";
 }
 
+/**
+ * Source for the persisted daily EOD tape (`PriceHistory`).
+ *   - "fmp"   (default): FMP's licensed, adjusted bulk-EOD endpoint fills the
+ *     universe in a handful of calls; Yahoo per-symbol reconciles the residual
+ *     (indices / foreign / OTC names FMP's bulk file omits).
+ *   - "yahoo": legacy per-symbol Yahoo chart path (kept as a fallback and for
+ *     environments without an FMP key).
+ * The intraday live-overlay sweep always uses Yahoo spark regardless — this
+ * only selects the EOD-tape source.
+ */
+export function priceEodSource(): "fmp" | "yahoo" {
+  return process.env.PRICE_EOD_SOURCE?.trim().toLowerCase() === "yahoo"
+    ? "yahoo"
+    : "fmp";
+}
+
 // ─── FMP (Financial Modeling Prep) — Engine 1 revision detector ────────────
 
 /** FMP API key. Empty string when unset (callers should fail loudly). */

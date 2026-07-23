@@ -8,16 +8,22 @@
  */
 import { NextResponse } from "next/server";
 import { prisma } from "@/infrastructure/db/client";
-import { getPrecomputeFreshness } from "@/lib/factors/diagnostics/precompute-freshness";
+import {
+  getPrecomputeFreshness,
+  getPriceTapeFreshness,
+} from "@/lib/factors/diagnostics/precompute-freshness";
 import { getRunnerState } from "@/server/services/precompute-runner";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const freshness = await getPrecomputeFreshness(prisma);
+    const [freshness, priceTape] = await Promise.all([
+      getPrecomputeFreshness(prisma),
+      getPriceTapeFreshness(prisma),
+    ]);
     const runner = getRunnerState();
-    return NextResponse.json({ freshness, runner });
+    return NextResponse.json({ freshness, priceTape, runner });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : String(e) },

@@ -24,6 +24,17 @@ import {
 } from "../src/server/services/ingest-universe.service";
 import { precomputeAllMarketMaps } from "../src/server/services/market-map-cache.service";
 
+// Load .env for standalone tsx runs (Next.js loads it for the app; CLI scripts
+// don't). Required so refreshUniverseTail sees FMP_API_KEY and uses the bulk
+// EOD path instead of silently falling back to the per-symbol Yahoo path.
+if (!process.env.FMP_API_KEY) {
+  try {
+    (process as unknown as { loadEnvFile: (p?: string) => void }).loadEnvFile(".env");
+  } catch {
+    /* .env optional */
+  }
+}
+
 const TAIL_DAYS = 10;
 
 async function main() {
@@ -45,20 +56,50 @@ async function main() {
       console.warn("[price-tail-catchup] no universes configured; skipping.");
       return;
     }
-    let totalBars = 0;
-    try {
-      const r = await refreshBenchmarksTail(prisma, TAIL_DAYS);
-      totalBars += r.bars;
-    } catch (e) {
-      console.error("[price-tail-catchup] benchmark tail failed:", e);
-    }
-    for (const u of universes) {
+
+    const runTail = async (): Promise<{ bars: number; failed: number }> => {
+      let bars = 0;
+      let failed = 0;
       try {
-        const r = await refreshUniverseTail(prisma, u.id, TAIL_DAYS);
-        totalBars += r.bars;
+        const r = await refreshBenchmarksTail(prisma, TAIL_DAYS);
+        bars += r.bars;
+        failed += r.failed.length;
       } catch (e) {
-        console.error(`[price-tail-catchup] ${u.name} tail failed:`, e);
+        console.error("[price-tail-catchup] benchmark tail failed:", e);
       }
+      for (const u of universes) {
+        try {
+          const r = await refreshUniverseTail(prisma, u.id, TAIL_DAYS);
+          bars += r.bars;
+          failed += r.failed.length;
+        } catch (e) {
+          console.error(`[price-tail-catchup] ${u.name} tail failed:`, e);
+        }
+      }
+      return { bars, failed };
+    };
+
+    // Bounded same-day retry. With the FMP bulk path, ~99% of the universe is
+    // filled in a handful of calls, so a LARGE residual signals a systemic
+    // problem (FMP bulk unavailable -> Yahoo per-symbol fallback getting
+    // throttled), not the handful of permanently-absent names (indices /
+    // delisted). Retry once after a cooldown so a transient outage self-heals
+    // within the run instead of leaving half the tape stale until tomorrow.
+    const SYSTEMIC_FAILURE_THRESHOLD = 100;
+    const RETRY_COOLDOWN_MS = 60_000;
+    const MAX_PASSES = 2;
+    let totalBars = 0;
+    for (let pass = 1; pass <= MAX_PASSES; pass++) {
+      const { bars, failed } = await runTail();
+      totalBars += bars;
+      console.log(
+        `[price-tail-catchup] pass ${pass}/${MAX_PASSES}: ${bars} bars, ${failed} failures.`,
+      );
+      if (failed < SYSTEMIC_FAILURE_THRESHOLD || pass === MAX_PASSES) break;
+      console.warn(
+        `[price-tail-catchup] ${failed} failures (>= ${SYSTEMIC_FAILURE_THRESHOLD}); retrying after ${RETRY_COOLDOWN_MS / 1000}s cooldown...`,
+      );
+      await new Promise((r) => setTimeout(r, RETRY_COOLDOWN_MS));
     }
     console.log(`[price-tail-catchup] ingested ${totalBars} bars.`);
   }

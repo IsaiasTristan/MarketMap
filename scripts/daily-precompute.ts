@@ -25,6 +25,17 @@
 import { prisma } from "../src/infrastructure/db/client";
 import { runDailyPrecompute } from "../src/server/services/factor-daily-precompute.service";
 
+// Load .env for standalone tsx runs (Next.js loads it for the app; CLI scripts
+// don't). Required so the price-tail step sees FMP_API_KEY and uses the bulk
+// EOD path instead of silently falling back to the per-symbol Yahoo path.
+if (!process.env.FMP_API_KEY) {
+  try {
+    (process as unknown as { loadEnvFile: (p?: string) => void }).loadEnvFile(".env");
+  } catch {
+    /* .env optional */
+  }
+}
+
 async function main() {
   const tailDays = Math.max(1, Number(process.argv[2] ?? "") || 10);
   const summary = await runDailyPrecompute({

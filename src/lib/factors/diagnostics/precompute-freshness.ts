@@ -105,6 +105,54 @@ export function isStaleSinceLastClose(
   return computedAt < lastTradingClose(now);
 }
 
+/** Health of the persisted daily price tape relative to the last close. */
+export interface PriceTapeFreshness {
+  /** yyyy-mm-dd of the last completed trading close (reference). */
+  lastClose: string;
+  /** Newest `PriceHistory.tradeDate` across all active names, or null if empty. */
+  maxTradeDate: string | null;
+  /** Active names whose newest bar is older than `lastClose` (the population
+   *  that would trip the "Live overlay skipped (DB stale)" guard). */
+  behindCount: number;
+  /** Active names that have at least one stored bar. */
+  totalActive: number;
+  /** True when the tape as a whole has not reached the last close. */
+  stale: boolean;
+}
+
+/**
+ * Per-name price-tape freshness — surfaces a half-universe ingest gap (the
+ * cause of the "Live overlay skipped" warning flood) as a countable health
+ * signal instead of letting it show up only as a wall of per-ticker warnings.
+ */
+export async function getPriceTapeFreshness(
+  db: PrismaClient,
+  now: Date = new Date(),
+): Promise<PriceTapeFreshness> {
+  const lastClose = localIsoDate(lastTradingClose(now));
+  const rows = await db.priceHistory.groupBy({
+    by: ["securityId"],
+    _max: { tradeDate: true },
+    where: { security: { isActive: true } },
+  });
+  let maxTradeDate: string | null = null;
+  let behindCount = 0;
+  for (const r of rows) {
+    const iso = r._max.tradeDate
+      ? r._max.tradeDate.toISOString().slice(0, 10)
+      : null;
+    if (iso && (maxTradeDate === null || iso > maxTradeDate)) maxTradeDate = iso;
+    if (!iso || iso < lastClose) behindCount += 1;
+  }
+  return {
+    lastClose,
+    maxTradeDate,
+    behindCount,
+    totalActive: rows.length,
+    stale: maxTradeDate === null || maxTradeDate < lastClose,
+  };
+}
+
 export interface PrecomputeGridStatus {
   /** Trading days regression window. */
   window: number;
