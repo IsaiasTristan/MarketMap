@@ -16,4 +16,10 @@ export interface MetricDef {
   caveats?: string;
   /** Window / basis line (optional). */
   basis?: string;
+  /**
+   * Per-instance arithmetic line (optional) — e.g. a matrix cell or chart dot
+   * showing its own computation ("gap +53pp = +31 minus -22, changed +8pp in
+   * 4 weeks"). Rendered in accent below the definition body.
+   */
+  arithmetic?: string;
 }

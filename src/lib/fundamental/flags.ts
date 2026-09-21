@@ -94,3 +94,27 @@ export function computeFlags(i: FlagInputs): string[] {
 
   return [...out].sort();
 }
+
+/**
+ * The trap / accrual-quality flags that DISQUALIFY a name from a Tier-2 long
+ * leg (Pairs brief §6.2 — a trap name is removed from selection, not merely
+ * annotated). These are the flags that undercut the long thesis itself; pure
+ * data-quality / context flags (MICROCAP, FINANCIAL_COMPANY, INSUFFICIENT_DATA,
+ * STALE_DATA, coverage/dispersion) are deliberately NOT kills — they annotate.
+ */
+export const KILL_FLAGS: readonly string[] = [
+  FLAGS.POSSIBLE_DISTRESS,
+  FLAGS.WORKING_CAPITAL_BOOST,
+  FLAGS.ONE_QUARTER_INFLECTION,
+  FLAGS.NEGATIVE_FCF,
+  FLAGS.HIGH_LEVERAGE,
+  FLAGS.LOW_INTEREST_COVERAGE,
+  FLAGS.EQUITY_DILUTION,
+  FLAGS.MOMENTUM_DETERIORATING,
+];
+
+/** The first kill flag present in a name's flag set, else null. */
+export function firstKillFlag(flags: readonly string[]): string | null {
+  for (const f of flags) if (KILL_FLAGS.includes(f)) return f;
+  return null;
+}

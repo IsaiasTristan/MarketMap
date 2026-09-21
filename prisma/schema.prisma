@@ -1613,3 +1613,269 @@ model PriceDeck {
 
   @@index([userId])
 }
+
+// ===========================================================================
+// Pairs tab — Tier 1 (subsector/sector baskets) + Hedge Finder
+//
+// A new LENS on the existing engines: it differences signals already computed
+// (Engine 1 raw revision counts, Engine 2 raw inflection, Engine 3 13F flows)
+// between two groups so that shared market/sector exposure cancels. It computes
+// almost no new signals. All z-scored fields are excluded from group
+// differentials (they are mean-zero within subsector by construction); breadth
+// is the raw, cross-group-comparable quantity.
+//
+// Point-in-time honesty (§4.2): historical basket membership is stamped from
+// TODAY's RevisionReference taxonomy on backfilled weeks, so those snapshots
+// carry membershipBasis = CURRENT_TAXONOMY (labelled, not silently mixed).
+// POINT_IN_TIME accrues forward from go-live.
+// ===========================================================================
+
+/// How a basket's constituent list for a given week was resolved.
+enum PairMembershipBasis {
+  /// Backfilled week — members reflect today's taxonomy, not the classification
+  /// in force that week (§4.2 fake-backtest caveat, surfaced not hidden).
+  CURRENT_TAXONOMY
+  /// Live week captured from go-live forward — genuine point-in-time membership.
+  POINT_IN_TIME
+}
+
+enum PairBasketWeighting {
+  EQUAL
+  CAP
+}
+
+enum PairTier {
+  /// Subsector-vs-subsector or sector-vs-sector baskets.
+  T1
+  /// Top-k vs bottom-k single stocks WITHIN one subsector, ranked on E1 or E2.
+  T2
+}
+
+/// One weekly snapshot of a single GROUP (a subsector or sector basket) under
+/// one weighting. The building block both legs of a pair read from — stored so
+/// a pair row is a cheap join, and breadth/dispersion are never recomputed at
+/// render time. Engine 2 breadth is QUARTERLY (reconstructed as-of quarter end
+/// from FundamentalPeriod), so e2AsOfQuarter lags the weekly snapshotDate.
+model PairGroupSnapshot {
+  id             String              @id @default(cuid())
+  groupType      RevisionGroupType
+  groupKey       String
+  weighting      PairBasketWeighting
+  snapshotDate   DateTime            @db.Date
+  membershipBasis PairMembershipBasis @default(CURRENT_TAXONOMY)
+  members        String[] // point-in-time constituent tickers (subject to membershipBasis)
+  nameCount      Int                 @default(0)
+  // Engine 1 — analyst-revision breadth (raw counts, pp).
+  e1Breadth      Float? // 100 * (up - down) / n
+  ptUpPct        Float?
+  ptDownPct      Float?
+  // Engine 2 — business-inflection breadth (quarterly, restated-basis).
+  e2Breadth      Float?
+  e2AsOfQuarter  DateTime?           @db.Date
+  // Dispersion (raw winsorized revision values — NEVER within-subsector z).
+  dispersionIqr  Float?
+  dispersionPctile5y Float?
+  // Basket total-return index (indexed 100 at a common start) + valuation.
+  indexLevel     Float?
+  medianFwdMultiple Float?
+  // Engine 3 — 13F flows (counts; ~45d lag).
+  e3NetBuyers    Int?
+  crowdingPct    Float? // basket-mean pctOfFunds (legacy; averages the signal away)
+  /// Breadth of crowding: percent of basket names whose pctOfFunds exceeds
+  /// crowdNameMinPct (the universe p90). Not a mean — the concentration measure.
+  crowdBreadthPct Float?
+  createdAt      DateTime            @default(now())
+
+  @@unique([groupType, groupKey, weighting, snapshotDate])
+  @@index([snapshotDate, weighting])
+  @@index([groupKey])
+}
+
+/// One weekly snapshot of an ORIENTED pair (long leg = the one the ranking
+/// signal favours). Every §5 metric stored, so the week-over-week diff is cheap
+/// and the UI reads without computing a signal. Series are 13 weekly values,
+/// oldest first.
+model PairSnapshot {
+  id             String              @id @default(cuid())
+  tier           PairTier            @default(T1)
+  longKey        String // groupKey of the long leg
+  shortKey       String // groupKey of the short leg
+  groupType      RevisionGroupType
+  weighting      PairBasketWeighting
+  snapshotDate   DateTime            @db.Date
+  longSector     String?
+  shortSector    String?
+  crossSector    Boolean             @default(false)
+  longNameCount  Int                 @default(0)
+  shortNameCount Int                 @default(0)
+  // Engine 1 — analyst revisions.
+  e1BreadthLong  Float?
+  e1BreadthShort Float?
+  e1Gap          Float?
+  e1Gap4wChange  Float?
+  e1GapSeries    Float[]
+  // Engine 2 — business inflection (quarterly, restated-basis).
+  e2BreadthLong  Float?
+  e2BreadthShort Float?
+  e2Gap          Float?
+  e2Gap4wChange  Float?
+  e2GapSeries    Float[]
+  e2AsOfQuarter  DateTime?           @db.Date
+  // Engine 3 — 13F flows (counts).
+  e3NetBuyersLong  Int?
+  e3NetBuyersShort Int?
+  e3NetBuyerGap    Int?
+  crowdingLong   Float? // basket-mean pctOfFunds on the long leg (legacy)
+  crowdingShort  Float? // basket-mean pctOfFunds on the short leg (legacy)
+  // Breadth of crowding: percent of each leg's names above the universe p90.
+  crowdBreadthLong  Float?
+  crowdBreadthShort Float?
+  // Price ratio (long index / short index).
+  relReturn1m    Float?
+  relReturn3m    Float?
+  priceRatioSeries Float[]
+  priceRatioZ    Float?
+  // Unpriced gap — headline discovery metric.
+  unpricedGap    Float? // the larger-magnitude engine's z-difference (display headline)
+  unpricedGapDriver String? // E1 | E2 — MAGNITUDE tiebreak only, never a trigger
+  /// Each engine's own unpriced-gap z-difference, stored separately so "which
+  /// engine fired" is distinct from "which engine was larger".
+  unpricedGapE1  Float?
+  unpricedGapE2  Float?
+  /// TRUE when both engines produced a same-direction calibrated gap of at least
+  /// unpricedAgreeMinZ — a real agreement predicate, not float equality.
+  unpricedAgree  Boolean         @default(false)
+  unpricedGapCalibrated Boolean @default(false)
+  ownObsWeeks    Int             @default(0)
+  /// Engine-2 unpriced-gap step: size (pp) of the most recent change in the
+  /// piecewise-constant E2 gap, carried forward until the next refresh and
+  /// expiring after e2StepMaxCarryWeeks, plus how many weeks ago it landed.
+  e2GapStepPp    Float?
+  e2GapStepAgeWeeks Int?
+  // Valuation + weighting spread.
+  valRatioPctile Float?
+  ewMinusCw1m    Float?
+  // Engine 4 — factor decomposition of the weekly spread.
+  residualSharePct Float?
+  netFactorLoadings Json?
+  topFactor      String?
+  topFactorLoading Float?
+  /// The top factor's percent contribution to spread variance (Euler) — its
+  /// RISK weight, distinct from the raw loading.
+  topFactorVarPct Float?
+  hedgeEff       Float?
+  betaNeutralRatio Float?
+  // Flags + change detection.
+  flags          String[]
+  topDecileEnteredAt DateTime?      @db.Date
+  weeksInTopDecile Int             @default(0)
+  orientationFlipped Boolean       @default(false)
+  // Tier 2 only (single-stock top-k vs bottom-k within one subsector).
+  subsector      String? // the subsector both legs live in (T2)
+  tier2Engine    String? // E1 | E2 — which signal ranked the k-name legs (T2)
+  longMembers    String[] // the surviving top-k long tickers (T2)
+  shortMembers   String[] // the surviving bottom-k short tickers (T2)
+  killedNames    Json? // [{ ticker, side, reason }] struck-through names (T2, §6.4)
+  /// TRUE only when Engine 2 quality flags were available that week (live weeks
+  /// from the box job's start). Backfilled weeks store FALSE and are NEVER
+  /// pooled with live weeks in Validation — they measure an UNSCREENED strategy.
+  killScreensApplied Boolean       @default(false)
+  createdAt      DateTime            @default(now())
+
+  @@unique([tier, longKey, shortKey, weighting, snapshotDate])
+  @@index([snapshotDate, weighting])
+  @@index([snapshotDate, e1Gap4wChange])
+  @@index([snapshotDate, unpricedGap])
+  @@index([snapshotDate, tier, subsector])
+}
+
+/// One row per weekly grid date — the Pair Map top strip. Universe counts, the
+/// hedge-efficiency pass count, top-decile churn chips, and per-engine as-of
+/// dates for the data-vintage strip (§8.1).
+model PairUniverseWeek {
+  snapshotDate   DateTime @id @db.Date
+  weighting      PairBasketWeighting @default(EQUAL)
+  pairCount      Int      @default(0)
+  stockCount     Int      @default(0)
+  passHedgeEff   Int      @default(0)
+  arrivals       String[] // pair keys entering the top decile by unpriced gap
+  exits          String[]
+  e1AsOf         DateTime? @db.Date
+  e2AsOf         DateTime? @db.Date
+  e3AsOfQuarter  String?
+  e4AsOf         DateTime? @db.Date
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+/// Tier 3 — hand-curated economic links between two companies (brief §4.4).
+/// FMP has no supply-chain data, so this is human-maintained like the 13F
+/// watchlist. The read-through logic fires when one side's signal moves and the
+/// other has not yet followed.
+enum PairLinkRelation {
+  /// Directional: tickerA (the mover-first side) supplies tickerB.
+  SUPPLIER_CUSTOMER
+  /// Direct competitors for the same demand.
+  SUBSTITUTE
+  /// One company's input is the other's output — expected signal correlation is
+  /// NEGATIVE, so confirmation is a move in the OPPOSITE direction.
+  INPUT_COST
+}
+
+enum PairLinkStatus {
+  NEW
+  WATCH
+  CONFIRMED
+}
+
+/// One curated link. For SUPPLIER_CUSTOMER, tickerA is the side expected to move
+/// FIRST (the read-through leads from A to B). note/curatedBy capture WHY the
+/// link exists so it can be re-judged later — supply chains change.
+model PairCuratedLink {
+  id           String           @id @default(cuid())
+  tickerA      String
+  tickerB      String
+  relationType PairLinkRelation
+  note         String?
+  curatedBy    String?
+  active       Boolean          @default(true)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  readThroughs PairLinkReadThrough[]
+
+  @@unique([tickerA, tickerB, relationType])
+  @@index([active])
+}
+
+/// Weekly read-through state for a curated link. Status progresses
+/// NEW -> WATCH -> CONFIRMED as the second side moves (for INPUT_COST,
+/// confirmation is the second side moving the OPPOSITE way).
+model PairLinkReadThrough {
+  id           String         @id @default(cuid())
+  linkId       String
+  link         PairCuratedLink @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  snapshotDate DateTime       @db.Date
+  firedSide    String? // A | B — which side's signal fired first
+  firedEngine  String? // E1 | E2
+  firedScore   Float?
+  otherScore   Float?
+  weeksElapsed Int            @default(0)
+  status       PairLinkStatus @default(NEW)
+  createdAt    DateTime       @default(now())
+
+  @@unique([linkId, snapshotDate])
+  @@index([snapshotDate, status])
+}
+
+/// Cached payload for the Validation screen (brief §10). One row per test kind;
+/// the whole pooled event-study result is a JSON blob so the route is a cheap
+/// read, recomputed weekly in the pipeline.
+model PairValidationSnapshot {
+  id         String   @id @default(cuid())
+  kind       String   @unique // "pooled-event-study"
+  computedAt DateTime @default(now())
+  heldOutFrom DateTime? @db.Date
+  payload    Json
+
+  @@index([kind])
+}

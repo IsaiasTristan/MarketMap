@@ -39,7 +39,10 @@
     "job:fundamental-box-correlation": "tsx scripts/fundamental-box-correlation.ts",
     "job:institutional-seed": "tsx scripts/institutional-seed-funds.ts",
     "job:institutional": "tsx scripts/institutional-quarterly.ts",
-    "job:institutional-validate": "tsx scripts/institutional-fmp-validate.ts"
+    "job:institutional-validate": "tsx scripts/institutional-fmp-validate.ts",
+    "job:pairs-probe": "tsx scripts/pairs-probe.ts",
+    "job:pairs-backfill": "tsx scripts/pairs-backfill.ts",
+    "job:pairs-validation": "tsx scripts/pairs-validation-recompute.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",

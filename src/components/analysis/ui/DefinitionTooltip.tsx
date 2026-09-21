@@ -2,17 +2,24 @@
 /**
  * Generic metric-definition tooltip. Renders a term with a dotted-underline
  * affordance; the definition opens on HOVER, keyboard FOCUS, and tap-to-toggle.
- * Right-edge flip; on small viewports it drops to a bottom-sheet.
- * aria-describedby wires the popover to the trigger.
+ *
+ * The popover is rendered through a PORTAL to document.body with FIXED
+ * coordinates measured off the trigger, so it can never be clipped by a
+ * panel's `overflow: hidden` / `overflow: auto` (the whole-app tooltip bug).
+ * Flips above/below and left/right to stay in the viewport; on small viewports
+ * it drops to a bottom sheet. aria-describedby wires the popover to the trigger.
  *
  * Registry-agnostic: takes a resolved MetricDef. Engine-scoped wrappers
- * (flows/MetricTooltip, research/MetricTip) bind their own registries so text
- * comes from a registry, never inline strings, and definitions can't drift.
+ * (flows/MetricTooltip, research/MetricTip, pairs/PairMetricTip) bind their own
+ * registries so text comes from a registry, never inline strings.
  */
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { MetricDef } from "@/lib/analysis/metric-def";
 
 const PANEL_WIDTH = 300;
+const GAP = 7;
+const MARGIN = 8;
 
 export function DefinitionTooltip({
   def,
@@ -27,54 +34,81 @@ export function DefinitionTooltip({
   style?: React.CSSProperties;
 }) {
   const [open, setOpen] = useState(false);
-  const [flip, setFlip] = useState<"left" | "right">("left");
-  const [sheet, setSheet] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [pos, setPos] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    sheet: boolean;
+  }>({ top: 0, left: 0, width: PANEL_WIDTH, sheet: false });
   const triggerRef = useRef<HTMLSpanElement>(null);
+  const panelRef = useRef<HTMLSpanElement>(null);
   const tipId = useId();
 
-  const place = () => {
+  useEffect(() => setMounted(true), []);
+
+  const measure = () => {
     const el = triggerRef.current;
     if (!el) return;
-    const rect = el.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
     const vw = window.innerWidth;
-    setSheet(vw <= 640);
-    // Flip to the right edge if the panel would overflow the viewport on the left-align.
-    setFlip(rect.left + PANEL_WIDTH > vw - 12 ? "right" : "left");
+    const vh = window.innerHeight;
+    if (vw <= 640) {
+      setPos({ top: 0, left: 0, width: vw - 2 * MARGIN, sheet: true });
+      return;
+    }
+    const width = Math.min(PANEL_WIDTH, vw - 2 * MARGIN);
+    // Prefer left-aligned; flip to the right edge if it would overflow.
+    let left = r.left;
+    if (left + width > vw - MARGIN) left = Math.max(MARGIN, r.right - width);
+    const panelH = panelRef.current?.offsetHeight ?? 0;
+    // Prefer above; drop below if there isn't room and below has more.
+    const above = r.top - GAP - panelH;
+    const below = r.bottom + GAP;
+    const top = above >= MARGIN || r.top > vh - r.bottom ? Math.max(MARGIN, above) : below;
+    setPos({ top, left, width, sheet: false });
   };
 
-  const show = () => {
-    place();
-    setOpen(true);
-  };
-  const hide = () => setOpen(false);
+  // Measure after the panel mounts (so we know its height) and on open.
+  useLayoutEffect(() => {
+    if (open) measure();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
-  // Close on Escape / outside interaction.
   useEffect(() => {
     if (!open) return;
+    const onScroll = () => measure();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+      window.removeEventListener("keydown", onKey);
+    };
   }, [open]);
 
-  const panelStyle: React.CSSProperties = sheet
+  const show = () => setOpen(true);
+  const hide = () => setOpen(false);
+
+  const panelStyle: React.CSSProperties = pos.sheet
     ? {
         position: "fixed",
-        left: 12,
-        right: 12,
-        bottom: 12,
+        left: MARGIN,
+        right: MARGIN,
+        bottom: MARGIN,
         width: "auto",
-        maxWidth: "none",
-        zIndex: 200,
+        zIndex: 2000,
       }
     : {
-        position: "absolute",
-        bottom: "calc(100% + 7px)",
-        [flip === "right" ? "right" : "left"]: 0,
-        width: PANEL_WIDTH,
-        maxWidth: "70vw",
-        zIndex: 200,
+        position: "fixed",
+        top: pos.top,
+        left: pos.left,
+        width: pos.width,
+        zIndex: 2000,
       };
 
   return (
@@ -108,35 +142,56 @@ export function DefinitionTooltip({
       >
         {children ?? def.label}
       </span>
-      {open && (
-        <span
-          id={tipId}
-          role="tooltip"
-          style={{
-            ...panelStyle,
-            display: "block",
-            background: "var(--bg-elevated, #141414)",
-            border: "1px solid var(--bg-border, #2a2a2a)",
-            padding: "8px 10px",
-            color: "var(--text-primary, #d8d8d8)",
-            fontSize: 11,
-            lineHeight: 1.55,
-            fontWeight: 400,
-            letterSpacing: 0,
-            textTransform: "none",
-            whiteSpace: "normal",
-            boxShadow: "0 4px 16px rgba(0,0,0,0.6)",
-          }}
-        >
-          <span style={{ display: "block", fontWeight: 700, marginBottom: 4, color: "var(--text-primary)" }}>{def.label}</span>
-          <span style={{ display: "block", color: "var(--text-secondary)" }}>{def.short_def}</span>
-          {def.calculation && (
-            <span style={{ display: "block", marginTop: 6, color: "var(--text-muted)" }}>{def.calculation}</span>
-          )}
-          {def.caveats && <span style={{ display: "block", marginTop: 6, color: "var(--text-muted)" }}>{def.caveats}</span>}
-          {def.basis && <span style={{ display: "block", marginTop: 6, color: "var(--text-muted)" }}>{def.basis}</span>}
-        </span>
-      )}
+      {open && mounted &&
+        createPortal(
+          <span
+            ref={panelRef}
+            id={tipId}
+            role="tooltip"
+            style={{
+              ...panelStyle,
+              display: "block",
+              boxSizing: "border-box",
+              background: "#0e0e0e",
+              border: "1px solid var(--color-accent)",
+              padding: "7px 9px",
+              color: "var(--text-primary, #d8d8d8)",
+              fontSize: 10.5,
+              lineHeight: 1.35,
+              fontWeight: 400,
+              letterSpacing: 0,
+              textTransform: "none",
+              textAlign: "left",
+              whiteSpace: "normal",
+              boxShadow: "0 6px 18px rgba(0,0,0,0.85)",
+              pointerEvents: "none",
+            }}
+          >
+            <span
+              style={{
+                display: "block",
+                fontWeight: 700,
+                marginBottom: 3,
+                letterSpacing: 0.5,
+                color: "var(--color-accent)",
+              }}
+            >
+              {def.label}
+            </span>
+            <span style={{ display: "block", color: "var(--text-primary)" }}>{def.short_def}</span>
+            {def.calculation && (
+              <span style={{ display: "block", marginTop: 5, color: "var(--text-secondary)" }}>{def.calculation}</span>
+            )}
+            {def.caveats && <span style={{ display: "block", marginTop: 5, color: "var(--text-muted)" }}>{def.caveats}</span>}
+            {def.basis && <span style={{ display: "block", marginTop: 5, color: "var(--text-muted)" }}>{def.basis}</span>}
+            {def.arithmetic && (
+              <span style={{ display: "block", marginTop: 5, color: "var(--color-accent)", fontVariantNumeric: "tabular-nums" }}>
+                {def.arithmetic}
+              </span>
+            )}
+          </span>,
+          document.body,
+        )}
     </span>
   );
 }

@@ -123,9 +123,16 @@ function slotGeometry(
 /**
  * Rank candidates and place each in its first free slot. `bounds` is the plot
  * rectangle; `opts.slots` is the ordered slot preference. Candidate marks act
- * as obstacles for every label but their own.
+ * as obstacles for every label but their own. `reserved` pre-seeds the obstacle
+ * list with fixed chrome the labels must dodge (zone / quadrant / hline text),
+ * so point labels never stack on top of static captions.
  */
-export function placeLabels(inputs: LabelInput[], bounds: PlotBounds, opts: PlaceOpts): PlacedLabel[] {
+export function placeLabels(
+  inputs: LabelInput[],
+  bounds: PlotBounds,
+  opts: PlaceOpts,
+  reserved: Rect[] = [],
+): PlacedLabel[] {
   // Priority tier first (default 0), then forced (danger-zone), then score desc,
   // then id for a total, stable order. With all-default priority this is exactly
   // the previous (forced, score, id) ordering.
@@ -139,7 +146,7 @@ export function placeLabels(inputs: LabelInput[], bounds: PlotBounds, opts: Plac
   });
 
   const placed: PlacedLabel[] = [];
-  const placedRects: Rect[] = [];
+  const placedRects: Rect[] = [...reserved];
 
   for (const m of ranked) {
     for (const slot of opts.slots) {

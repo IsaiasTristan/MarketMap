@@ -275,6 +275,8 @@ export const researchDecompQuery = z.object({
   groupType: z.enum(["SECTOR", "SUBSECTOR"]).optional().default("SUBSECTOR"),
 });
 
+const gridDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional();
+
 // ─── Engine 2 — Fundamentals (discovery) ───────────────────────────────────
 
 export const fundamentalsQueueQuery = z.object({
@@ -497,3 +499,89 @@ export const commoditiesIngestBody = z.object({
   backfill: z.boolean().optional().default(false),
   catalog: z.boolean().optional().default(false),
 });
+
+// ---------------------------------------------------------------------------
+// Pairs tab (Tier 1 + Dispersion Map + Hedge Finder)
+// ---------------------------------------------------------------------------
+
+const pairWeighting = z.enum(["EQUAL", "CAP"]).optional().default("EQUAL");
+
+/** Pair Map top-strip + vintage. */
+export const pairsUniverseQuery = z.object({ date: gridDate });
+
+/** Pair matrix (subsector × subsector gap grid) + divergence scatter. */
+export const pairsMatrixQuery = z.object({
+  date: gridDate,
+  weighting: pairWeighting,
+  sector: z.string().max(120).optional(),
+  groupType: z.enum(["SUBSECTOR", "SECTOR"]).optional().default("SUBSECTOR"),
+});
+
+/** Ranked pair table. */
+export const pairsRankQuery = z.object({
+  date: gridDate,
+  weighting: pairWeighting,
+  tier: z.enum(["T1", "T2"]).optional().default("T1"),
+  scope: z.enum(["within", "cross", "all"]).optional().default("within"),
+  minHedgeEff: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === "" ? undefined : Number(v)))
+    .pipe(z.number().min(-1).max(1).optional()),
+  driver: z.enum(["E1", "E2", "BOTH"]).optional(),
+  sector: z.string().max(120).optional(),
+  limit: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(1, Math.min(500, Number(v))) : 100))
+    .pipe(z.number().int().min(1).max(500)),
+});
+
+/** Dispersion map (per-subsector IQR percentile). */
+export const pairsDispersionQuery = z.object({ date: gridDate, weighting: pairWeighting });
+
+/** Tier 2 single-stock panel for one subsector. */
+export const pairsTier2Query = z.object({
+  date: gridDate,
+  weighting: pairWeighting,
+  subsector: z.string().min(1).max(120),
+  engine: z.enum(["E1", "E2"]).optional(),
+});
+
+/** Hedge Finder — on-demand risk-only optimisation for one long target. */
+export const pairsHedgeQuery = z.object({
+  target: z.string().min(1).max(12).transform((s) => s.trim().toUpperCase()),
+  mode: z.enum(["neutralize", "express"]).optional().default("neutralize"),
+  maxNames: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(1, Math.min(12, Number(v))) : undefined))
+    .pipe(z.number().int().min(1).max(12).optional()),
+});
+
+const pairTicker = z.string().min(1).max(12).transform((s) => s.trim().toUpperCase());
+const pairLinkRelation = z.enum(["SUPPLIER_CUSTOMER", "SUBSTITUTE", "INPUT_COST"]);
+
+/** Admin — create a Tier 3 curated link. tickerA is the mover-first side. */
+export const pairsLinkCreateBody = z.object({
+  tickerA: pairTicker,
+  tickerB: pairTicker,
+  relationType: pairLinkRelation,
+  note: z.string().max(500).optional(),
+});
+
+/** Admin — patch a Tier 3 curated link (any subset). */
+export const pairsLinkPatchBody = z.object({
+  id: z.string().min(1),
+  tickerA: pairTicker.optional(),
+  tickerB: pairTicker.optional(),
+  relationType: pairLinkRelation.optional(),
+  note: z.string().max(500).nullable().optional(),
+  active: z.boolean().optional(),
+});
+
+/** Admin — delete a Tier 3 curated link. */
+export const pairsLinkDeleteBody = z.object({ id: z.string().min(1) });
+
+/** Tier 3 read-through panel — latest per active link. */
+export const pairsReadThroughQuery = z.object({ date: gridDate.optional() });

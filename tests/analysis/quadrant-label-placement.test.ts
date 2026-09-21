@@ -95,4 +95,18 @@ describe("placeLabels", () => {
       Array.from({ length: 15 }, (_, i) => mk({ id: `D${i}`, x: 200 + (i % 5) * 15, y: 150 + (i % 3) * 15, score: (i * 7) % 11 }));
     expect(placeLabels(build(), BOUNDS, OPTS)).toEqual(placeLabels(build(), BOUNDS, OPTS));
   });
+
+  it("keeps point labels off a reserved obstacle (zone/quadrant caption)", () => {
+    // A caption occupying the mark's 'right' slot forces the label elsewhere.
+    const reserved = [{ x: 405, y: 190, w: 120, h: 20 }];
+    const withoutReserve = placeLabels([mk({ id: "AAA", x: 400, y: 200 })], BOUNDS, OPTS);
+    expect(withoutReserve[0]!.slot).toBe("right");
+    const withReserve = placeLabels([mk({ id: "AAA", x: 400, y: 200 })], BOUNDS, OPTS, reserved);
+    const p = withReserve[0]!;
+    expect(p.slot).not.toBe("right");
+    // Its rect must not overlap the reserved obstacle.
+    const r = reserved[0]!;
+    const overlaps = p.rect.x < r.x + r.w && p.rect.x + p.rect.w > r.x && p.rect.y < r.y + r.h && p.rect.y + p.rect.h > r.y;
+    expect(overlaps).toBe(false);
+  });
 });

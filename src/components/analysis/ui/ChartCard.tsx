@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { DefinitionTooltip } from "@/components/analysis/ui/DefinitionTooltip";
 
 interface ProvenanceBadgeProps {
   frenchThrough: string;
@@ -27,6 +28,13 @@ export function ProvenanceBadge({ frenchThrough, proxyFrom, proxyTo }: Provenanc
       French data through {frenchThrough} · Proxy data {proxyFrom} to {proxyTo}
     </div>
   );
+}
+
+function slugifyTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
 }
 
 interface ChartCardProps {
@@ -78,24 +86,26 @@ export function ChartCard({
           textTransform: "uppercase",
         }}
       >
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
+        {!compact && subtitle ? (
+          <DefinitionTooltip
+            def={{ id: slugifyTitle(title), label: title, short_def: subtitle }}
+            style={{
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              color: "#fff",
+              borderBottomColor: "rgba(255,255,255,0.45)",
+            }}
+          >
+            {title}
+          </DefinitionTooltip>
+        ) : (
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
+        )}
         <div style={{ flex: 1 }} />
         {provenance && <ProvenanceBadge {...provenance} />}
         {action}
       </div>
-      {!compact && subtitle ? (
-        <div
-          style={{
-            padding: "6px 10px",
-            fontSize: 10,
-            color: "var(--text-muted)",
-            borderBottom: "1px solid var(--bg-border)",
-            background: "var(--bg-base)",
-          }}
-        >
-          {subtitle}
-        </div>
-      ) : null}
       <div
         style={{
           padding: compact ? 0 : "6px 8px",
