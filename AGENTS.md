@@ -107,3 +107,15 @@ pnpm job:refresh   # when implemented; placeholder until jobs wired
 ```
 
 Set `DATABASE_URL` in `.env` before Prisma operations.
+
+---
+
+## Cursor Cloud specific instructions
+
+Cloud Agent VMs use Cursor's default image. PostgreSQL is not preinstalled; the environment `install` script installs it, and `start` boots it. Checked out 2026-10-07: `npm test` 894 passed, `npx tsc --noEmit` clean, `npm run build` clean, `GET /api/health` returns `database: connected`.
+
+- Package manager is **npm** (`package-lock.json`): `npm ci`, then `npx prisma generate`. Vitest (`npm test`) does not need a database. Typecheck is `npx tsc --noEmit`.
+- `start` runs `sudo service postgresql start`, creates role/database `marketmap` if missing, writes a gitignored `.env` when absent, runs `npx prisma db push`, and execs `npm run dev` on `0.0.0.0:3000`. Local URL: `postgresql://marketmap:marketmap@localhost:5432/marketmap?schema=public`.
+- Do not run `npm run build` while `npm run dev` is using `.next` (they share that directory).
+- Requests with no Cloudflare Access token resolve as the admin (`GET /api/me`). `POST /api/setup` seeds the three benchmark rows. `FMP_API_KEY` is optional; Yahoo is the default market-data provider. Engine ingest jobs need a key and are not required to boot the UI.
+- `instrumentation.ts` may schedule a delayed daily catch-up (`PRECOMPUTE_STARTUP_DELAY_MS`, default 180000 ms). It is fire-and-forget and only useful once a universe has prices.
