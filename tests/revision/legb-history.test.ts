@@ -1,9 +1,88 @@
 import { describe, expect, it } from "vitest";
 import {
+  ptConsensusFromPanels,
+  ptPanelStats,
   ptRevisionFromConsensus,
+  ptRevisionMatched,
   reconstructPtConsensus,
+  reconstructPtPanels,
   weeklyNetActions,
 } from "@/lib/revision/legb-history";
+
+describe("reconstructPtPanels + ptRevisionMatched (matched-panel signal)", () => {
+  const grid = ["2026-06-06", "2026-06-13", "2026-06-20", "2026-06-27"];
+  it("supersedes on the analyst key (expertUID), so two analysts at one firm are two voices", () => {
+    const panels = reconstructPtPanels(
+      [
+        { dateIso: "2026-06-01", analyst: "uid-a", priceTarget: 100 },
+        { dateIso: "2026-06-02", analyst: "uid-b", priceTarget: 200 }, // same firm in reality, different analyst
+        { dateIso: "2026-06-10", analyst: "uid-a", priceTarget: 120 },
+      ],
+      grid,
+    );
+    expect(panels[0]!.size).toBe(2);
+    expect(panels[1]!.get("uid-a")!.pt).toBe(120);
+    expect(ptConsensusFromPanels(panels)[1]!).toBeCloseTo(160, 12);
+  });
+  it("a new initiation moves the LEVEL but contributes ZERO matched revision", () => {
+    const panels = reconstructPtPanels(
+      [
+        { dateIso: "2026-06-01", analyst: "a", priceTarget: 100 },
+        { dateIso: "2026-06-10", analyst: "b", priceTarget: 300 }, // enters week 2 — no prior
+      ],
+      grid,
+    );
+    const level = ptConsensusFromPanels(panels);
+    expect(level[0]).toBe(100);
+    expect(level[1]).toBe(200); // level jumps 100%
+    const rev = ptRevisionMatched(panels);
+    expect(rev[1]).toEqual({ revision: 0, matched: 1 }); // only `a` is in both weeks, unchanged
+  });
+  it("a source going dark (panel shrinks) generates zero signal — the cancellation seam", () => {
+    // Analysts a,b,c from TipRanks up to 2026-06-13; c's target then goes stale at a 10-day window.
+    const panels = reconstructPtPanels(
+      [
+        { dateIso: "2026-06-05", analyst: "a", priceTarget: 100, source: "TIPRANKS" },
+        { dateIso: "2026-06-05", analyst: "b", priceTarget: 200, source: "TIPRANKS" },
+        { dateIso: "2026-06-05", analyst: "c", priceTarget: 300, source: "TIPRANKS" },
+        { dateIso: "2026-06-19", analyst: "a", priceTarget: 100, source: "FMP" }, // a refreshes via FMP, unchanged
+        { dateIso: "2026-06-19", analyst: "b", priceTarget: 200, source: "FMP" },
+      ],
+      grid,
+      10,
+    );
+    expect(ptPanelStats(panels).map((s) => s.size)).toEqual([3, 3, 2, 2]);
+    const level = ptConsensusFromPanels(panels);
+    expect(level[1]).toBe(200);
+    expect(level[2]).toBe(150); // level drops 25% purely from c's eviction
+    const rev = ptRevisionMatched(panels);
+    expect(rev[2]).toEqual({ revision: 0, matched: 2 }); // signal: exactly zero
+    expect(ptPanelStats(panels)[2]!.sourceMix).toBe(0); // and the mix diagnostic shows the source switch
+    expect(ptPanelStats(panels)[1]!.sourceMix).toBe(1);
+  });
+  it("captures a genuine target change from a matched analyst", () => {
+    const panels = reconstructPtPanels(
+      [
+        { dateIso: "2026-06-01", analyst: "a", priceTarget: 100 },
+        { dateIso: "2026-06-01", analyst: "b", priceTarget: 100 },
+        { dateIso: "2026-06-10", analyst: "a", priceTarget: 120 },
+      ],
+      grid,
+    );
+    const rev = ptRevisionMatched(panels);
+    expect(rev[1]!.matched).toBe(2);
+    expect(rev[1]!.revision!).toBeCloseTo(0.1, 12); // (0.2 + 0) / 2
+    expect(rev[2]).toEqual({ revision: 0, matched: 2 });
+  });
+  it("returns null revision when nothing matches (first week, empty panels)", () => {
+    const panels = reconstructPtPanels([{ dateIso: "2026-06-10", analyst: "a", priceTarget: 100 }], grid);
+    const rev = ptRevisionMatched(panels);
+    expect(rev[0]).toEqual({ revision: null, matched: 0 });
+    expect(rev[1]).toEqual({ revision: null, matched: 0 }); // a has no prior
+    expect(rev[2]).toEqual({ revision: 0, matched: 1 });
+    expect(ptPanelStats(panels)[0]).toEqual({ size: 0, sourceMix: null });
+  });
+});
 
 describe("weeklyNetActions", () => {
   const grid = ["2026-06-20", "2026-06-27", "2026-07-04"];

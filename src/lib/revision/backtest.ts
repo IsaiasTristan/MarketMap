@@ -221,3 +221,51 @@ export function icSummary(ics: Array<number | null>): { mean: number | null; tSt
   const stderr = Math.sqrt(variance / n);
   return { mean, tStat: stderr > 1e-12 ? mean / stderr : null, n };
 }
+
+export interface NeweyWestResult {
+  mean: number | null;
+  /** HAC (Bartlett-kernel) t-statistic for H0: mean == 0. */
+  tStat: number | null;
+  n: number;
+  /** Bartlett bandwidth (number of autocovariance lags) used. */
+  lag: number;
+  /**
+   * Effective independent observations = n * gamma_0 / S_hac. With positive
+   * serial correlation (overlapping forward-return windows) this is < n and
+   * quantifies how much the naive t-stat overstates significance.
+   */
+  effectiveN: number | null;
+}
+
+/**
+ * Newey-West (HAC) t-statistic for the mean of a serially-correlated series.
+ *
+ * Weekly ICs measured against an h-week forward return overlap across h-1
+ * subsequent weeks, so they are autocorrelated and the naive stderr (icSummary)
+ * understates the true sampling error. This corrects it with a Bartlett kernel:
+ * S_hac = gamma_0 + 2 * sum_{l=1..L} (1 - l/(L+1)) * gamma_l, Var(mean) = S_hac/n.
+ * Default bandwidth L follows the horizon overlap (h-1); pass an explicit lag to
+ * override. Falls back to the naive stderr when L == 0.
+ */
+export function neweyWestTStat(ics: Array<number | null>, lag: number): NeweyWestResult {
+  const x = ics.filter((v): v is number => v !== null && Number.isFinite(v));
+  const n = x.length;
+  const L = Math.max(0, Math.min(Math.floor(lag), n - 1));
+  if (n === 0) return { mean: null, tStat: null, n, lag: L, effectiveN: null };
+  const mean = x.reduce((a, b) => a + b, 0) / n;
+  if (n < 2) return { mean, tStat: null, n, lag: L, effectiveN: null };
+  const dev = x.map((v) => v - mean);
+  const gamma = (l: number): number => {
+    let s = 0;
+    for (let t = l; t < n; t++) s += dev[t]! * dev[t - l]!;
+    return s / n;
+  };
+  const gamma0 = gamma(0);
+  let sHac = gamma0;
+  for (let l = 1; l <= L; l++) sHac += 2 * (1 - l / (L + 1)) * gamma(l);
+  // Serial correlation can push the truncated HAC estimate non-positive; guard it.
+  if (!(sHac > 1e-18) || !(gamma0 > 1e-18)) return { mean, tStat: null, n, lag: L, effectiveN: null };
+  const stderr = Math.sqrt(sHac / n);
+  const effectiveN = Math.max(1, Math.min(n, (n * gamma0) / sHac));
+  return { mean, tStat: mean / stderr, n, lag: L, effectiveN };
+}

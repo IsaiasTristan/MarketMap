@@ -17,8 +17,177 @@ export interface RatingEventLike {
 
 export interface PtEventLike {
   dateIso: string; // YYYY-MM-DD
-  analyst: string | null; // analystCompany; null = anonymous voice, kept individually
+  /** Supersession key: expertUID (TipRanks) or normalized firm (FMP); null = anonymous voice, kept individually. */
+  analyst: string | null;
   priceTarget: number;
+  /** Optional provenance tag; drives the panel source-mix diagnostic only. */
+  source?: string;
+}
+
+/** One analyst's live target inside a week's point-in-time panel. */
+export interface PtPanelEntry {
+  dateIso: string;
+  pt: number;
+  source: string | null;
+}
+
+/** Point-in-time panel per grid date, keyed by supersession key (anonymous voices get synthetic keys). */
+export type PtPanel = Map<string, PtPanelEntry>;
+
+/**
+ * Per grid date: every analyst's LATEST target on or before the date (later
+ * targets from the same key supersede earlier ones), with targets older than
+ * `staleDays` evicted. The panel is the primitive both the level and the
+ * matched-panel revision derive from.
+ */
+export function reconstructPtPanels(
+  events: PtEventLike[],
+  grid: string[],
+  staleDays: number = REVISION_THRESHOLDS.ptReconStaleDays,
+): PtPanel[] {
+  const sorted = events
+    .filter((e) => Number.isFinite(e.priceTarget) && e.priceTarget > 0)
+    .sort((a, b) => (a.dateIso < b.dateIso ? -1 : a.dateIso > b.dateIso ? 1 : 0));
+  const latest = new Map<string, PtPanelEntry>();
+  const DAY_MS = 86_400_000;
+  let lo = 0;
+  let anonSeq = 0;
+  const out: PtPanel[] = [];
+  for (const gridDate of grid) {
+    while (lo < sorted.length && sorted[lo]!.dateIso <= gridDate) {
+      const e = sorted[lo]!;
+      const key = e.analyst ?? `anon:${anonSeq++}`;
+      latest.set(key, { dateIso: e.dateIso, pt: e.priceTarget, source: e.source ?? null });
+      lo++;
+    }
+    const cutoffMs = new Date(`${gridDate}T00:00:00Z`).getTime() - staleDays * DAY_MS;
+    const panel: PtPanel = new Map();
+    for (const [key, v] of latest) {
+      if (new Date(`${v.dateIso}T00:00:00Z`).getTime() >= cutoffMs) panel.set(key, v);
+    }
+    out.push(panel);
+  }
+  return out;
+}
+
+/** Level: mean of the live panel's targets (null when empty). */
+export function ptConsensusFromPanels(panels: PtPanel[]): Array<number | null> {
+  return panels.map((p) => {
+    if (p.size === 0) return null;
+    let sum = 0;
+    for (const v of p.values()) sum += v.pt;
+    return sum / p.size;
+  });
+}
+
+export interface MatchedPtRevision {
+  revision: number | null; // mean of per-analyst pt_t / pt_{t-1} - 1 over analysts in BOTH weeks
+  matched: number; // analysts present in both weeks (the denominator)
+}
+
+/**
+ * Matched-panel (chain-linked) week-over-week revision: only analysts present
+ * in both the prior and current panel contribute, so panel entry/exit — a new
+ * initiation, a stale eviction, or a source going dark — generates exactly
+ * zero signal by construction. Unchanged targets contribute 0 (a diffusion
+ * measure: analysts who did not move are real zeros). First week is null.
+ */
+export function ptRevisionMatched(panels: PtPanel[]): MatchedPtRevision[] {
+  return panels.map((cur, i) => {
+    if (i === 0) return { revision: null, matched: 0 };
+    const prev = panels[i - 1]!;
+    let sum = 0;
+    let n = 0;
+    for (const [key, v] of cur) {
+      const p = prev.get(key);
+      if (!p || p.pt <= 0) continue;
+      sum += v.pt / p.pt - 1;
+      n++;
+    }
+    return { revision: n > 0 ? sum / n : null, matched: n };
+  });
+}
+
+export interface PtMoveCounts {
+  up: number;
+  down: number;
+}
+
+/**
+ * Per week, how many matched analysts RAISED and how many CUT their target —
+ * the raw counts the screen shows next to the score ("4 / 0 of 5"). Same
+ * matched-panel basis as `ptRevisionMatched`, so `up + down <= matched <=
+ * panel size` holds by construction and a new initiation is never counted as
+ * a raise.
+ */
+export function ptMoveCounts(panels: PtPanel[]): PtMoveCounts[] {
+  return panels.map((cur, i) => {
+    if (i === 0) return { up: 0, down: 0 };
+    const prev = panels[i - 1]!;
+    let up = 0;
+    let down = 0;
+    for (const [key, v] of cur) {
+      const p = prev.get(key);
+      if (!p || p.pt <= 0) continue;
+      if (v.pt > p.pt) up++;
+      else if (v.pt < p.pt) down++;
+    }
+    return { up, down };
+  });
+}
+
+export interface RatingActionCounts {
+  up: number;
+  down: number;
+  init: number;
+}
+
+/**
+ * Per grid date, rating events in the window (previous grid date, this grid
+ * date] split by action. Display only — rating moves are never in the rank.
+ */
+export function weeklyActionCounts(
+  events: RatingEventLike[],
+  grid: string[],
+): RatingActionCounts[] {
+  if (grid.length === 0) return [];
+  const sorted = [...events].sort((a, b) => (a.dateIso < b.dateIso ? -1 : a.dateIso > b.dateIso ? 1 : 0));
+  const firstWindowStart = new Date(new Date(`${grid[0]}T00:00:00Z`).getTime() - 7 * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  const out: RatingActionCounts[] = [];
+  let lo = 0;
+  let prev = firstWindowStart;
+  for (const gridDate of grid) {
+    while (lo < sorted.length && sorted[lo]!.dateIso <= prev) lo++;
+    const counts: RatingActionCounts = { up: 0, down: 0, init: 0 };
+    while (lo < sorted.length && sorted[lo]!.dateIso <= gridDate) {
+      const a = (sorted[lo]!.action ?? "").toLowerCase();
+      if (a.includes("upgrade")) counts.up++;
+      else if (a.includes("downgrade")) counts.down++;
+      else if (a.includes("init") || a.includes("resum")) counts.init++;
+      lo++;
+    }
+    out.push(counts);
+    prev = gridDate;
+  }
+  return out;
+}
+
+export interface PtPanelStats {
+  size: number;
+  /** Share of the panel whose latest target came from the source named `primary` (null when empty). */
+  sourceMix: number | null;
+}
+
+/** Panel size + source mix per week — the observability that keeps a decaying panel from being silent. */
+export function ptPanelStats(panels: PtPanel[], primary = "TIPRANKS"): PtPanelStats[] {
+  return panels.map((p) => {
+    if (p.size === 0) return { size: 0, sourceMix: null };
+    let fromPrimary = 0;
+    for (const v of p.values()) if (v.source === primary) fromPrimary++;
+    return { size: p.size, sourceMix: fromPrimary / p.size };
+  });
 }
 
 export interface WeeklyNetAction {
@@ -58,48 +227,23 @@ export function weeklyNetActions(events: RatingEventLike[], grid: string[]): Wee
 }
 
 /**
- * Point-in-time price-target consensus per grid date: each analyst's LATEST
- * target on or before the date (later targets from the same firm supersede
- * earlier ones), targets older than `staleDays` evicted, mean of survivors.
- * Events with a null analyst can't be superseded, so each counts as its own
- * voice until it goes stale. Null when no live targets.
+ * Point-in-time price-target consensus LEVEL per grid date (mean of the live
+ * panel). Thin wrapper over reconstructPtPanels kept for display/context and
+ * back-compat; the SIGNAL is ptRevisionMatched, not the difference of levels.
  */
 export function reconstructPtConsensus(
   events: PtEventLike[],
   grid: string[],
   staleDays: number = REVISION_THRESHOLDS.ptReconStaleDays,
 ): Array<number | null> {
-  const sorted = events
-    .filter((e) => Number.isFinite(e.priceTarget) && e.priceTarget > 0)
-    .sort((a, b) => (a.dateIso < b.dateIso ? -1 : a.dateIso > b.dateIso ? 1 : 0));
-  const byAnalyst = new Map<string, { dateIso: string; pt: number }>();
-  const anonymous: Array<{ dateIso: string; pt: number }> = [];
-  const out: Array<number | null> = [];
-  const DAY_MS = 86_400_000;
-  let lo = 0;
-  for (const gridDate of grid) {
-    while (lo < sorted.length && sorted[lo]!.dateIso <= gridDate) {
-      const e = sorted[lo]!;
-      if (e.analyst) byAnalyst.set(e.analyst, { dateIso: e.dateIso, pt: e.priceTarget });
-      else anonymous.push({ dateIso: e.dateIso, pt: e.priceTarget });
-      lo++;
-    }
-    const cutoffMs = new Date(`${gridDate}T00:00:00Z`).getTime() - staleDays * DAY_MS;
-    const live: number[] = [];
-    for (const v of byAnalyst.values()) {
-      if (new Date(`${v.dateIso}T00:00:00Z`).getTime() >= cutoffMs) live.push(v.pt);
-    }
-    for (const v of anonymous) {
-      if (new Date(`${v.dateIso}T00:00:00Z`).getTime() >= cutoffMs) live.push(v.pt);
-    }
-    out.push(live.length > 0 ? live.reduce((a, b) => a + b, 0) / live.length : null);
-  }
-  return out;
+  return ptConsensusFromPanels(reconstructPtPanels(events, grid, staleDays));
 }
 
 /**
- * Week-over-week relative change of the reconstructed consensus — the Leg-B
- * analog of ptRevision. First week (no prior) and gaps propagate null.
+ * Week-over-week relative change of the consensus LEVEL. Retained for
+ * reference/diagnostics only: it moves whenever panel composition changes
+ * (initiations, stale evictions, a source going dark), so it is NOT used as
+ * the production signal — see ptRevisionMatched.
  */
 export function ptRevisionFromConsensus(consensus: Array<number | null>): Array<number | null> {
   return consensus.map((v, i) => {

@@ -51,20 +51,6 @@ export function computeStreak(seriesOldestFirst: Array<number | null>): Streak {
   return { len, sign: len === 0 ? 0 : sign };
 }
 
-export type StreakSource = "LEG_A" | "LEG_B";
-
-/**
- * Streaks read the Leg-B (ratings + price targets) reconstruction — which has
- * full backfilled history — until the Leg-A snapshot store is deep enough to
- * carry a meaningful run on its own.
- */
-export function pickStreakSource(
-  legADepthWeeks: number,
-  minWeeks: number = REVISION_THRESHOLDS.legAStreakMinWeeks,
-): StreakSource {
-  return legADepthWeeks >= minWeeks ? "LEG_A" : "LEG_B";
-}
-
 export interface Decomposition {
   /** Per-name group component: the name's peer-group mean composite, re-z-scored across groups. */
   groupZ: Array<number | null>;

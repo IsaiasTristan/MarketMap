@@ -657,6 +657,105 @@ model PriceTargetEvent {
   @@index([publishedDate])
 }
 
+// ---------------------------------------------------------------------------
+// Leg B — TipRanks analyst ratings (FMP paid add-on, /stable/tipranks-search).
+// A NON-REPLAYABLE vendor window: the add-on is subscribed for a bounded
+// period, the ~3.3yr history (floor 2023-06-01) is swept once into these
+// tables, then the subscription may lapse. Every row retains the raw vendor
+// payload (rawJson) so anything can be re-derived without re-fetching, and the
+// tables are the pg_dump target. Roughly 8x the event density of
+// PriceTargetEvent with true per-analyst identity (expertUID). The free FMP
+// price-target-news feed keeps tailing; the Leg-B reconstruction reads the
+// deduped UNION of both so the price-target signal never goes dark when the
+// add-on is off, and re-enabling it just re-densifies the gap.
+// ---------------------------------------------------------------------------
+
+/// BACKFILL = swept in bulk during a subscription window; LIVE = tailed daily
+/// while entitled. Same semantics as FundamentalProvenance, scoped here.
+enum TipRanksProvenance {
+  BACKFILL
+  LIVE
+}
+
+/// One individual analyst rating with its attached price target. Write-once
+/// (createMany skipDuplicates on the natural key), never overwritten.
+model TipRanksRatingEvent {
+  id                  String              @id @default(cuid())
+  ticker              String
+  ratingDate          DateTime            @db.Date // recommendationDate
+  publishedAt         DateTime? // full vendor timestamp — intraday ordering
+  expertUID           String?
+  analystName         String?
+  firmName            String?
+  recommendation      String? // buy | hold | sell
+  analystAction       String? // initiated | maintained | upgraded | downgraded | reiterated | resumed
+  priceTarget         Decimal?            @db.Decimal(20, 6)
+  priceTargetCurrency String?
+  articleTitle        String?
+  articleSite         String?
+  url                 String?
+  rawJson             Json? // verbatim vendor row
+  provenance          TipRanksProvenance  @default(BACKFILL)
+  source              String              @default("FMP_TIPRANKS")
+  createdAt           DateTime            @default(now())
+
+  @@unique([ticker, ratingDate, expertUID, priceTarget])
+  @@index([ticker, ratingDate])
+  @@index([ratingDate])
+  @@index([expertUID])
+}
+
+/// TipRanks analyst directory (exact-name lookup, resolved per distinct
+/// analystName discovered in the sweep). Analyst-quality metrics are as-of the
+/// fetch — they are NOT point-in-time and must not enter a backtested signal
+/// without an explicit as-of caveat.
+model TipRanksAnalyst {
+  id                   String   @id @default(cuid())
+  expertUID            String   @unique
+  analystName          String?
+  firmName             String?
+  successRate          Float?
+  excessReturn         Float?
+  totalRecommendations Int?
+  goodRecommendations  Int?
+  analystRank          Int?
+  numOfStars           Float?
+  rawJson              Json?
+  fetchedAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([analystName])
+}
+
+enum TipRanksIngestStatus {
+  PENDING
+  COMPLETE
+  FAILED
+}
+
+/// Per-ticker sweep ledger. Makes the paid-window sweep resumable across
+/// burst-429 pauses and crashes without re-billing calls, records the
+/// high-water mark a future re-subscription resumes from, and flags any
+/// ticker whose response hit the request limit (possible silent truncation).
+model TipRanksIngestLedger {
+  id            String               @id @default(cuid())
+  ticker        String               @unique
+  status        TipRanksIngestStatus @default(PENDING)
+  rowsFetched   Int? // rows returned by the vendor on the last run
+  rowsWritten   Int? // new rows inserted (dedup-skipped excluded)
+  pagesFetched  Int?
+  hitLimit      Boolean              @default(false)
+  minRatingDate DateTime?            @db.Date
+  maxRatingDate DateTime?            @db.Date // high-water mark for --from resume
+  lastError     String?
+  attempts      Int                  @default(0)
+  completedAt   DateTime?
+  updatedAt     DateTime             @updatedAt
+  createdAt     DateTime             @default(now())
+
+  @@index([status])
+}
+
 /// Sector / subsector aggregate weekly snapshot (rotation + breadth heatmap
 /// inputs). Append-only, keyed by (groupType, groupKey, snapshotDate).
 model RevisionSectorAggregate {
@@ -684,6 +783,14 @@ model RevisionScore {
   snapshotDate    DateTime          @db.Date
   peerGroupType   RevisionGroupType
   peerGroupKey    String
+  /// THE RANK — orthogonalized matched-panel PT revision, peer z. Everything
+  /// (rank, deciles, newArrival, gap, streaks, decomposition, transitions)
+  /// keys off this single signal.
+  ptRevOrthZ      Float?
+  /// Pre-z residual behind ptRevOrthZ, in raw revision units.
+  ptRevOrthRaw    Float?
+  /// Legacy 5-signal equal-weight composite. REFERENCE ONLY — retired from
+  /// ranking (never validated at depth); kept so the old weeks stay readable.
   composite       Float?
   subsectorDecile Int?
   sectorDecile    Int?
@@ -698,7 +805,7 @@ model RevisionScore {
   idioZ           Float? // composite - groupZ
   streakLen       Int? // consecutive same-sign composite weeks
   streakSign      Int? // -1 | 0 | 1
-  streakSource    String? // LEG_A | LEG_B (Leg-B fallback until Leg A depth >= 6w)
+  streakSource    String? // RANK — the series the streak reads (ptRevOrthZ)
   side            String? // LONG | SHORT — sticky flag driven by decile + gap thresholds
   dispersionTrend String? // NARROWING | WIDENING | FLAT
   scoreJson       Json? // all raw signals + their z-scores + derived detail
@@ -707,6 +814,83 @@ model RevisionScore {
   @@unique([ticker, snapshotDate])
   @@index([snapshotDate])
   @@index([snapshotDate, rank])
+  @@index([snapshotDate, ptRevOrthZ])
+}
+
+/// Materialized screen row — the ONE row the three Engine-1 screens read.
+/// Written weekly by revision-screen-rows.service after RevisionScore, on the
+/// same (ticker, snapshotDate) key, and backfilled over the full Leg-B grid.
+/// Nothing in the UI computes a signal; it sorts and filters these fields, so
+/// the screen definition is identical to what Validation measures.
+///
+/// Point-in-time caveats: `mktCap` and the e2/e3/e4 engine tags come from the
+/// OTHER engines' latest payloads (they have no weekly history), so they are
+/// populated for the live week only and left null on backfilled grid weeks.
+model RevisionScreenRow {
+  ticker           String
+  snapshotDate     DateTime @db.Date
+  subsector        String
+  sector           String
+  mktCap           Float?
+  /// Live (<= ptReconStaleDays) analysts in the matched PT panel this week.
+  analystCount     Int      @default(0)
+  /// THE RANK — mirrors RevisionScore.ptRevOrthZ.
+  ptRevOrthZ       Float?
+  ptRevOrthRaw     Float?
+  /// Analysts who raised / cut their target inside this grid week, counted on
+  /// the deduped TipRanks ∪ FMP panel (never from the FMP table alone).
+  ptUp             Int      @default(0)
+  ptDown           Int      @default(0)
+  epsFy1Chg4w      Float?
+  revFy1Chg4w      Float?
+  ratingUp         Int      @default(0)
+  ratingDown       Int      @default(0)
+  ratingInit       Int      @default(0)
+  pxZ              Float?
+  gap              Float?
+  decile           Int?
+  weeksInTopDecile Int      @default(0)
+  ptRevOrthZHist   Float[] // last 13 grid weeks, oldest first (nulls dropped to 0-length runs)
+  decileHist       Int[] // last 6 grid weeks, oldest first
+  isNewTop         Boolean  @default(false)
+  isNewBottom      Boolean  @default(false)
+  daysToEarnings   Int?
+  grpZ             Float?
+  idioZ            Float?
+  e2Tag            String? // INFLECT | QUAL | TRAP
+  e3Tag            String? // ACCUM | DISTRIB | CROWDED
+  e4Tag            String? // MOM+ | VAL | QUAL
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@id([ticker, snapshotDate])
+  @@index([snapshotDate, ptRevOrthZ])
+  @@index([snapshotDate, subsector])
+  @@index([ticker])
+}
+
+/// One row per grid week — the Universe screen's top strip. Breadth, the
+/// cross-sectional score distribution, and top/bottom-decile churn, all
+/// derived from the same week's RevisionScreenRow set.
+model RevisionUniverseWeek {
+  snapshotDate    DateTime @id @db.Date
+  /// Share of covered names (analystCount > 0) with ptUp > ptDown.
+  pctNamesNetUp   Float?
+  ptUpTotal       Int      @default(0)
+  ptDownTotal     Int      @default(0)
+  /// 41 bins of ptRevOrthZ over [-4, +4].
+  revZHistogram   Int[]
+  /// Tickers entering / leaving decile 10 this week.
+  arrivals        String[]
+  exits           String[]
+  /// Tickers entering / leaving decile 1 this week.
+  arrivalsShort   String[]
+  exitsShort      String[]
+  namesScored     Int      @default(0)
+  /// Per-subsector [{ name, z, chg4w, n }] — the heatmap cells (n >= 8).
+  subsectorsJson  Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 /// Weekly ranked research-queue output cache (master rank table payload).
@@ -730,6 +914,11 @@ model RevisionPriceSnapshot {
   snapshotDate DateTime  @db.Date
   close        Float? // last daily adjClose <= snapshotDate (staleness-gated)
   priceDate    DateTime? @db.Date // actual bar date used; null if too stale
+  /// First trading-day close STRICTLY AFTER snapshotDate — the t+1 entry every
+  /// forward return is measured from (events dated on the snapshot date can
+  /// post after that close). Null when no bar trades within entryGapMaxDays.
+  closeNext     Float?
+  closeNextDate DateTime? @db.Date
   ret1w        Float?
   ret4w        Float?
   ret13w       Float? // trailing grid-step returns (grid ~= weekly)
@@ -753,9 +942,14 @@ model RevisionLegBWeekly {
   snapshotDate     DateTime @db.Date
   netUpDown        Float? // sum of +-1 action scores over rating events in (prevWeek, week]
   ratingActivity   Int? // rating event count in the window
-  ptConsensusRecon Float? // mean of each analyst's latest PT <= week, staleness-windowed
-  ptRevisionRecon  Float? // relChange vs prior week's reconstruction
+  ptConsensusRecon Float? // LEVEL: mean of each analyst's latest PT <= week, staleness-windowed (context/display)
+  ptRevisionRecon  Float? // SIGNAL: matched-panel mean of pt_t/pt_{t-1}-1 over analysts in BOTH weeks (panel entry/exit = 0)
   composite        Float? // cross-sectional peer z-blend of the two signals
+  // Panel observability — a source going dark (subscription lapse) shows up here as a
+  // 26-week decay in size/sourceMix instead of silently drifting the signal.
+  ptPanelSize      Int? // live analysts in this week's panel
+  ptPanelMatched   Int? // analysts present in both this and the prior week (the revision denominator)
+  ptSourceMix      Float? // share of the panel whose latest target came from TipRanks
   createdAt        DateTime @default(now())
 
   @@unique([ticker, snapshotDate])

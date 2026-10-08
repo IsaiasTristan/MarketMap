@@ -34,6 +34,8 @@ coverage
 
 # Scheduled job logs (scripts/daily-precompute.ps1)
 logs
+# pg_dump archives of non-replayable vendor windows (TipRanks) — copy off-machine, never commit
+backups
 .server.log
 
 # Live-quote snapshots written by the live-sweep daemon (ephemeral IPC)

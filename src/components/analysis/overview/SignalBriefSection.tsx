@@ -122,7 +122,7 @@ export function SignalBriefSection({ portfolioId }: { portfolioId: string }) {
           action={
             <button
               type="button"
-              onClick={() => router.push("/research?tab=summary")}
+              onClick={() => router.push("/research/revision")}
               style={{
                 background: "transparent",
                 border: "none",
@@ -147,7 +147,8 @@ export function SignalBriefSection({ portfolioId }: { portfolioId: string }) {
           action={
             <button
               type="button"
-              onClick={() => router.push("/research?tab=calendar")}
+              // The calendar tab is retired: the queue carries the same names, filtered to imminent prints.
+              onClick={() => router.push("/research/revision/queue?er=14")}
               style={{
                 background: "transparent",
                 border: "none",

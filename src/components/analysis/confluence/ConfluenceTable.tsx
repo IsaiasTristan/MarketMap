@@ -220,7 +220,7 @@ export function ConfluenceTable({
                 <td style={td}>
                   <button
                     type="button"
-                    onClick={() => go(`/research?tab=trajectory&ticker=${r.ticker}`)}
+                    onClick={() => go(`/research/revision/${r.ticker}`)}
                     title={r.companyName ?? r.ticker}
                     style={{
                       background: "transparent",
@@ -261,7 +261,7 @@ export function ConfluenceTable({
                       chip="R"
                       state={r.r}
                       hover={`REVISIONS ${r.r}${r.gapScore !== null ? ` · GAP ${fmtSigned(r.gapScore, 1)}σ` : ""}${r.streakLen ? ` · ${r.streakLen}W ${Number(r.streakSign) < 0 ? "NEG" : "POS"} STREAK` : ""} · as of ${asOf.revisionSnapshotDate ?? "—"}`}
-                      onClick={() => go(`/research?tab=trajectory&ticker=${r.ticker}`)}
+                      onClick={() => go(`/research/revision/${r.ticker}`)}
                     />
                     <StackCell
                       chip="13F"

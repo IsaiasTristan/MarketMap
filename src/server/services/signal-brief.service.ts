@@ -251,7 +251,7 @@ export async function getSignalBrief(
       sentence: row.reason,
       severity: gap !== null ? Math.abs(gap) : 1,
       date: row.snapshotDate,
-      href: `/research?tab=queue&ticker=${row.ticker}`,
+      href: `/research/revision/${row.ticker}`,
       gapScore: gap,
     });
   }

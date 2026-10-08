@@ -9,6 +9,13 @@ import { fmpApiKey, fmpBaseUrl, fmpCallsPerMinute } from "@/infrastructure/confi
 
 export class FmpAuthError extends Error {}
 export class FmpRequestError extends Error {}
+/**
+ * HTTP 402 — the key is valid but the endpoint belongs to a paid add-on the
+ * account is not currently subscribed to (e.g. the TipRanks data boost).
+ * Distinct from auth failure and NEVER retried: callers that tail an add-on
+ * feed treat it as "not entitled right now" and no-op cleanly.
+ */
+export class FmpEntitlementError extends Error {}
 
 const MAX_ATTEMPTS = 4;
 
@@ -51,6 +58,9 @@ async function fmpFetch(path: string, params: FmpParams): Promise<Response> {
     }
     if (res.status === 401 || res.status === 403) {
       throw new FmpAuthError(`FMP auth failed (HTTP ${res.status}) for ${redact(url)}`);
+    }
+    if (res.status === 402) {
+      throw new FmpEntitlementError(`FMP endpoint not in current subscription (HTTP 402) for ${redact(url)}`);
     }
     if (res.status === 429 || res.status >= 500) {
       lastReason = `HTTP ${res.status}`;

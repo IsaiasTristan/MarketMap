@@ -275,7 +275,60 @@ export const researchDecompQuery = z.object({
   groupType: z.enum(["SECTOR", "SUBSECTOR"]).optional().default("SUBSECTOR"),
 });
 
+// ─── Engine 1 — the three screens (Universe → Queue → Name) ────────────────
+
 const gridDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional();
+
+export const researchUniverseQuery = z.object({ date: gridDate });
+
+export const researchNameQuery = z.object({ date: gridDate });
+
+/** Every filter is URL-backed so Screen 1 can deep-link into Screen 2. */
+export const researchScreenQuery = z.object({
+  date: gridDate,
+  side: z.enum(["long", "short", "both"]).optional().default("both"),
+  minZ: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined ? 1 : Math.max(0, Math.min(5, Number(v)))))
+    .pipe(z.number().min(0).max(5)),
+  cap: z.enum(["MICRO", "SMALL", "MID", "LARGE"]).optional(),
+  cov: z.enum(["THIN", "MID", "DEEP"]).optional(),
+  minWeeks: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(1, Math.min(52, Number(v))) : undefined))
+    .pipe(z.number().int().min(1).max(52).optional()),
+  er: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(0, Math.min(120, Number(v))) : undefined))
+    .pipe(z.number().int().min(0).max(120).optional()),
+  new: z
+    .string()
+    .optional()
+    .transform((v) => v === "1" || v === "true"),
+  tri: z
+    .string()
+    .optional()
+    .transform((v) => v === "1" || v === "true"),
+  subsector: z.string().max(120).optional(),
+  q: z
+    .string()
+    .max(12)
+    .optional()
+    .transform((s) => (s && s.trim() ? s.trim() : undefined)),
+  page: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(1, Number(v)) : 1))
+    .pipe(z.number().int().min(1)),
+  pageSize: z
+    .string()
+    .optional()
+    .transform((v) => (v ? Math.max(10, Math.min(200, Number(v))) : 50))
+    .pipe(z.number().int().min(10).max(200)),
+});
 
 // ─── Engine 2 — Fundamentals (discovery) ───────────────────────────────────
 

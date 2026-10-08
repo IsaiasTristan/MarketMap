@@ -7,6 +7,7 @@ import {
   icSummary,
   informationCoefficient,
   meanDrift,
+  neweyWestTStat,
   pearson,
   quantileSpread,
   rollingIC,
@@ -148,5 +149,39 @@ describe("icSummary", () => {
   it("degrades on sparse input", () => {
     expect(icSummary([0.1])).toEqual({ mean: 0.1, tStat: null, n: 1 });
     expect(icSummary([null, null])).toEqual({ mean: null, tStat: null, n: 0 });
+  });
+});
+
+describe("neweyWestTStat", () => {
+  it("at lag 0 uses the population-variance HAC (naive t-stat scaled by sqrt(n/(n-1)))", () => {
+    const ics = [0.1, 0.2, 0.3, 0.15, 0.25];
+    const n = ics.length;
+    const naive = icSummary(ics);
+    const nw = neweyWestTStat(ics, 0);
+    expect(nw.lag).toBe(0);
+    expect(nw.mean!).toBeCloseTo(naive.mean!, 12);
+    // HAC gamma_0 divides by n, icSummary variance by n-1: ratio is sqrt(n/(n-1)).
+    expect(nw.tStat!).toBeCloseTo(naive.tStat! * Math.sqrt(n / (n - 1)), 10);
+    expect(nw.effectiveN!).toBeCloseTo(n, 6); // no autocorrelation penalty at lag 0
+  });
+  it("shrinks the t-stat and effective-n under positive serial correlation", () => {
+    // Strongly persistent series: overlapping windows inflate the naive t-stat.
+    const ics = Array.from({ length: 40 }, (_, i) => 0.05 + 0.03 * Math.sin(i / 6));
+    const naive = icSummary(ics);
+    const nw = neweyWestTStat(ics, 3);
+    expect(nw.lag).toBe(3);
+    expect(Math.abs(nw.tStat!)).toBeLessThan(Math.abs(naive.tStat!));
+    expect(nw.effectiveN!).toBeLessThan(ics.length);
+    expect(nw.effectiveN!).toBeGreaterThanOrEqual(1);
+  });
+  it("clamps the bandwidth to n-1 and degrades on sparse input", () => {
+    expect(neweyWestTStat([], 4)).toMatchObject({ mean: null, tStat: null, n: 0 });
+    expect(neweyWestTStat([0.1], 4)).toMatchObject({ mean: 0.1, tStat: null, n: 1 });
+    const nw = neweyWestTStat([0.1, 0.2, 0.3], 10);
+    expect(nw.lag).toBe(2); // clamped to n-1
+  });
+  it("filters non-finite entries", () => {
+    const nw = neweyWestTStat([0.1, null, 0.2, NaN, 0.3], 1);
+    expect(nw.n).toBe(3);
   });
 });

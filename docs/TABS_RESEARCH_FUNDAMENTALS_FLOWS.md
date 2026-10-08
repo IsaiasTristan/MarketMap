@@ -15,43 +15,46 @@ shared scoring primitives (`@/lib/revision/scoring`: `winsorize`, `zScores`, `ra
 
 Common patterns across all three:
 - **Thin page → client router.** `src/app/(analysis)/<tab>/page.tsx` is a `Suspense` wrapper around a
-  `*Client.tsx` that owns a `BloombergTabStrip` and switches sub-panels on a `tab` URL param.
+  `*Client.tsx` that owns a `BloombergTabStrip` and switches sub-panels on a `tab` URL param. **Research is
+  the exception** — it uses real nested routes (`/research/revision`, `/queue`, `/[ticker]`, `/validation`)
+  under a shared shell instead of one tab-switching client.
 - **Precompute-then-read.** A weekly/quarterly job writes fully-baked payloads to Prisma; GET routes are
   thin read wrappers. A few views recompute live on read (noted below).
 - **react-query hooks** (`useRevision` / `useFlows`, and a direct fetch in Fundamentals) with a 404→empty
   convention so panels show "accruing/insufficient data" placeholders instead of errors.
 - **Peer-relative scoring**: z-scores within subsector (sector fallback), `MIN_PEERS`/`MIN_VALID_BOXES` gates.
-- **Deep-linkable**: `?tab=`, plus `?ticker=`/`?fund=`/`?group=` cross-links between engines.
+- **Deep-linkable**: `?tab=` (Fundamentals/Flows) or a nested path (Research), plus `?ticker=`/`?fund=`/`?group=`
+  cross-links between engines.
 
 ---
 
 ## 1. RESEARCH tab — Engine 1: Analyst Revision Detector
 
-**Entry:** `src/components/analysis/research/ResearchClient.tsx`
+**Entry:** `src/app/(analysis)/research/revision/` (the `/research` module tab redirects here)
 **Tagline:** *"where analysts are changing their minds, before price reflects it. Decision queue, not a trader."*
 
-Central idea = the **gap score** = `composite4wZ − px4wZ` (revision momentum minus realized peer-relative
-price move). Positive gap = bullish revisions the price hasn't matched → potential long; negative = short.
-It surfaces freshly-inflecting names ("new arrivals"), validates the signal is predictive (IC/backtest), and
-decomposes moves into group (sector) vs idiosyncratic drivers.
+Central idea = **one validated signal**, `ptRevOrthZ`: the matched-panel price-target revision
+(`RevisionLegBWeekly.ptRevisionRecon`), winsorized 1/99, cross-sectionally residualized against the stock's
+own trailing 4-week return, then peer z-scored within subsector (sector fallback). Everything else on screen
+— Leg-A EPS/revenue changes, rating moves, the gap score, the Engine 2/3/4 tags — is **display context**,
+never part of the rank. The legacy 5-signal composite survives in `RevisionScore.scoreJson` as a stored
+reference only.
 
-### Sub-tabs / panels
-All fetch via `useRevision<T>()` (`useRevision.ts`, 5-min staleTime, 404 NO_DATA → empty).
+### Screens (organized by zoom level, not by data type)
+URL-backed filters; data via the hooks in `screens/useScreens.ts` (react-query, 404 NO_DATA → empty).
 
-| Tab (key) | Component | API | Shows |
-|---|---|---|---|
-| **Summary** (default) | `SummaryPanel.tsx` | `GET /research/summary` | Delta triage — only transitions since last snapshot, grouped NEW IDEAS / EXITS & DEGRADING / CATALYSTS ≤7D / GROUP TRIGGERS + header StatStrip (IC health, breadth, actionable longs/shorts). |
-| **Idea Queue** | `IdeaQueuePanel.tsx` + `DivergenceScatter.tsx` | `GET /research/queue` | The "Master Rank". Scatter: x=4w revision-composite z, y=4w peer-relative price z; distance from diagonal = gap; bottom-right = unpriced upgrades → LONG. Table sorted by \|gap\|. |
-| **Rating Changes** | `RatingChanges.tsx` | `GET /research/events?limit=500` | Raw daily feed of analyst up/downgrades (`RatingEvent`) + PT revisions (`PriceTargetEvent`), each annotated with whether it's currently in the queue. |
-| **Validation** | `ValidationPanel.tsx` | `GET /research/validation` | "Is the signal working?" — forward-return-by-decile bars, rolling IC, per-signal IC attribution, regime, post-flag drift. Labeled FULL vs LEG-B-ONLY window. |
-| **Calendar** | `CalendarPanel.tsx` | `GET /research/calendar?days=21` | Names reporting in ~3 weeks that have a live revision signal, grouped by week; "REV Z IN" = proximity-weighted composite into the print. |
-| **Decomp** | `DecompPanel.tsx` | `GET /research/decomp?groupType=SECTOR\|SUBSECTOR` | Splits each name's universe-relative composite into group (`groupZ`) + idiosyncratic residual (`idioZ`) that sum exactly; rule-generated implication label. **Recomputed live on read.** |
-| **Revision Trajectory** (drill) | `RevisionTrajectory.tsx` | `GET /research/trajectory?ticker=` | Per-stock time series of composite/rank/decile/signals across weeks — climb vs spike vs round-trip. |
-| **Rotation Flow** (drill) | `RotationFlow.tsx` | `GET /research/rotation?groupType=&weeks=52` | Sector/subsector composite-mean lines — which groups are inflecting/rolling over. |
-| **Breadth Heatmap** (drill) | `BreadthHeatmap.tsx` | `GET /research/heatmap?...` | Groups × dates heatmap of estimate breadth. |
+| Screen | Route | Component | API | Shows |
+|---|---|---|---|---|
+| **Universe** (default) | `/research/revision` | `screens/UniverseScreen.tsx` + `UniversePanels.tsx` | `GET /research/universe` | Where revisions are happening this week: subsector heatmap (tile = mean `ptRevOrthZ`, 4w delta), breadth/density/churn strip, arrivals & exits, and a revision-vs-price scatter whose brush deep-links into the filtered queue. |
+| **Research queue** | `/research/revision/queue` | `screens/QueueScreen.tsx` + `QueueTable.tsx` | `GET /research/screen` | The ranked list. One row per name: `ptRevOrthZ` (centered bar), analysts raised/cut, avg EPS & sales estimate change 4w, rating moves, 13-week score sparkline, weeks-in-top-decile strip, stock-vs-peers, unpriced gap, days to earnings, E2/E3/E4 tags. Filters: side, min score, cap, coverage, industry, weeks-in-top-decile, earnings window, new-this-week, two-engines-agree, ticker search. |
+| **Name** | `/research/revision/[ticker]` | `screens/NameScreen.tsx` + `NamePanels.tsx` | `GET /research/name/[ticker]` | One name end-to-end. Headline view is the **per-analyst price-target timeline** (`AnalystTargetTimeline.tsx`, inline SVG step lines + price line + earnings markers), then stat tiles, peer strip, group/idiosyncratic decomposition, engine tiles, four small multiples (EPS, revenue, PT moves, relative return), and a price-target event log gated to the current scoring week. |
+| **Validation** | `/research/revision/validation` | `screens/ValidationCanvas.tsx` | `GET /research/funnel` | "Is the signal working?" as funnel metrics — top-25 precision & hit rate, week-over-week queue overlap, decile bars, rolling IC (Newey-West HAC t), IC by horizon (1/2/4/8/13/26w, 4w flagged as the ranked horizon), and robustness cuts by cap, coverage, and earnings window + a survivorship note. A headline renders only with ≥26 effective weeks, otherwise it reads "accruing". |
+| **Ingest** (admin) | — | — | `POST /research/ingest` | `runRevisionPipeline()`. CLI mirror: `npm run job:revision`. |
 
-Shared UI in `researchUi.tsx` (chips, StatStrip, GroupIdioBar, heat helpers); tooltips from a metric
-registry (`MetricTip.tsx`), never inline copy; deep links via `GotoLink.tsx`.
+Shared chrome in `screens/RevisionShell.tsx` (nav + `StatusChips` header); presentational primitives
+(`Sparkline`, `CenteredBar`, `DecileStrip`, `Tag`) in `primitives.tsx`; pure formatting/filter logic shared
+with the server in `@/lib/revision/screen-format.ts`; tooltips from the metric registry
+(`@/lib/revision/metric-registry.ts`), never inline copy.
 
 ### Data & pipeline
 **Source:** FMP via `@/infrastructure/providers/fmp` (`fetchAnalystEstimates`, `fetchGradesConsensus`,
@@ -70,30 +73,45 @@ consensus, so the weekly snapshot store **is** Leg A's history (sparse at launch
 targets; events carry full backfilled history, so `legb-history.ts` reconstructs a point-in-time weekly
 series — this gives streaks + validation real depth "from day one".
 
-**Precomputed:** summary, queue, validation, rotation, heatmap, calendar (read baked payloads).
-**Live on read:** decomp (re-runs `decomposeComposites` at the requested groupType), plus company display
-names overlaid from `Security.name`. All reads via `revision-query.service.ts`.
+**Precomputed:** the queue and universe screens read baked `RevisionScreenRow` / `RevisionUniverseWeek` rows
+(`revision-screen-rows.service.ts`, appended per week by the pipeline, backfilled by
+`npm run job:revision-screen-rows`); validation reads the cached funnel payload
+(`revision-funnel.service.ts`, stored as `RevisionAnalyticsSnapshot` kind `funnel-validation`).
+**Live on read:** the name screen assembles its timeline/peers/small-multiples from the event tables
+(`revision-name.service.ts`), and company display names are overlaid from `Security.name`.
+Reads go through `revision-screen.service.ts` (universe + queue), `revision-name.service.ts`, and
+`revision-funnel.service.ts`; `revision-query.service.ts` still serves the cross-engine consumers
+(confluence, signal brief, ER scan).
 
 ### Key algorithms (pure math in `src/lib/revision/`, thresholds in `config.ts`)
 - **Signals** (`signals.ts`): WoW relative changes of EPS avg, revenue avg, estimate breadth `(up−down)/total`,
   rating net + momentum, PT revision; EPS dispersion. Near-earnings revisions amplified ≤2× by `proximityWeight`.
-- **Scoring** (`scoring.ts`): winsorize (2% tails) → peer-relative z (subsector if ≥8 names, else sector) →
-  composite (equal-weighted mean of signal z's) → `rankAndDecile` (10 = strongest) → `isNewArrival`
-  (entered top decile this week = the change-detector flag). Also a universe-relative "global composite".
-- **Gap score**: `composite4wZ − px4wZ` where "4w" = 4 grid steps (irregular snapshot cadence, not 28 days).
+- **Rank signal** (`orthogonalize.ts`): `computePtRevOrth` — winsorize `ptRevisionRecon` 1/99 → cross-sectional
+  residual vs trailing 4w return → peer z (subsector if ≥8 names, else sector). The universe is the
+  `isActive` slice of `RevisionReference` with peer groups resolved once for the whole grid, so the lab,
+  scoring, screen rows, and validation all rank the same population.
+- **Scoring** (`scoring.ts`): winsorize (2% tails) → peer-relative z → `rankAndDecile` (10 = strongest) →
+  `isNewArrival` (entered top decile this week = the change-detector flag). The equal-weighted 5-signal
+  composite is still computed and stored in `scoreJson` for reference but no longer drives rank.
+- **Gap score**: `ptRevOrthZ − px4wZ` where "4w" = 4 grid steps (irregular snapshot cadence, not 28 days).
+- **Forward returns**: entry is `t+1` — `RevisionPriceSnapshot.closeNext` (first trading-day close strictly
+  after the snapshot date), so every lab / validation / screen-row return is `closeNext[t] → closeNext[t+h]`.
 - **Transitions/state machine** (`transitions.ts`): sticky side with hysteresis — entry needs extreme
   decile AND \|gap\| ≥ 1.5; exit only when \|gap\| < 0.5. Emits NEW_LONG/NEW_SHORT, GAP_CLOSED, STREAK_BROKEN,
   GROUP_INFLECTION/ROLLOVER, NEXT_DOMINO (group hot but member lagging), ER_WITHIN_7D.
-- **Validation/backtest** (`backtest.ts`): Information Coefficient = correlation of (signal, forward
-  peer-relative return); decile forward stats, rolling IC, post-flag drift. FULL (5-signal) vs LEG_B
-  (2-signal, full history) variants.
+- **Validation/backtest** (`backtest.ts` + `funnel-metrics.ts`): Information Coefficient = correlation of
+  (signal, forward peer-relative return), with Newey-West HAC t-stats because weekly ICs overlap; decile
+  forward stats, rolling IC, post-flag drift, plus the funnel layer — top-K precision/hit rate, week-over-week
+  queue overlap, next-print outcome, and the cap / coverage / earnings-window cuts.
 
 ### Prisma models
 `RevisionReference` (universe/taxonomy) · `RevisionSnapshot` (weekly Leg A+B consensus; unique ticker+date) ·
-`RatingEvent` / `PriceTargetEvent` (Leg B event history) · `RevisionSectorAggregate` (rotation/heatmap
-inputs) · `RevisionScore` (composite, deciles, rank, gapScore, groupZ/idioZ, streak, side) ·
-`ResearchQueueSnapshot` (baked queue payload) · `RevisionPriceSnapshot` · `RevisionLegBWeekly` ·
-`SignalTransition` (powers Summary) · `RevisionAnalyticsSnapshot` (validation cache).
+`RatingEvent` / `PriceTargetEvent` (Leg B event history) · `TipRanksRatingEvent` / `TipRanksAnalyst` /
+`TipRanksIngestLedger` (point-in-time per-analyst PT history) · `RevisionSectorAggregate` ·
+`RevisionScore` (`ptRevOrthZ`/`ptRevOrthRaw` + deciles, rank, gapScore, groupZ/idioZ, streak, side;
+legacy composite in `scoreJson`) · `RevisionScreenRow` + `RevisionUniverseWeek` (baked queue/universe rows) ·
+`ResearchQueueSnapshot` · `RevisionPriceSnapshot` (incl. `closeNext`) · `RevisionLegBWeekly` ·
+`SignalTransition` · `RevisionAnalyticsSnapshot` (validation + funnel caches).
 Enums: `RevisionGroupType`, `RevisionTransitionType`.
 
 ---

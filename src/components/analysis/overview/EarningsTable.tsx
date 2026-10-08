@@ -43,7 +43,7 @@ export function EarningsTable({ items, noDate }: { items: EarningsItemDto[]; noD
           {items.map((it) => (
             <tr
               key={it.ticker}
-              onClick={() => router.push(`/research?tab=calendar&ticker=${it.ticker}`)}
+              onClick={() => router.push(`/research/revision/${it.ticker}`)}
               style={{ borderTop: "1px solid var(--chrome-border)", cursor: "pointer" }}
             >
               <td className="bb-num" style={{ padding: "3px 8px", color: it.erDate ? "var(--text-primary)" : "var(--text-muted)" }}>

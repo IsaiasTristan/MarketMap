@@ -36,7 +36,7 @@ function cand(over: Partial<FeedCandidate> = {}): FeedCandidate {
     sentence: "x",
     severity: 2,
     date: "2026-07-01",
-    href: "/research?tab=queue",
+    href: "/research/revision/AAA",
     ...over,
   };
 }

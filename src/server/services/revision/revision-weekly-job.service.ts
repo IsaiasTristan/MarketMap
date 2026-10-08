@@ -22,8 +22,15 @@ import {
 import { capturePriceWeek } from "./price-ingest.service";
 import { appendLegBWeek } from "./legb-weekly.service";
 import { scoreRevisionWeek, type ScoreSummary } from "./revision-scoring.service";
+import { appendScreenRowsWeek } from "./revision-screen-rows.service";
 import { computeAndCacheValidation } from "./revision-validation.service";
+import { computeAndCacheFunnelValidation } from "./revision-funnel.service";
 import { writeConfluenceStageSnapshot } from "@/server/services/confluence.service";
+import { computeAndWritePairGroups } from "@/server/services/pairs/pairs-group.service";
+import { computeAndWritePairSnapshots } from "@/server/services/pairs/pairs-snapshot.service";
+import { computeAndWriteTier2Snapshots } from "@/server/services/pairs/pairs-tier2.service";
+import { computeAndWriteTier3ReadThroughs } from "@/server/services/pairs/pairs-tier3.service";
+import { computeAndCachePairValidation } from "@/server/services/pairs/pairs-validation.service";
 
 /** Where the revision universe (the list of tickers) comes from. */
 export type ReferenceSource = "MARKET_MAP" | "FMP_SCREENER";
@@ -178,9 +185,13 @@ export interface RevisionPipelineSummary {
   priceCapture: { rowsWritten: number; coverage: number; failures: number } | null;
   legBAppend: { rowsWritten: number } | null;
   scoring: ScoreSummary | null;
+  /** Materialized RevisionScreenRow + RevisionUniverseWeek for this week. */
+  screenRows: { rowsWritten: number } | null;
   validation: { effectiveWeeks: { full: number; legB: number; price: number } } | null;
   /** Weekly cross-engine confluence stage history (ConfluenceStageSnapshot). */
   confluence: { rowsWritten: number } | null;
+  /** Pairs tab group + oriented-pair snapshots (PairGroupSnapshot / PairSnapshot). */
+  pairs: { groupRows: number; pairRows: number; tier2Rows?: number; tier3ReadThroughs?: number; validationEvents?: number } | null;
   stepErrors: string[];
 }
 
@@ -203,8 +214,10 @@ export async function runRevisionPipeline(
     priceCapture: null,
     legBAppend: null,
     scoring: null,
+    screenRows: null,
     validation: null,
     confluence: null,
+    pairs: null,
     stepErrors,
   };
   if (ingest.snapshotsWritten === 0) {
@@ -236,12 +249,67 @@ export async function runRevisionPipeline(
     stepErrors.push(`scoring: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  // Materialize the screen row the three research screens read. Must follow
+  // scoring so the live week's rank is already on the same grid date.
+  if (summary.scoring) {
+    try {
+      const s = await appendScreenRowsWeek(ingest.snapshotDate, log);
+      summary.screenRows = { rowsWritten: s.rowsWritten };
+    } catch (e) {
+      stepErrors.push(`screen-rows: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // Pairs tab — recompute group baskets then oriented Tier-1 pairs from the
+  // freshly materialized screen rows. Full recompute (idempotent) so the two
+  // stages always agree; isolated so a failure degrades the pairs tab without
+  // aborting the week.
+  if (summary.screenRows) {
+    try {
+      const g = await computeAndWritePairGroups({ log });
+      const p = await computeAndWritePairSnapshots({ log });
+      summary.pairs = { groupRows: g.groupRows, pairRows: p.pairRows };
+    } catch (e) {
+      stepErrors.push(`pairs: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // Tier 2 single-stock pairs — isolated so a failure degrades only Tier 2,
+    // leaving the Tier 1 result intact. Runs AFTER the Tier 1 snapshot step,
+    // which wipes all PairSnapshot rows before rewriting T1.
+    try {
+      const t2 = await computeAndWriteTier2Snapshots({ log });
+      summary.pairs = { ...(summary.pairs ?? { groupRows: 0, pairRows: 0 }), tier2Rows: t2.tier2Rows };
+    } catch (e) {
+      stepErrors.push(`pairs-tier2: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // Tier 3 curated-link read-throughs — isolated; ships empty, so this is a
+    // no-op until links are curated.
+    try {
+      const t3 = await computeAndWriteTier3ReadThroughs({ log });
+      summary.pairs = { ...(summary.pairs ?? { groupRows: 0, pairRows: 0 }), tier3ReadThroughs: t3.readThroughs };
+    } catch (e) {
+      stepErrors.push(`pairs-tier3: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // Pooled Validation event study — isolated; recomputes the cached blob.
+    try {
+      const pv = await computeAndCachePairValidation({ log });
+      summary.pairs = { ...(summary.pairs ?? { groupRows: 0, pairRows: 0 }), validationEvents: pv.events };
+    } catch (e) {
+      stepErrors.push(`pairs-validation: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   if (opts.revalidate !== false && summary.scoring) {
     try {
       const v = await computeAndCacheValidation({ log });
       summary.validation = { effectiveWeeks: v.effectiveWeeks };
     } catch (e) {
       stepErrors.push(`validation: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // Funnel metrics over the full grid — the Validation canvas's headline.
+    try {
+      await computeAndCacheFunnelValidation(log);
+    } catch (e) {
+      stepErrors.push(`funnel-validation: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 

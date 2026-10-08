@@ -80,6 +80,32 @@ export const REV_METRIC_IDS = [
   "idioZ",
   "grpIdioSplit",
   "implication",
+  // Rank signal + screen columns (Universe / Queue / Name)
+  "ptRevOrthZ",
+  "ptRevOrthRaw",
+  "ptUpDown",
+  "epsFy1Chg4w",
+  "revFy1Chg4w",
+  "ratingMoves",
+  "weeksInTopDecile",
+  "analystCount",
+  "engineTags",
+  // Universe strip
+  "pctNamesNetUp",
+  "ptFlowWeek",
+  "revZHistogram",
+  "breadthZ",
+  "topDecileChurn",
+  // Funnel validation
+  "topKPrecision",
+  "topKHitRate",
+  "queueOverlap",
+  "nextPrintOutcome",
+  "hacT",
+  "capCut",
+  "coverageCut",
+  "earningsWindowCut",
+  "survivorship",
 ] as const;
 
 export type RevMetricId = (typeof REV_METRIC_IDS)[number];
@@ -221,7 +247,8 @@ export function buildRevisionMetricRegistry(t: RevisionThresholds): Record<RevMe
     streakSource: {
       id: "streakSource",
       label: "streak source",
-      short_def: `Which composite the streak reads. Lᴮ = Leg-B only (ratings + price targets, reconstructed point-in-time — full history). Switches to the full 5-signal composite once ${t.legAStreakMinWeeks} weeks of estimate history have accrued.`,
+      short_def:
+        "Which series the streak reads. RANK = the target-raise score (orthogonalized matched-panel price-target revision) — the one signal the queue ranks on, reconstructed point-in-time over the full grid.",
     },
     setupUnpr: {
       id: "setupUnpr",
@@ -413,6 +440,146 @@ export function buildRevisionMetricRegistry(t: RevisionThresholds): Record<RevMe
       label: "implication",
       short_def:
         "Rule-generated read of the split: idio-driven names are clean single-name ideas; group-driven names are sector bets (hedge accordingly) or domino candidates; offsetting components warrant caution.",
+    },
+    ptRevOrthZ: {
+      id: "ptRevOrthZ",
+      label: "target raises vs peers",
+      short_def:
+        "The one signal the queue ranks on. How much the analysts who cover this name raised their price targets this week, measured only against the analysts who also had a target last week, with the part explained by the stock's own recent move stripped out, then scored against peers. Positive = analysts are raising targets faster than peers for reasons the price has not already reflected.",
+      calculation: `matched-panel mean(pt_t / pt_{t−1} − 1) → winsorize 1/99 → cross-sectional residual vs trailing ${w4} return → peer-group z`,
+      basis: `Point-in-time weekly from the TipRanks ∪ FMP per-analyst event union. Targets unchanged for ${t.ptReconStaleDays} days are evicted.`,
+    },
+    ptRevOrthRaw: {
+      id: "ptRevOrthRaw",
+      label: "raw target change",
+      short_def:
+        "The same matched-panel target change before peer scoring — the actual average percentage move in this name's price targets this week.",
+    },
+    ptUpDown: {
+      id: "ptUpDown",
+      label: "analysts raised / cut",
+      short_def:
+        "How many covering analysts moved their target up versus down this week, out of the matched panel. Counted from the deduped TipRanks ∪ FMP union, so a firm publishing to both sources is counted once.",
+    },
+    epsFy1Chg4w: {
+      id: "epsFy1Chg4w",
+      label: "avg EPS est. change 4w",
+      short_def: `Percentage change in the consensus current-year EPS estimate over the last ${w4}. Display only — it does not enter the rank. Reads "n/m" when the starting estimate is zero or negative.`,
+      basis: "Leg A (estimate snapshots) — accrues forward from launch.",
+    },
+    revFy1Chg4w: {
+      id: "revFy1Chg4w",
+      label: "avg sales est. change 4w",
+      short_def: `Percentage change in the consensus current-year revenue estimate over the last ${w4}. Display only — it does not enter the rank.`,
+      basis: "Leg A (estimate snapshots) — accrues forward from launch.",
+    },
+    ratingMoves: {
+      id: "ratingMoves",
+      label: "buy/sell rating moves",
+      short_def:
+        "Upgrades, downgrades and new initiations recorded this week. Context only — rating changes are lumpy and are deliberately not part of the rank.",
+    },
+    weeksInTopDecile: {
+      id: "weeksInTopDecile",
+      label: "weeks in top 10%",
+      short_def: `Consecutive weeks, including this one, that the name has sat in the strongest decile of the rank. One block per week (most recent right), filled when the name was in the decile. A ${t.streakDisplayWeeks}-block run means the revision wave has persisted, not flickered.`,
+    },
+    analystCount: {
+      id: "analystCount",
+      label: "# analysts",
+      short_def:
+        "Size of the matched panel behind the score — how many analysts had a target in both weeks. Amber at four or fewer, where one analyst can move the whole score.",
+    },
+    engineTags: {
+      id: "engineTags",
+      label: "other engines",
+      short_def:
+        "What Engines 2 (fundamentals), 3 (institutional flow) and 4 (factors) independently say about this name. Shown side by side and never blended into the rank — agreement is corroboration you read, not a number.",
+    },
+    pctNamesNetUp: {
+      id: "pctNamesNetUp",
+      label: "share of stocks where analysts are raising",
+      short_def:
+        "Percentage of covered names whose analysts raised more targets than they cut this week. Above 50% = a broad raising wave; the level matters less than the direction of change.",
+    },
+    ptFlowWeek: {
+      id: "ptFlowWeek",
+      label: "price-target changes this week",
+      short_def:
+        "Raw count of target raises and cuts across the whole universe this week, with the same counts from four weeks ago for context.",
+    },
+    revZHistogram: {
+      id: "revZHistogram",
+      label: "spread of revision scores",
+      short_def:
+        "Distribution of this week's rank scores across the universe, against four weeks ago. A wider right tail means the strong names are pulling further ahead — that is when a top-25 list is worth reading.",
+    },
+    breadthZ: {
+      id: "breadthZ",
+      label: "industry revision breadth",
+      short_def:
+        "Each industry's average rank score, scored against the other industries. Green = analysts are raising targets across that industry; the arrow is the four-week change. Only industries with at least eight covered names are shown.",
+    },
+    topDecileChurn: {
+      id: "topDecileChurn",
+      label: "joined / left the top 10%",
+      short_def:
+        "Names that entered the strongest decile this week and names that dropped out of it. Arrivals are where new work is; exits are where a thesis may have run its course.",
+    },
+    topKPrecision: {
+      id: "topKPrecision",
+      label: "top-25 precision",
+      short_def:
+        "Median peer-relative forward return of the 25 names the screen actually surfaced each week, against 1,000 random 25-name draws from the same eligible set. Reported as a percentile: 50 = no better than random, above 50 = the top of the list beats a coin flip.",
+      basis: "Entry and exit both at the first close after the snapshot date (t+1).",
+    },
+    topKHitRate: {
+      id: "topKHitRate",
+      label: "top-25 hit rate",
+      short_def:
+        "Share of the surfaced 25 whose peer-relative forward return was positive, against the same random baseline.",
+    },
+    queueOverlap: {
+      id: "queueOverlap",
+      label: "week-over-week overlap",
+      short_def:
+        "How much of this week's top 25 was also in last week's (Jaccard). Low overlap means the list turns over fast — a usability constraint, not a quality one.",
+    },
+    nextPrintOutcome: {
+      id: "nextPrintOutcome",
+      label: "next-print outcome",
+      short_def:
+        "Of the surfaced 25, the share whose NEXT earnings report beat consensus and the share still scoring net-up a week later. A revision signal should predict the next revision, not only the next price tick.",
+    },
+    hacT: {
+      id: "hacT",
+      label: "t-stat (overlap-adjusted)",
+      short_def:
+        "Newey-West t-statistic on the weekly information coefficients, with the lag set to the horizon minus one so overlapping forward windows are not double-counted. The naive t-stat is shown alongside and is always the more flattering of the two.",
+    },
+    capCut: {
+      id: "capCut",
+      label: "by company size",
+      short_def:
+        "The same measurement split into market-cap thirds. The brief's success criterion is that the edge is not confined to the smallest names.",
+    },
+    coverageCut: {
+      id: "coverageCut",
+      label: "by analyst coverage",
+      short_def:
+        "The same measurement split by how many analysts cover the name (thin ≤ 4, mid ≤ 10, deep above). Thin panels are noisier by construction.",
+    },
+    earningsWindowCut: {
+      id: "earningsWindowCut",
+      label: "around earnings",
+      short_def:
+        "The measurement on ticker-weeks within 14 days after a report, against every other week — how much of the edge is post-earnings drift rather than a standalone revision effect.",
+    },
+    survivorship: {
+      id: "survivorship",
+      label: "survivorship note",
+      short_def:
+        "The universe is today's active list, so names that delisted are absent from history. This counts how many of today's tickers were missing on each past date, plus ticker-weeks dropped for having no trading day near the snapshot. Flagged, not corrected.",
     },
   };
 }

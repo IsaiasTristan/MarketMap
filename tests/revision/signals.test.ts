@@ -114,3 +114,81 @@ describe("computeRawSignals", () => {
     expect(near.epsRevision!).toBeCloseTo(far.epsRevision! * 2, 6);
   });
 });
+
+describe("computeRawSignals — fiscal-year roll", () => {
+  const FY1 = "2025-12-31";
+  const FY2 = "2026-12-31";
+  // Prior week tracks FY1: eps 2.0, revenue 100.
+  const prior: StockWeek = {
+    ticker: "T",
+    epsAvg: 2.0,
+    revenueAvg: 100,
+    metricAvgs: { revenue: 100, eps: 2.0, ebitda: 55, ebit: 40, netIncome: 30 },
+    epsLow: 1.9,
+    epsHigh: 2.1,
+    ratingDist: { strongBuy: 1, buy: 5, hold: 4, sell: 0, strongSell: 0 },
+    ptConsensus: 120,
+    daysToEarnings: null,
+    forwardFiscalDate: FY1,
+    periodAvgs: new Map([[FY1, { revenue: 100, eps: 2.0, ebitda: 55, ebit: 40, netIncome: 30 }]]),
+  };
+
+  it("measures the SAME period's revision, not the FY1->FY2 level jump", () => {
+    // Fiscal year rolled: forward is now FY2 (much higher level), but FMP still
+    // reports FY1 with a small genuine +5% eps / +5% revenue revision.
+    const curr: StockWeek = {
+      ticker: "T",
+      epsAvg: 3.0, // FY2 leaders — the level jump we must NOT read as a revision
+      revenueAvg: 150,
+      metricAvgs: { revenue: 150, eps: 3.0, ebitda: 80, ebit: 65, netIncome: 50 },
+      epsLow: 2.8,
+      epsHigh: 3.2,
+      ratingDist: prior.ratingDist,
+      ptConsensus: 130,
+      daysToEarnings: null,
+      forwardFiscalDate: FY2,
+      periodAvgs: new Map([
+        [FY1, { revenue: 105, eps: 2.1, ebitda: 56, ebit: 41, netIncome: 31 }],
+        [FY2, { revenue: 150, eps: 3.0, ebitda: 80, ebit: 65, netIncome: 50 }],
+      ]),
+    };
+    const s = computeRawSignals(curr, prior);
+    expect(s.epsRevision!).toBeCloseTo(0.05, 6); // (2.1-2.0)/2.0, NOT (3.0-2.0)/2.0
+    expect(s.revenueRevision!).toBeCloseTo(0.05, 6);
+    // Breadth compares FY1 curr vs FY1 prior: all five metrics up -> +1.
+    expect(s.estimateBreadth!).toBeCloseTo(1, 6);
+  });
+
+  it("yields null revisions when the prior period is no longer estimated", () => {
+    const curr: StockWeek = {
+      ticker: "T",
+      epsAvg: 3.0,
+      revenueAvg: 150,
+      metricAvgs: { revenue: 150, eps: 3.0, ebitda: 80, ebit: 65, netIncome: 50 },
+      epsLow: 2.8,
+      epsHigh: 3.2,
+      ratingDist: prior.ratingDist,
+      ptConsensus: 130,
+      daysToEarnings: null,
+      forwardFiscalDate: FY2,
+      periodAvgs: new Map([[FY2, { revenue: 150, eps: 3.0, ebitda: 80, ebit: 65, netIncome: 50 }]]),
+    };
+    const s = computeRawSignals(curr, prior);
+    expect(s.epsRevision).toBeNull();
+    expect(s.revenueRevision).toBeNull();
+    expect(s.estimateBreadth).toBeNull();
+  });
+
+  it("is unchanged on a normal (non-roll) week", () => {
+    const curr: StockWeek = {
+      ...prior,
+      epsAvg: 2.2,
+      revenueAvg: 110,
+      metricAvgs: { revenue: 110, eps: 2.2, ebitda: 55, ebit: 44, netIncome: 33 },
+      periodAvgs: new Map([[FY1, { revenue: 110, eps: 2.2, ebitda: 55, ebit: 44, netIncome: 33 }]]),
+    };
+    const s = computeRawSignals(curr, prior);
+    expect(s.epsRevision!).toBeCloseTo(0.1, 6);
+    expect(s.revenueRevision!).toBeCloseTo(0.1, 6);
+  });
+});

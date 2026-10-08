@@ -1,9 +1,15 @@
 /**
  * Engine 1 — signal + scoring layer. Reads the append-only snapshots, computes
- * per-stock revision signals, z-scores them peer-relative (subsector-first,
- * sector fallback), builds the equal-weighted composite + deciles + the
- * week-over-week new-arrival flag, and writes RevisionScore +
+ * per-stock revision signals, and writes RevisionScore +
  * RevisionSectorAggregate + the ResearchQueueSnapshot output cache.
+ *
+ * THE RANK IS ONE SIGNAL: `ptRevOrthZ` (see revision-rank.service). Rank,
+ * deciles, new-arrival, gap, the smoothed mean, streaks, the group/idio
+ * decomposition, the group aggregates and every transition detector all key
+ * off it. The legacy 5-signal equal-weight composite is still computed and
+ * stored, but purely as reference — it was never validated at depth, and
+ * blending un-validated signals is what made the old queue rank on price
+ * moves rather than on revisions.
  *
  * This layer reads the same (ticker, snapshotDate) key ingestion writes but is
  * a distinct service, so signal definitions can change without touching
@@ -36,11 +42,10 @@ import {
   computeStreak,
   decomposeComposites,
   dispersionTrend,
-  pickStreakSource,
   trailingMean,
   type Streak,
-  type StreakSource,
 } from "@/lib/revision/derived";
+import { computeWeekRanks, loadRankRefs } from "./revision-rank.service";
 import {
   detectGroupTransitions,
   detectStockTransitions,
@@ -94,16 +99,41 @@ function tripleField(fwd: Record<string, unknown>, k: string, field: "low" | "av
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+function periodMetricAvgs(fwd: Record<string, unknown>): Partial<Record<BreadthMetric, number | null>> {
+  return {
+    revenue: tripleField(fwd, "revenue", "avg"),
+    eps: tripleField(fwd, "eps", "avg"),
+    ebitda: tripleField(fwd, "ebitda", "avg"),
+    ebit: tripleField(fwd, "ebit", "avg"),
+    netIncome: tripleField(fwd, "netIncome", "avg"),
+  };
+}
+
 function extractForwardMetricAvgs(estimatesJson: unknown): Partial<Record<BreadthMetric, number | null>> {
-  const out: Partial<Record<BreadthMetric, number | null>> = {};
   const fwd = pickForwardPeriod(estimatesJson);
-  if (!fwd) return out;
-  out.revenue = tripleField(fwd, "revenue", "avg");
-  out.eps = tripleField(fwd, "eps", "avg");
-  out.ebitda = tripleField(fwd, "ebitda", "avg");
-  out.ebit = tripleField(fwd, "ebit", "avg");
-  out.netIncome = tripleField(fwd, "netIncome", "avg");
-  return out;
+  return fwd ? periodMetricAvgs(fwd) : {};
+}
+
+/** Fiscal date of the forward period the leaders describe (for like-for-like revisions). */
+export function extractForwardFiscalDate(estimatesJson: unknown): string | null {
+  const fwd = pickForwardPeriod(estimatesJson);
+  const d = fwd?.fiscalDate;
+  return typeof d === "string" ? d : null;
+}
+
+/** Consensus avgs for EVERY annual period, keyed by fiscalDate — the like-for-like lookup table. */
+export function extractPeriodAvgs(
+  estimatesJson: unknown,
+): Map<string, Partial<Record<BreadthMetric, number | null>>> {
+  const map = new Map<string, Partial<Record<BreadthMetric, number | null>>>();
+  if (!estimatesJson || typeof estimatesJson !== "object") return map;
+  const annual = (estimatesJson as { annual?: unknown }).annual;
+  if (!Array.isArray(annual)) return map;
+  for (const p of annual as Array<Record<string, unknown>>) {
+    const d = p.fiscalDate;
+    if (typeof d === "string") map.set(d, periodMetricAvgs(p));
+  }
+  return map;
 }
 
 /** Forward-period EPS low/high — feeds epsDispersion. Pure, exported for tests. */
@@ -149,6 +179,8 @@ function toStockWeek(row: SnapshotRow, snapshotIso: string): StockWeek {
     ratingDist: extractRatingDist(row.ratingsJson),
     ptConsensus: dec(row.ptConsensus),
     daysToEarnings,
+    forwardFiscalDate: extractForwardFiscalDate(row.estimatesJson),
+    periodAvgs: extractPeriodAvgs(row.estimatesJson),
   };
 }
 
@@ -247,17 +279,58 @@ export async function scoreRevisionWeek(opts: ScoreOptions = {}): Promise<ScoreS
     zBySignal.push({ key: sig as string, z: global });
   }
 
+  // Reference only — retired from ranking, retained in scoreJson / the
+  // composite column so historical weeks stay readable.
   const composites = compositeScores(zBySignal, stocks.length, opts.weights);
 
-  // Global rank + within-sector / within-subsector deciles.
-  const ranked = rankAndDecile(composites);
+  // ---- THE RANK ----
+  // One signal, computed over the FULL Leg-B universe for this date (not just
+  // the tickers with an estimates snapshot) so the cross-sectional
+  // orthogonalization and the peer z see the whole market.
+  const HIST_WEEKS = 40;
+  const rankRefs = await loadRankRefs();
+  const legbDateRows = await prisma.revisionLegBWeekly.findMany({
+    where: { snapshotDate: { lte: latest } },
+    distinct: ["snapshotDate"],
+    orderBy: { snapshotDate: "desc" },
+    take: HIST_WEEKS,
+    select: { snapshotDate: true },
+  });
+  const rankDates = legbDateRows.map((r) => r.snapshotDate);
+  if (!rankDates.some((d) => d.getTime() === latest.getTime())) rankDates.push(latest);
+  rankDates.sort((a, b) => a.getTime() - b.getTime());
+  const rankWeeks = await computeWeekRanks(rankDates, rankRefs);
+  const currentRank = rankWeeks[rankWeeks.length - 1]!;
+  /** Per-ticker rank history, oldest first — drives the smoothed mean + streaks. */
+  const rankHistByTicker = new Map<string, Array<number | null>>();
+  rankWeeks.forEach((w, wi) => {
+    for (const e of w.entries) {
+      let arr = rankHistByTicker.get(e.ticker);
+      if (!arr) {
+        arr = new Array<number | null>(rankWeeks.length).fill(null);
+        rankHistByTicker.set(e.ticker, arr);
+      }
+      arr[wi] = e.ptRevOrthZ;
+    }
+  });
+
+  const rankZ = stocks.map((s) => currentRank.byTicker.get(s.row.ticker)?.ptRevOrthZ ?? null);
+  const rankRaw = stocks.map((s) => currentRank.byTicker.get(s.row.ticker)?.ptRevOrthRaw ?? null);
+  // Universe-scale twin of the rank. The peer z has ~zero mean inside every
+  // peer bucket by construction, so group-level analytics need this instead.
+  const rankGlobalZ = stocks.map(
+    (s) => currentRank.byTicker.get(s.row.ticker)?.ptRevOrthGlobalZ ?? null,
+  );
+
+  // Global rank + within-sector / within-subsector deciles, all on the rank.
+  const ranked = rankAndDecile(rankZ);
   const globalRank = new Map<number, number>();
   for (const e of ranked) globalRank.set(e.index, e.rank);
 
   const sectorKeys = classifications.map((c) => c.sector ?? "Unclassified");
   const subsectorKeys = classifications.map((c) => c.subsector ?? c.sector ?? "Unclassified");
-  const sectorDeciles = decilesWithinGroups(composites, sectorKeys);
-  const subsectorDeciles = decilesWithinGroups(composites, subsectorKeys);
+  const sectorDeciles = decilesWithinGroups(rankZ, sectorKeys);
+  const subsectorDeciles = decilesWithinGroups(rankZ, subsectorKeys);
 
   // Prior-week deciles + decision-state (side / streak) for change detection.
   const priorScores = priorDate
@@ -292,40 +365,16 @@ export async function scoreRevisionWeek(opts: ScoreOptions = {}): Promise<ScoreS
   // ---- Derived decision metrics (gap score + friends) ----
   const t = REVISION_THRESHOLDS;
 
-  // Universe-relative ("global") composite for GROUP-level analytics. The
-  // peer-relative composite has ~zero mean within each peer bucket by
-  // construction, so group means of it are degenerate — group inflection,
-  // domino, and the grp/idio decomposition need a cross-universe scale.
-  const globalZBySignal: Array<{ key: string; z: Map<number, number> }> = COMPOSITE_SIGNALS.map((sig) => ({
-    key: sig as string,
-    z: zScores(stocks.map((s) => (s.signals[sig] as number | null) ?? null)).z,
-  }));
-  const globalComposites = compositeScores(globalZBySignal, stocks.length, opts.weights);
-
-  // Weekly price returns at the snapshot date -> peer-relative px z.
+  // Weekly price returns at the snapshot date (px z comes from the rank
+  // service, which computes it over the same full universe).
   const priceRows = await prisma.revisionPriceSnapshot.findMany({
     where: { snapshotDate: latest, ticker: { in: tickers } },
     select: { ticker: true, ret1w: true, ret4w: true, ret13w: true },
   });
   const priceByTicker = new Map(priceRows.map((p) => [p.ticker, p]));
-  const ret4wArr = stocks.map((s) => priceByTicker.get(s.row.ticker)?.ret4w ?? null);
-  const px4wZ = new Map<number, number>();
-  {
-    const buckets = new Map<string, number[]>();
-    stocks.forEach((_, i) => {
-      const k = peerKey(i);
-      const arr = buckets.get(k);
-      if (arr) arr.push(i);
-      else buckets.set(k, [i]);
-    });
-    for (const idxs of buckets.values()) {
-      const { z } = zScores(idxs.map((i) => ret4wArr[i] ?? null));
-      for (const [localIdx, zv] of z) px4wZ.set(idxs[localIdx]!, zv);
-    }
-  }
 
-  // Composite history (Leg A depth accrues weekly; everything clamps).
-  const HIST_WEEKS = 40;
+  // Scored-week history — only feeds the epsDispersion trend now that the
+  // rank carries its own (deeper) history.
   const histDateRows = await prisma.revisionScore.findMany({
     where: { snapshotDate: { lt: latest } },
     distinct: ["snapshotDate"],
@@ -335,48 +384,6 @@ export async function scoreRevisionWeek(opts: ScoreOptions = {}): Promise<ScoreS
   });
   const histDates = histDateRows.map((r) => r.snapshotDate).sort((a, b) => a.getTime() - b.getTime());
   const legADepthWeeks = histDates.length + 1; // prior scored weeks + this one
-  const histRows = histDates.length
-    ? await prisma.revisionScore.findMany({
-        where: { snapshotDate: { in: histDates }, ticker: { in: tickers } },
-        select: { ticker: true, snapshotDate: true, composite: true },
-      })
-    : [];
-  const histIdx = new Map(histDates.map((d, i) => [d.getTime(), i]));
-  const compositeHistByTicker = new Map<string, Array<number | null>>();
-  for (const r of histRows) {
-    let arr = compositeHistByTicker.get(r.ticker);
-    if (!arr) {
-      arr = new Array<number | null>(histDates.length).fill(null);
-      compositeHistByTicker.set(r.ticker, arr);
-    }
-    arr[histIdx.get(r.snapshotDate.getTime())!] = r.composite;
-  }
-
-  // Leg-B weekly composite history (full backfilled depth) for the streak fallback.
-  const legbDateRows = await prisma.revisionLegBWeekly.findMany({
-    where: { snapshotDate: { lte: latest } },
-    distinct: ["snapshotDate"],
-    orderBy: { snapshotDate: "desc" },
-    take: HIST_WEEKS,
-    select: { snapshotDate: true },
-  });
-  const legbDates = legbDateRows.map((r) => r.snapshotDate).sort((a, b) => a.getTime() - b.getTime());
-  const legbRows = legbDates.length
-    ? await prisma.revisionLegBWeekly.findMany({
-        where: { snapshotDate: { in: legbDates }, ticker: { in: tickers } },
-        select: { ticker: true, snapshotDate: true, composite: true },
-      })
-    : [];
-  const legbIdx = new Map(legbDates.map((d, i) => [d.getTime(), i]));
-  const legbHistByTicker = new Map<string, Array<number | null>>();
-  for (const r of legbRows) {
-    let arr = legbHistByTicker.get(r.ticker);
-    if (!arr) {
-      arr = new Array<number | null>(legbDates.length).fill(null);
-      legbHistByTicker.set(r.ticker, arr);
-    }
-    arr[legbIdx.get(r.snapshotDate.getTime())!] = r.composite;
-  }
 
   // epsDispersion history (from scoreJson) for the dispersion trend.
   const dispDates = histDates.slice(Math.max(0, histDates.length - (t.dispersionTrendWindow - 1)));
@@ -399,11 +406,12 @@ export async function scoreRevisionWeek(opts: ScoreOptions = {}): Promise<ScoreS
     arr[dispIdx.get(r.snapshotDate.getTime())!] = v;
   }
 
-  // Group / idio decomposition on the GLOBAL composite (grp + idio sum to it).
+  // Group / idio decomposition on the universe-scale rank (grp + idio sum to it).
   const primaryKeys = stocks.map((s) => peers.get(s.row.ticker)!.peerGroupKey);
-  const decomposition = decomposeComposites(globalComposites, primaryKeys);
+  const decomposition = decomposeComposites(rankGlobalZ, primaryKeys);
 
-  const streakSource: StreakSource = pickStreakSource(legADepthWeeks);
+  /** The rank is the only series streaks read, over the full Leg-B grid. */
+  const streakSource = "RANK";
   interface DerivedRow {
     px4wZ: number | null;
     gapScore: number | null;
@@ -414,7 +422,7 @@ export async function scoreRevisionWeek(opts: ScoreOptions = {}): Promise<ScoreS
     idioZ: number | null;
     streak: Streak;
     streakHistory: Array<-1 | 0 | 1>;
-    streakSource: StreakSource;
+    streakSource: string;
     side: Side;
     dispersionTrend: ReturnType<typeof dispersionTrend>;
     ret1w: number | null;
@@ -423,13 +431,12 @@ export async function scoreRevisionWeek(opts: ScoreOptions = {}): Promise<ScoreS
   }
   const derived: DerivedRow[] = stocks.map((s, i) => {
     const ticker = s.row.ticker;
-    const composite = composites[i] ?? null;
-    const legASeries = [...(compositeHistByTicker.get(ticker) ?? []), composite];
-    const c4 = trailingMean(legASeries, t.composite4wWindow);
-    const px = px4wZ.get(i) ?? null;
-    const gap = c4.value !== null && px !== null ? c4.value - px : null;
-    const legBSeries = legbHistByTicker.get(ticker) ?? [];
-    const series = streakSource === "LEG_A" ? legASeries : legBSeries;
+    const entry = currentRank.byTicker.get(ticker);
+    const series = rankHistByTicker.get(ticker) ?? [];
+    // Smoothed rank — display only; the gap and the flags read the raw week.
+    const c4 = trailingMean(series, t.composite4wWindow);
+    const px = entry?.pxZ ?? null;
+    const gap = entry?.gap ?? null;
     const streak = computeStreak(series);
     const streakHistory = series
       .slice(Math.max(0, series.length - t.streakDisplayWeeks))
@@ -445,7 +452,7 @@ export async function scoreRevisionWeek(opts: ScoreOptions = {}): Promise<ScoreS
       gapScore: gap,
       composite4wZ: c4.value,
       composite4wWeeksUsed: c4.weeksUsed,
-      globalComposite: globalComposites[i] ?? null,
+      globalComposite: rankGlobalZ[i] ?? null,
       groupZ: decomposition.groupZ[i] ?? null,
       idioZ: decomposition.idioZ[i] ?? null,
       streak,
@@ -466,7 +473,8 @@ export async function scoreRevisionWeek(opts: ScoreOptions = {}): Promise<ScoreS
   for (let i = 0; i < stocks.length; i++) {
     const s = stocks[i]!;
     const peer = peers.get(s.row.ticker)!;
-    const composite = composites[i];
+    const rankScore = rankZ[i] ?? null;
+    const legacyComposite = composites[i] ?? null;
     const subDecile = subsectorDeciles[i];
     const secDecile = sectorDeciles[i];
     const primaryDecile = peer.peerGroupType === "SUBSECTOR" ? subDecile : secDecile;
@@ -505,12 +513,23 @@ export async function scoreRevisionWeek(opts: ScoreOptions = {}): Promise<ScoreS
       epsDispersion: s.signals.epsDispersion,
       peerGroup: peer,
       derived: derivedJson,
+      rank: {
+        ptRevOrthZ: rankScore,
+        ptRevOrthRaw: rankRaw[i] ?? null,
+        ptRevOrthGlobalZ: rankGlobalZ[i] ?? null,
+        ptRevisionRecon: currentRank.byTicker.get(s.row.ticker)?.ptRevisionRecon ?? null,
+        orthBeta: currentRank.beta,
+      },
+      // Retired from ranking; kept so old weeks stay reconstructible.
+      legacyComposite,
     } as unknown as Prisma.InputJsonValue;
 
     const scoreFields = {
       peerGroupType: peer.peerGroupType,
       peerGroupKey: peer.peerGroupKey,
-      composite: composite ?? null,
+      ptRevOrthZ: rankScore,
+      ptRevOrthRaw: rankRaw[i] ?? null,
+      composite: legacyComposite,
       subsectorDecile: subDecile,
       sectorDecile: secDecile,
       rank: globalRank.get(i) ?? null,
@@ -543,7 +562,9 @@ export async function scoreRevisionWeek(opts: ScoreOptions = {}): Promise<ScoreS
       companyName: ref?.companyName ?? s.row.ticker,
       sector: ref?.sector ?? null,
       subsector: ref?.subsector ?? null,
-      composite,
+      // `composite` is the queue's ranking value — now the single rank signal.
+      composite: rankScore,
+      legacyComposite,
       rank: globalRank.get(i) ?? null,
       subsectorDecile: subDecile,
       sectorDecile: secDecile,
@@ -568,14 +589,14 @@ export async function scoreRevisionWeek(opts: ScoreOptions = {}): Promise<ScoreS
   }
   queueRows.sort((a, b) => ((b.composite as number) ?? -Infinity) - ((a.composite as number) ?? -Infinity));
 
-  // Sector + subsector aggregates. compositeMean keeps its original
-  // (peer-relative) semantics for the rotation/heatmap views; group-level
-  // SIGNAL analytics use globalMeanZ (mean of the universe-relative composite),
-  // which actually varies across groups.
+  // Sector + subsector aggregates on the rank. compositeMean keeps its
+  // peer-relative semantics for the rotation/heatmap views; group-level SIGNAL
+  // analytics use globalMeanZ (mean of the universe-scale rank), which is the
+  // only one that actually varies across groups.
   const withScores = stocks.map((s, i) => ({
     ...s,
-    composite: composites[i] ?? null,
-    globalComposite: globalComposites[i] ?? null,
+    composite: rankZ[i] ?? null,
+    globalComposite: rankGlobalZ[i] ?? null,
   }));
   const sectorKeyOf = (s: (typeof withScores)[number]) => refByTicker.get(s.row.ticker)?.sector ?? "Unclassified";
   const subsectorKeyOf = (s: (typeof withScores)[number]) =>
@@ -698,7 +719,7 @@ export async function scoreRevisionWeek(opts: ScoreOptions = {}): Promise<ScoreS
       legAWeeks: legADepthWeeks,
       composite4wWindow: t.composite4wWindow,
       streakSource,
-      legBWeeks: legbDates.length,
+      legBWeeks: rankDates.length,
       priceCoverage,
     },
     rows: queueRows,
@@ -710,7 +731,7 @@ export async function scoreRevisionWeek(opts: ScoreOptions = {}): Promise<ScoreS
   });
 
   log(
-    `[scoring] scored ${scored}, new arrivals ${newArrivals}, sectors ${sectorRollups.length}, subsectors ${subsectorRollups.length}, transitions ${transitionsWritten}, legA depth ${legADepthWeeks}w, price coverage ${(priceCoverage * 100).toFixed(0)}%`,
+    `[scoring] scored ${scored}, ranked ${rankZ.filter((v) => v !== null).length}, new arrivals ${newArrivals}, sectors ${sectorRollups.length}, subsectors ${subsectorRollups.length}, transitions ${transitionsWritten}, legA depth ${legADepthWeeks}w, orth beta ${currentRank.beta?.toFixed(3) ?? "n/a"} on ${currentRank.regressionN} names, price coverage ${(priceCoverage * 100).toFixed(0)}%`,
   );
   return {
     snapshotDate: snapshotIso,

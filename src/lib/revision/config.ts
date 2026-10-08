@@ -25,10 +25,8 @@ export const REVISION_THRESHOLDS = {
   erWindowDays: 7,
   /** ...and the name's |composite z| is at least this. */
   erMinAbsRevisionZ: 1.0,
-  /** Trailing window (grid weeks) for composite4wZ, the revision leg of the gap score. */
+  /** Trailing window (grid weeks) for the smoothed (display-only) rank mean. */
   composite4wWindow: 4,
-  /** Streaks read the Leg-B reconstruction until Leg A depth reaches this many weeks. */
-  legAStreakMinWeeks: 6,
   /** Weeks displayed in the streak block strip. */
   streakDisplayWeeks: 6,
   /** Trailing window (grid weeks) for the epsDispersion trend slope. */
@@ -39,6 +37,8 @@ export const REVISION_THRESHOLDS = {
   ptReconStaleDays: 180,
   /** A weekly close is null if the last daily bar is more than this many days before the grid date. */
   priceGridStaleDays: 6,
+  /** The t+1 entry price must trade within this many calendar days of the grid date, else the ticker-week is dropped. */
+  entryGapMaxDays: 5,
   /** Weeks of weekly closes backfilled behind the earliest snapshot (13w returns + fwd-return backtests). */
   priceBackfillWeeks: 130,
   /** Weekly price capture re-fetches this many trailing grid weeks (self-heals split/dividend re-adjustments). */
@@ -49,6 +49,14 @@ export const REVISION_THRESHOLDS = {
   validationHorizonWeeks: 4,
   /** IC series shorter than this renders the insufficient-history placeholder. */
   validationMinWeeks: 8,
+  /**
+   * The FULL composite only takes over the headline once it has this many
+   * scored weeks. A handful of overlapping 4-week-forward ICs are ~2
+   * independent observations, so promoting FULL at validationMinWeeks produced
+   * a noise-dominated, over-significant headline; the deeper LEG-B
+   * reconstruction stays the headline until FULL is genuinely evaluable.
+   */
+  validationHeadlineMinWeeks: 26,
   /** The long-run IC average is taken over this many trailing weeks. */
   icLongRunWeeks: 26,
 } as const;

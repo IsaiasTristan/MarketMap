@@ -45,6 +45,8 @@ interface TickerWeekRow {
   snapshotDate: string;
   close: number | null;
   priceDate: string | null;
+  closeNext: number | null;
+  closeNextDate: string | null;
   ret1w: number | null;
   ret4w: number | null;
   ret13w: number | null;
@@ -57,10 +59,16 @@ function buildRows(ticker: string, series: WeeklyClose[]): TickerWeekRow[] {
     snapshotDate: s.snapshotDate,
     close: s.close,
     priceDate: s.priceDate,
+    closeNext: s.closeNext,
+    closeNextDate: s.closeNextDate,
     ret1w: rets[i]!.ret1w,
     ret4w: rets[i]!.ret4w,
     ret13w: rets[i]!.ret13w,
   }));
+}
+
+function toDate(iso: string | null): Date | null {
+  return iso ? new Date(`${iso}T00:00:00Z`) : null;
 }
 
 export interface PriceBackfillSummary {
@@ -92,9 +100,10 @@ export async function backfillPriceHistory(
     return { tickers: 0, gridWeeks: 0, rowsWritten: 0, failures: [] };
   }
   const tickers = opts.tickers ?? (await loadActiveUniverseTickers());
-  // 13w returns at the grid start need bars before it.
+  // 13w returns at the grid start need bars before it; the t+1 entry of the
+  // last grid week needs bars after it.
   const fetchFrom = isoAddDays(grid[0]!, -7 * 14);
-  const fetchTo = grid[grid.length - 1]!;
+  const fetchTo = isoAddDays(grid[grid.length - 1]!, REVISION_THRESHOLDS.entryGapMaxDays + 2);
   log(`[prices] backfilling ${tickers.length} tickers x ${grid.length} grid weeks (${grid[0]} .. ${fetchTo})`);
 
   let rowsWritten = 0;
@@ -107,17 +116,20 @@ export async function backfillPriceHistory(
         ticker: r.ticker,
         snapshotDate: new Date(`${r.snapshotDate}T00:00:00Z`),
         close: r.close,
-        priceDate: r.priceDate ? new Date(`${r.priceDate}T00:00:00Z`) : null,
+        priceDate: toDate(r.priceDate),
+        closeNext: r.closeNext,
+        closeNextDate: toDate(r.closeNextDate),
         ret1w: r.ret1w,
         ret4w: r.ret4w,
         ret13w: r.ret13w,
       }));
       if (opts.refresh) {
         for (const d of data) {
+          const { ticker: _t, snapshotDate: _s, ...fields } = d;
           await prisma.revisionPriceSnapshot.upsert({
             where: { ticker_snapshotDate: { ticker: d.ticker, snapshotDate: d.snapshotDate } },
             create: d,
-            update: { close: d.close, priceDate: d.priceDate, ret1w: d.ret1w, ret4w: d.ret4w, ret13w: d.ret13w },
+            update: fields,
           });
         }
         rowsWritten += data.length;
@@ -172,6 +184,7 @@ export async function capturePriceWeek(
   const computeGrid = upTo.slice(Math.max(0, upTo.length - (refreshWeeks + 13)));
   const writeFrom = computeGrid[Math.max(0, computeGrid.length - refreshWeeks)]!;
   const fetchFrom = isoAddDays(computeGrid[0]!, -10);
+  const entryFetchTo = isoAddDays(opts.snapshotDate, REVISION_THRESHOLDS.entryGapMaxDays + 2);
   const tickers = opts.tickers ?? (await loadActiveUniverseTickers());
   log(`[prices] weekly capture ${opts.snapshotDate}: ${tickers.length} tickers, upserting weeks >= ${writeFrom}`);
 
@@ -180,14 +193,19 @@ export async function capturePriceWeek(
   const { failures } = await fmpPool(
     tickers,
     async (ticker) => {
-      const bars = await fetchHistoricalEod(ticker, fetchFrom, opts.snapshotDate);
+      // Past the snapshot date so the PRIOR weeks in the refresh window pick
+      // up their t+1 entry (a capture bounded at the snapshot date would keep
+      // rewriting closeNext to null).
+      const bars = await fetchHistoricalEod(ticker, fetchFrom, entryFetchTo);
       const rows = buildRows(ticker, weeklyCloseSeries(bars, computeGrid));
       const target = rows.filter((r) => r.snapshotDate >= writeFrom);
       for (const r of target) {
         const key = { ticker: r.ticker, snapshotDate: new Date(`${r.snapshotDate}T00:00:00Z`) };
         const fields = {
           close: r.close,
-          priceDate: r.priceDate ? new Date(`${r.priceDate}T00:00:00Z`) : null,
+          priceDate: toDate(r.priceDate),
+          closeNext: r.closeNext,
+          closeNextDate: toDate(r.closeNextDate),
           ret1w: r.ret1w,
           ret4w: r.ret4w,
           ret13w: r.ret13w,

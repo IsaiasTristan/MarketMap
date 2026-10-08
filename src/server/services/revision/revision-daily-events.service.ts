@@ -15,6 +15,9 @@
  * (`createMany skipDuplicates`): re-running tails only new events into
  * RatingEvent / PriceTargetEvent for the FULL active universe. Per-step
  * failures are captured, not thrown.
+ *
+ * Also tails the TipRanks add-on (TipRanksRatingEvent) when entitled; a lapsed
+ * subscription surfaces as `tipranksEntitled: false` and costs one 402 call.
  */
 import { prisma } from "@/infrastructure/db/client";
 import { loadAllHeldTickers } from "@/server/services/position.service";
@@ -24,6 +27,7 @@ import {
   loadActiveUniverseTickers,
 } from "./reference-ingest.service";
 import { runRevisionWeekly } from "./revision-weekly-job.service";
+import { tailTipRanksDaily } from "./tipranks-ingest.service";
 
 export interface RevisionDailyEventsSummary {
   universeSize: number;
@@ -32,6 +36,9 @@ export interface RevisionDailyEventsSummary {
   /** Newly-held names onboarded into the universe this run. */
   onboarded: number;
   failures: number;
+  /** TipRanks add-on tail: rows written today, and whether the account is currently entitled. */
+  tipranksEvents: number;
+  tipranksEntitled: boolean;
 }
 
 /**
@@ -104,15 +111,20 @@ export async function runRevisionDailyEvents(
       priceTargetEvents: 0,
       onboarded: onboard.onboarded.length,
       failures: onboard.failures.length,
+      tipranksEvents: 0,
+      tipranksEntitled: true,
     };
   }
 
   const b = await backfillLegBEvents(tickers, { log });
+  const tr = await tailTipRanksDaily(tickers, { log });
   return {
     universeSize: tickers.length,
     ratingEvents: b.ratingEvents,
     priceTargetEvents: b.priceTargetEvents,
     onboarded: onboard.onboarded.length,
-    failures: onboard.failures.length + b.failures.length,
+    failures: onboard.failures.length + b.failures.length + tr.failed,
+    tipranksEvents: tr.rowsWritten,
+    tipranksEntitled: tr.entitled,
   };
 }

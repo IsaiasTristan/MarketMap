@@ -4,7 +4,6 @@ import {
   decomposeComposites,
   dispersionTrend,
   lsSlope,
-  pickStreakSource,
   trailingMean,
 } from "@/lib/revision/derived";
 
@@ -41,15 +40,6 @@ describe("computeStreak", () => {
   });
   it("handles a 1-week series (sparse Leg A)", () => {
     expect(computeStreak([0.3])).toEqual({ len: 1, sign: 1 });
-  });
-});
-
-describe("pickStreakSource", () => {
-  it("uses Leg B until Leg A depth reaches the minimum", () => {
-    expect(pickStreakSource(2)).toBe("LEG_B");
-    expect(pickStreakSource(5)).toBe("LEG_B");
-    expect(pickStreakSource(6)).toBe("LEG_A"); // boundary is inclusive
-    expect(pickStreakSource(40)).toBe("LEG_A");
   });
 });
 

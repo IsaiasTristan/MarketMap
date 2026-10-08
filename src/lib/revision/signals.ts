@@ -29,6 +29,15 @@ export interface StockWeek {
   ratingDist: RatingDist | null;
   ptConsensus: number | null;
   daysToEarnings: number | null;
+  /** Fiscal date of the forward period `metricAvgs`/`epsAvg`/`revenueAvg` describe. */
+  forwardFiscalDate?: string | null;
+  /**
+   * Consensus avgs per fiscal period from this week's estimatesJson, keyed by
+   * fiscalDate. Lets a revision compare the SAME fiscal period across weeks
+   * instead of jumping FY1→FY2 the week a fiscal year-end rolls (which fakes a
+   * simultaneous eps/revenue/breadth "revision").
+   */
+  periodAvgs?: Map<string, Partial<Record<BreadthMetric, number | null>>>;
 }
 
 export interface RawSignals {
@@ -106,11 +115,38 @@ export function proximityWeight(
   return 1 + maxBoost * ((windowDays - daysToEarnings) / windowDays);
 }
 
+/**
+ * Current-week consensus avgs for the SAME forward fiscal period the prior week
+ * tracked — so a revision measures a like-for-like estimate change, not a
+ * fiscal-year-roll level jump. Returns:
+ *  - the current avgs for `prior.forwardFiscalDate` when the period map has it
+ *    (normal week: identical to `curr.metricAvgs`; roll week: the real revision
+ *    of the just-passed year's estimate);
+ *  - an empty set on a roll week where FMP no longer estimates the prior period
+ *    (no like-for-like comparison → null revision, never a spurious jump);
+ *  - `curr.metricAvgs` as the legacy fallback when the period map or prior
+ *    forward date is unavailable (pre-fix snapshots, unit fixtures).
+ */
+export function matchedCurrentAvgs(
+  curr: StockWeek,
+  prior: StockWeek,
+): Partial<Record<BreadthMetric, number | null>> {
+  if (curr.periodAvgs && prior.forwardFiscalDate) {
+    const m = curr.periodAvgs.get(prior.forwardFiscalDate);
+    if (m) return m;
+    if (curr.forwardFiscalDate && curr.forwardFiscalDate !== prior.forwardFiscalDate) return {};
+  }
+  return curr.metricAvgs;
+}
+
 export function computeRawSignals(curr: StockWeek, prior: StockWeek | null): RawSignals {
   const w = proximityWeight(curr.daysToEarnings);
-  const epsRevision = relChange(curr.epsAvg, prior?.epsAvg ?? null);
-  const revenueRevision = relChange(curr.revenueAvg, prior?.revenueAvg ?? null);
-  const breadth = estimateBreadth(curr.metricAvgs, prior?.metricAvgs ?? null);
+  // Like-for-like: prior's forward-period avgs vs current's avgs for THAT period.
+  const priorAvgs = prior?.metricAvgs ?? null;
+  const currMatched = prior ? matchedCurrentAvgs(curr, prior) : null;
+  const epsRevision = relChange(currMatched?.eps ?? null, priorAvgs?.eps ?? null);
+  const revenueRevision = relChange(currMatched?.revenue ?? null, priorAvgs?.revenue ?? null);
+  const breadth = estimateBreadth(currMatched ?? {}, priorAvgs);
   const netNow = ratingNet(curr.ratingDist);
   const netPrior = ratingNet(prior?.ratingDist ?? null);
   const ratingMomentum = netNow !== null && netPrior !== null ? netNow - netPrior : null;

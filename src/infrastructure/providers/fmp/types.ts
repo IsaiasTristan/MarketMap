@@ -161,6 +161,75 @@ export interface FmpPriceTargetSummaryRaw {
   publishers?: string;
 }
 
+// ─── Leg B: TipRanks analyst ratings (paid add-on, /stable/tipranks-*) ─────
+//
+// Verified live 2026-09-15. `tipranks-search` returns one row per individual
+// analyst rating with the attached price target and a stable per-analyst
+// `expertUID`. Date filtering is via `from` / `to` (NOT fromDate/toDate — those
+// are silently ignored and return the unfiltered set). `limit=10000` returns a
+// symbol's full ~3.3yr history (floor 2023-06-01) in one call; `page` paginates.
+
+/** Raw row from /stable/tipranks-search. */
+export interface FmpTipRanksRatingRaw {
+  symbol?: string;
+  date?: string; // full ISO timestamp of the rating
+  recommendationDate?: string; // YYYY-MM-DD
+  expertUID?: string;
+  analystName?: string;
+  firmName?: string;
+  recommendation?: string; // buy | hold | sell
+  analystAction?: string; // initiated | maintained | upgraded | downgraded | reiterated | resumed
+  articleTitle?: string;
+  articleSite?: string;
+  priceTarget?: number | null;
+  priceTargetCurrency?: string;
+  url?: string;
+}
+
+/** Normalized TipRanks rating event (the atomic PT observation). */
+export interface NormalizedTipRanksRating {
+  ticker: string;
+  ratingDate: string; // YYYY-MM-DD (recommendationDate)
+  publishedAt: string | null; // full ISO timestamp for intraday ordering
+  expertUID: string | null;
+  analystName: string | null;
+  firmName: string | null;
+  recommendation: string | null;
+  analystAction: string | null;
+  priceTarget: number | null;
+  priceTargetCurrency: string | null;
+  articleTitle: string | null;
+  articleSite: string | null;
+  url: string | null;
+  raw: FmpTipRanksRatingRaw;
+}
+
+/** Raw row from /stable/tipranks-analysts (exact analystName lookup). */
+export interface FmpTipRanksAnalystRaw {
+  expertUID?: string;
+  analystName?: string;
+  firmName?: string;
+  successRate?: number;
+  excessReturn?: number;
+  totalRecommendations?: number;
+  goodRecommendations?: number;
+  analystRank?: number;
+  numOfStars?: number;
+}
+
+export interface NormalizedTipRanksAnalyst {
+  expertUID: string;
+  analystName: string | null;
+  firmName: string | null;
+  successRate: number | null;
+  excessReturn: number | null;
+  totalRecommendations: number | null;
+  goodRecommendations: number | null;
+  analystRank: number | null;
+  numOfStars: number | null;
+  raw: FmpTipRanksAnalystRaw;
+}
+
 // ─── Earnings calendar ─────────────────────────────────────────────────────
 
 export interface FmpEarningsCalendarRaw {

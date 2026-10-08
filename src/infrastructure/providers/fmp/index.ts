@@ -2,6 +2,7 @@
 export * from "./types";
 export {
   FmpAuthError,
+  FmpEntitlementError,
   FmpRequestError,
   fmpGetJson,
   fmpGetCsv,
@@ -17,6 +18,14 @@ export {
   fetchPriceTargetConsensus,
   fetchPriceTargetSummary,
 } from "./price-targets";
+export {
+  fetchTipRanksRatings,
+  fetchTipRanksAnalyst,
+  normalizeTipRanksRating,
+  normalizeTipRanksAnalyst,
+  TIPRANKS_FULL_HISTORY_LIMIT,
+} from "./tipranks";
+export type { TipRanksSearchParams } from "./tipranks";
 export { fetchEarningsCalendar, fetchEarningsHistory } from "./earnings-calendar";
 export type { EarningsCalendarEntry } from "./earnings-calendar";
 export { fetchScreener, screenerToReference, fetchProfile } from "./screener";
