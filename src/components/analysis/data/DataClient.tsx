@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAnalysisStore } from "@/store/analysis";
 import { useIsAdmin } from "@/lib/api/useMe";
@@ -27,6 +27,51 @@ interface PositionDetail {
   sector: string | null;
   isCash: boolean;
   cashAmount: number | null;
+}
+
+// -- Brokerage link (SnapTrade) ---------------------------------------------
+
+interface BrokerageSkipped {
+  symbol: string | null;
+  kind: string;
+  reason: string;
+}
+
+interface BrokerageAccount {
+  id: string;
+  portfolioId: string;
+  institutionName: string | null;
+  accountMask: string | null;
+  lastSyncAt: string | null;
+  lastSyncStatus: string | null;
+  lastSyncError: string | null;
+  positionCount: number;
+  skipped: BrokerageSkipped[];
+}
+
+interface BrokerageStatus {
+  configured: boolean;
+  linked: boolean;
+  accounts: BrokerageAccount[];
+}
+
+function useBrokerageStatus() {
+  return useQuery<BrokerageStatus>({
+    queryKey: ["brokerage-status"],
+    queryFn: () => fetch("/api/analysis/brokerage/status").then((r) => r.json()),
+    staleTime: 30_000,
+  });
+}
+
+function formatSyncTime(iso: string | null): string {
+  if (!iso) return "never";
+  const d = new Date(iso);
+  return d.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function PortfolioManager() {
@@ -121,6 +166,14 @@ function PortfolioManager() {
       ),
     enabled: !!activePortfolioId,
   });
+
+  const { data: brokerage } = useBrokerageStatus();
+  const managedByPortfolio = useMemo(() => {
+    const m = new Map<string, BrokerageAccount>();
+    for (const a of brokerage?.accounts ?? []) m.set(a.portfolioId, a);
+    return m;
+  }, [brokerage]);
+  const activeManaged = activePortfolioId ? managedByPortfolio.get(activePortfolioId) ?? null : null;
 
   const activePortfolio = portfolios.find((p) => p.id === activePortfolioId) ?? null;
 
@@ -337,6 +390,27 @@ function PortfolioManager() {
                   <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: 8, fontWeight: 400 }}>
                     {positions.length} position{positions.length !== 1 ? "s" : ""}
                   </span>
+                  {activeManaged && (
+                    <span
+                      title={`Read-only: synced from ${activeManaged.institutionName ?? "your brokerage"}. Disconnect in the brokerage panel to edit manually.`}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 5,
+                        marginLeft: 10,
+                        fontSize: 10,
+                        fontWeight: 600,
+                        letterSpacing: "0.04em",
+                        textTransform: "uppercase",
+                        padding: "2px 8px",
+                        borderRadius: 999,
+                        border: "1px solid var(--color-accent)",
+                        color: "var(--color-accent)",
+                      }}
+                    >
+                      Synced · {formatSyncTime(activeManaged.lastSyncAt)}
+                    </span>
+                  )}
                 </span>
                 <button
                   onClick={startRename}
@@ -551,7 +625,9 @@ function PortfolioManager() {
                         </td>
                         {/* Edit / Save-Cancel */}
                         <td style={{ padding: "4px 8px", textAlign: "center", whiteSpace: "nowrap" }}>
-                          {isEditing ? (
+                          {activeManaged ? (
+                            <span style={{ color: "var(--text-muted)" }}>—</span>
+                          ) : isEditing ? (
                             <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
                               <button onClick={() => saveEdit(pos.id, pos)} disabled={updatePositionMut.isPending}
                                 style={{ padding: "3px 10px", borderRadius: 4, border: "none", background: "var(--color-accent)", color: "var(--bg-base)", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>
@@ -572,7 +648,7 @@ function PortfolioManager() {
                         </td>
                         {/* Delete */}
                         <td style={{ padding: "4px 8px", textAlign: "center", whiteSpace: "nowrap" }}>
-                          {isEditing ? null : isConfirming ? (
+                          {activeManaged || isEditing ? null : isConfirming ? (
                             <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
                               <button onClick={() => deletePositionMut.mutate(pos.id)} disabled={deletePositionMut.isPending}
                                 style={{ padding: "3px 10px", borderRadius: 4, border: "none", background: "var(--color-negative, #ef4444)", color: "#fff", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>
@@ -601,7 +677,30 @@ function PortfolioManager() {
             </div>
           )}
 
-          <ManualEntry nested />
+          {activeManaged ? (
+            <div
+              style={{
+                borderTop: "1px solid var(--bg-border)",
+                marginTop: 16,
+                paddingTop: 16,
+                fontSize: 12,
+                color: "var(--text-muted)",
+              }}
+            >
+              Holdings are synced from {activeManaged.institutionName ?? "your linked brokerage"} and
+              can&apos;t be edited here. Manage the connection in the Brokerage panel above.
+              {activeManaged.skipped.length > 0 && (
+                <div style={{ marginTop: 6, color: "var(--color-warning)" }}>
+                  Not mirrored:{" "}
+                  {activeManaged.skipped.map((s) => s.symbol ?? s.kind).join(", ")} (
+                  {activeManaged.skipped.length} non-equity position
+                  {activeManaged.skipped.length !== 1 ? "s" : ""}).
+                </div>
+              )}
+            </div>
+          ) : (
+            <ManualEntry nested />
+          )}
         </div>
       )}
     </Card>
@@ -612,6 +711,8 @@ function PortfolioManager() {
 
 function CsvUpload() {
   const { activePortfolioId, addToast } = useAnalysisStore();
+  const { data: brokerage } = useBrokerageStatus();
+  const managed = !!brokerage?.accounts?.some((a) => a.portfolioId === activePortfolioId);
   const [dragging, setDragging] = useState(false);
   const [result, setResult] = useState<{
     imported?: number;
@@ -623,6 +724,13 @@ function CsvUpload() {
   const upload = async (file: File) => {
     if (!activePortfolioId) {
       addToast({ severity: "warning", message: "Please select a portfolio first" });
+      return;
+    }
+    if (managed) {
+      addToast({
+        severity: "warning",
+        message: "This portfolio is synced from a linked brokerage and is read-only.",
+      });
       return;
     }
     const fd = new FormData();
@@ -656,15 +764,18 @@ function CsvUpload() {
         onDragLeave={() => setDragging(false)}
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}
-        onClick={() => inputRef.current?.click()}
+        onClick={() => !managed && inputRef.current?.click()}
+        title={managed ? "This portfolio is synced from a linked brokerage and is read-only." : undefined}
         style={{
           border: `2px dashed ${dragging ? "var(--color-accent)" : "var(--bg-border)"}`,
           borderRadius: 2,
           padding: "32px 24px",
           textAlign: "center",
-          cursor: "pointer",
+          cursor: managed ? "not-allowed" : "pointer",
           background: dragging ? "rgba(99,102,241,0.05)" : "transparent",
           transition: "all 0.15s",
+          opacity: managed ? 0.5 : 1,
+          pointerEvents: managed ? "none" : "auto",
         }}
       >
         <div style={{ fontSize: 28, marginBottom: 8 }}></div>
@@ -697,6 +808,215 @@ function CsvUpload() {
           {[...(result.parseErrors ?? []), ...(result.importErrors ?? [])].map((e, i) => (
             <div key={i} style={{ fontSize: 12, color: "var(--color-warning)", marginTop: 4 }}>
               {e}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// -- Brokerage panel (SnapTrade / Robinhood) --------------------------------
+
+interface SyncResultRow {
+  accountLinkId: string;
+  ok: boolean;
+  deduped?: boolean;
+  positionCount: number;
+  error?: string;
+}
+
+function BrokeragePanel() {
+  const { setActivePortfolio, addToast } = useAnalysisStore();
+  const qc = useQueryClient();
+  const isAdmin = useIsAdmin();
+  const { data: status, isLoading } = useBrokerageStatus();
+
+  const invalidateAll = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ["brokerage-status"] });
+    qc.invalidateQueries({ queryKey: ["portfolios-list"] });
+    qc.invalidateQueries({ queryKey: ["positions"] });
+  }, [qc]);
+
+  const connectMut = useMutation({
+    mutationFn: () =>
+      fetch("/api/analysis/brokerage/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }).then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error ?? "Failed to start linking");
+        return d as { redirectURI?: string };
+      }),
+    onSuccess: (d) => {
+      if (d.redirectURI) window.location.href = d.redirectURI;
+      else addToast({ severity: "error", message: "No connection URL returned" });
+    },
+    onError: (e) => addToast({ severity: "error", message: (e as Error).message }),
+  });
+
+  const syncMut = useMutation({
+    mutationFn: (accountLinkId?: string) =>
+      fetch("/api/analysis/brokerage/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(accountLinkId ? { accountLinkId } : {}),
+      }).then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error ?? "Sync failed");
+        return d as { results?: SyncResultRow[] };
+      }),
+    onSuccess: (d) => {
+      invalidateAll();
+      const results = d.results ?? [];
+      const failed = results.find((x) => !x.ok && !x.deduped);
+      if (failed) {
+        addToast({ severity: "error", message: failed.error ?? "Sync failed" });
+        return;
+      }
+      const ok = results.filter((x) => x.ok).length;
+      addToast({ severity: "success", message: `Synced ${ok} account${ok !== 1 ? "s" : ""}` });
+    },
+    onError: (e) => addToast({ severity: "error", message: (e as Error).message }),
+  });
+
+  const disconnectMut = useMutation({
+    mutationFn: (accountLinkId: string) =>
+      fetch("/api/analysis/brokerage/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountLinkId }),
+      }).then((r) => r.json()),
+    onSuccess: () => {
+      invalidateAll();
+      addToast({ severity: "success", message: "Brokerage account disconnected" });
+    },
+    onError: () => addToast({ severity: "error", message: "Disconnect failed" }),
+  });
+
+  // When SnapTrade redirects back after connecting (?linked=1), sync once and
+  // clean the query param so a refresh doesn't re-trigger.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("linked") === "1") {
+      url.searchParams.delete("linked");
+      window.history.replaceState({}, "", url.toString());
+      syncMut.mutate(undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Admin-only, and hidden entirely when the server has no SnapTrade credentials.
+  if (!isAdmin || isLoading || !status?.configured) return null;
+
+  const accounts = status.accounts ?? [];
+  const btn: React.CSSProperties = {
+    padding: "6px 14px",
+    borderRadius: 6,
+    cursor: "pointer",
+    fontSize: 13,
+    fontWeight: 600,
+  };
+
+  return (
+    <Card>
+      <SectionHeading>Brokerage</SectionHeading>
+      <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 14 }}>
+        Link a brokerage (Robinhood via SnapTrade) to auto-mirror its holdings into a read-only
+        portfolio. Connecting is read-only and never places trades.
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: accounts.length ? 16 : 0 }}>
+        <button
+          onClick={() => connectMut.mutate()}
+          disabled={connectMut.isPending}
+          style={{ ...btn, border: "none", background: "var(--color-accent)", color: "var(--bg-base)" }}
+        >
+          {connectMut.isPending ? "Opening..." : accounts.length ? "Connect another account" : "Connect Robinhood"}
+        </button>
+        {accounts.length > 0 && (
+          <button
+            onClick={() => syncMut.mutate(undefined)}
+            disabled={syncMut.isPending}
+            style={{ ...btn, border: "1px solid var(--bg-border)", background: "transparent", color: "var(--text-secondary)" }}
+          >
+            {syncMut.isPending ? "Syncing..." : "Sync all"}
+          </button>
+        )}
+      </div>
+
+      {accounts.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {accounts.map((a) => (
+            <div
+              key={a.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: "10px 12px",
+                background: "var(--bg-elevated)",
+                borderRadius: 6,
+                border: "1px solid var(--bg-border)",
+                flexWrap: "wrap",
+              }}
+            >
+              <button
+                onClick={() => setActivePortfolio(a.portfolioId)}
+                title="Show this portfolio"
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  padding: 0,
+                  cursor: "pointer",
+                  textAlign: "left",
+                  flex: 1,
+                  minWidth: 180,
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
+                  {a.institutionName ?? "Brokerage account"}
+                  {a.accountMask ? ` · …${a.accountMask}` : ""}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  {a.positionCount} position{a.positionCount !== 1 ? "s" : ""} · last sync{" "}
+                  {formatSyncTime(a.lastSyncAt)}
+                </div>
+              </button>
+
+              <StatusBadge
+                severity={a.lastSyncStatus === "ERROR" ? "stale" : a.lastSyncStatus === "OK" ? "ok" : "warning"}
+                label={a.lastSyncStatus === "ERROR" ? "Sync error" : a.lastSyncStatus === "OK" ? "Synced" : "Not synced"}
+              />
+
+              <button
+                onClick={() => syncMut.mutate(a.id)}
+                disabled={syncMut.isPending}
+                style={{ ...btn, padding: "5px 12px", border: "1px solid var(--bg-border)", background: "transparent", color: "var(--text-secondary)" }}
+              >
+                Sync now
+              </button>
+              <button
+                onClick={() => disconnectMut.mutate(a.id)}
+                disabled={disconnectMut.isPending}
+                style={{ ...btn, padding: "5px 12px", border: "1px solid var(--color-negative, #ef4444)", background: "transparent", color: "var(--color-negative, #ef4444)" }}
+              >
+                Disconnect
+              </button>
+
+              {a.lastSyncError && (
+                <div style={{ flexBasis: "100%", fontSize: 11, color: "var(--color-negative, #ef4444)" }}>
+                  {a.lastSyncError}
+                </div>
+              )}
+              {a.skipped.length > 0 && (
+                <div style={{ flexBasis: "100%", fontSize: 11, color: "var(--color-warning)" }}>
+                  Not mirrored: {a.skipped.map((s) => s.symbol ?? s.kind).join(", ")} (
+                  {a.skipped.length} non-equity position{a.skipped.length !== 1 ? "s" : ""})
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -1453,6 +1773,7 @@ export function DataClient() {
         </p>
       </div>
 
+      <BrokeragePanel />
       <PortfolioManager />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
         <CsvUpload />

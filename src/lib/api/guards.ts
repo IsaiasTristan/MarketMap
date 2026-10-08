@@ -6,6 +6,7 @@ import {
   requireAdmin,
   type CurrentUser,
 } from "@/server/services/auth.service";
+import { prisma } from "@/infrastructure/db/client";
 import { authErrorResponse } from "./auth-response";
 
 /**
@@ -68,6 +69,45 @@ export async function requireAdminGuard(
   }
 }
 
+const MANAGED_PORTFOLIO_MESSAGE =
+  "This portfolio is synced from a linked brokerage and is read-only. Disconnect it in the brokerage panel to edit manually.";
+
+/**
+ * Route guard: reject manual mutations of a brokerage-managed portfolio.
+ *
+ * A portfolio paired with a `BrokerageAccountLink` is auto-mirrored from the
+ * brokerage on every sync, so allowing manual edits would let the app and the
+ * brokerage silently disagree. Returns a 409 `NextResponse` when the portfolio
+ * is managed, or `null` to proceed. Apply *after* `requirePortfolioAccess`.
+ */
+export async function requireUnmanagedPortfolio(
+  portfolioId: string,
+): Promise<NextResponse | null> {
+  const link = await prisma.brokerageAccountLink.findUnique({
+    where: { portfolioId },
+    select: { id: true },
+  });
+  if (link) return NextResponse.json({ error: MANAGED_PORTFOLIO_MESSAGE }, { status: 409 });
+  return null;
+}
+
+/**
+ * Same as {@link requireUnmanagedPortfolio} but addressed by a position id
+ * (for PATCH/DELETE routes that only have the position). Resolves the position's
+ * portfolio first. Returns `null` when the position/portfolio can't be found
+ * (the downstream handler surfaces the real not-found error).
+ */
+export async function requireUnmanagedPositionPortfolio(
+  positionId: string,
+): Promise<NextResponse | null> {
+  const pos = await prisma.portfolioPosition.findUnique({
+    where: { id: positionId },
+    select: { portfolioId: true },
+  });
+  if (!pos) return null;
+  return requireUnmanagedPortfolio(pos.portfolioId);
+}
+
 /**
  * Resolve the current user for a route, returning either the user or a
  * `NextResponse` to short-circuit (only on hard auth failure). Used by routes
@@ -78,6 +118,23 @@ export async function resolveUserOrResponse(
 ): Promise<{ user: CurrentUser } | { response: NextResponse }> {
   try {
     return { user: await getCurrentUser(req) };
+  } catch (e) {
+    const r = authErrorResponse(e);
+    if (r) return { response: r };
+    throw e;
+  }
+}
+
+/**
+ * Resolve the current user and require admin, returning either the admin user
+ * or a `NextResponse` (401/403) to short-circuit. Used by admin-only routes
+ * that also need the user id.
+ */
+export async function resolveAdminOrResponse(
+  req: Request,
+): Promise<{ user: CurrentUser } | { response: NextResponse }> {
+  try {
+    return { user: await requireAdmin(req) };
   } catch (e) {
     const r = authErrorResponse(e);
     if (r) return { response: r };

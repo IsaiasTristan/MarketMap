@@ -195,9 +195,10 @@ model User {
   createdAt   DateTime  @default(now())
   lastLoginAt DateTime?
 
-  portfolios Portfolio[]
-  curveSets  CurveSet[]
-  priceDecks PriceDeck[]
+  portfolios    Portfolio[]
+  curveSets     CurveSet[]
+  priceDecks    PriceDeck[]
+  brokerageLink BrokerageLink?
 }
 
 // --- Portfolio ---
@@ -211,12 +212,134 @@ model Portfolio {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user            User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  positions       PortfolioPosition[]
-  factorSnapshots FactorExposureSnapshot[]
-  stressRuns      StressScenarioRun[]
+  user                 User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  positions            PortfolioPosition[]
+  factorSnapshots      FactorExposureSnapshot[]
+  stressRuns           StressScenarioRun[]
+  brokerageAccountLink BrokerageAccountLink?
 
   @@index([userId])
+}
+
+// --- Brokerage linking (SnapTrade) ---
+
+enum BrokerageProvider {
+  SNAPTRADE
+}
+
+/// Normalized transaction/activity category. SnapTrade's raw `type` string is
+/// preserved verbatim on `BrokerageActivity.rawType`; this enum is the mapped
+/// value the holdings-replay math and the UI read. Values chosen to fit the
+/// live Robinhood-via-SnapTrade shapes observed in the Phase 0 probe
+/// (BUY/SELL/DIVIDEND/REI/CONTRIBUTION/FEE/TRANSFER/EXTERNAL_ASSET_TRANSFER_IN)
+/// plus the documented long tail. Anything unrecognized lands as OTHER with
+/// its rawType kept, and is surfaced as a data-quality issue rather than
+/// silently dropped.
+enum BrokerageActivityType {
+  BUY // asset bought (units +, cash −)
+  SELL // asset sold (units −, cash +)
+  DIVIDEND // cash dividend / substitute dividend (cash +)
+  REINVEST // dividend reinvestment purchase (units +, cash −)
+  CONTRIBUTION // external cash deposit (external flow +)
+  WITHDRAWAL // external cash withdrawal (external flow −)
+  FEE // account/margin fee (cash −)
+  TAX // tax-related charge (cash −)
+  INTEREST // interest earned (cash +)
+  TRANSFER_IN // asset transferred in from another account (external flow, valued at close)
+  TRANSFER_OUT // asset transferred out (external flow, valued at close)
+  CASH_TRANSFER // cash/margin balance transfer with no security (external flow)
+  SPLIT // stock split (units rescaled, cash-neutral)
+  OTHER // unrecognized — rawType preserved, flagged
+}
+
+/// A user's link to an external brokerage aggregator (SnapTrade). Holds the
+/// long-lived SnapTrade userId and the AES-GCM-encrypted userSecret. One per
+/// app user. Read-only: SnapTrade's Robinhood integration does not support
+/// trading.
+/// Per-user brokerage-connection anchor. With SnapTrade Personal keys the key
+/// itself is the single credential (no per-user id or secret to store), so
+/// this row just associates our app user with their connected accounts + audit.
+model BrokerageLink {
+  id        String            @id @default(cuid())
+  userId    String            @unique
+  provider  BrokerageProvider @default(SNAPTRADE)
+  status    String            @default("ACTIVE") // ACTIVE | DISABLED
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  user     User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accounts BrokerageAccountLink[]
+
+  @@index([userId])
+}
+
+/// A single connected brokerage account (e.g. one Robinhood account) mirrored
+/// into a dedicated Portfolio. The presence of this row is what makes a
+/// portfolio "managed": manual editing is server-blocked and its holdings are
+/// overwritten from the brokerage on every sync, so the two can never silently
+/// disagree.
+model BrokerageAccountLink {
+  id                       String    @id @default(cuid())
+  brokerageLinkId          String
+  portfolioId              String    @unique
+  snaptradeAccountId       String    @unique
+  brokerageAuthorizationId String?
+  institutionName          String?
+  accountMask              String?
+  lastSyncAt               DateTime?
+  lastSyncStatus           String? // OK | ERROR
+  lastSyncError            String?
+  positionCount            Int       @default(0)
+  skippedJson              Json?
+  // Transaction-history sweep state (Phase 2). The ledger below drives the
+  // day-by-day holdings reconstruction on the Performance page.
+  activityCount            Int       @default(0)
+  earliestActivityDate     DateTime? @db.Date
+  lastActivitySyncAt       DateTime?
+  activityIssuesJson       Json? // { unknownTypes: [...], unvaluedInstruments: [...] }
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  brokerageLink BrokerageLink       @relation(fields: [brokerageLinkId], references: [id], onDelete: Cascade)
+  portfolio     Portfolio           @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  activities    BrokerageActivity[]
+
+  @@index([brokerageLinkId])
+}
+
+/// Write-once transaction ledger for one managed brokerage account. Sourced
+/// from SnapTrade `getAccountActivities` (see snaptrade-activities.service).
+/// Never overwritten: the natural key `(accountLinkId, externalId)` dedupes
+/// re-fetches, so a re-sweep writes zero. Survives the `replacePositions`
+/// portfolio wipe because it hangs off the account link, not the portfolio.
+///
+/// `units` is stored signed (SnapTrade already signs SELL negative); `amount`
+/// is the authoritative signed cash delta. `rawJson` keeps the verbatim vendor
+/// row so the classifier can be revised without re-fetching.
+model BrokerageActivity {
+  id             String                @id @default(cuid())
+  accountLinkId  String
+  externalId     String // SnapTrade activity id; deterministic hash fallback when absent
+  activityType   BrokerageActivityType
+  rawType        String // verbatim SnapTrade `type`
+  ticker         String? // normalized equity symbol, when the row references a security
+  instrumentKind String? // security type code (stock/etf/adr/cef/option/...)
+  units          Decimal?              @db.Decimal(24, 10) // signed
+  price          Decimal?              @db.Decimal(24, 10)
+  amount         Decimal?              @db.Decimal(24, 10) // signed cash delta
+  fee            Decimal?              @db.Decimal(24, 10)
+  currency       String?
+  tradeDate      DateTime              @db.Date
+  settlementDate DateTime?             @db.Date
+  description    String?
+  isOption       Boolean               @default(false)
+  rawJson        Json?
+  createdAt      DateTime              @default(now())
+
+  accountLink BrokerageAccountLink @relation(fields: [accountLinkId], references: [id], onDelete: Cascade)
+
+  @@unique([accountLinkId, externalId])
+  @@index([accountLinkId, tradeDate])
 }
 
 /// Single source of truth for a portfolio's holdings.

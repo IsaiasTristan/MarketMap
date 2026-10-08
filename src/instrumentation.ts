@@ -124,5 +124,16 @@ export async function register() {
         e,
       );
     }
+    try {
+      const { startBrokerageRunner } = await import(
+        "@/server/services/brokerage-runner"
+      );
+      startBrokerageRunner();
+    } catch (e) {
+      console.error(
+        "[instrumentation] failed to start brokerage runner:",
+        e,
+      );
+    }
   }
 }

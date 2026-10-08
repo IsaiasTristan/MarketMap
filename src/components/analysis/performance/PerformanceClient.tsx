@@ -229,15 +229,15 @@ const DIST_PERIODS: { id: DistPeriod; label: string; days: number }[] = [
 type ChartView = "cumulative" | "value" | "sharpe";
 
 const CHART_VIEWS: { id: ChartView; label: string }[] = [
-  { id: "cumulative", label: "Cumul. Return" },
   { id: "value", label: "Portfolio Value" },
+  { id: "cumulative", label: "Cumul. Return" },
   { id: "sharpe", label: "Rolling Sharpe" },
 ];
 
 export function PerformanceClient() {
   const activePortfolioId = useAnalysisStore((s) => s.activePortfolioId);
   const [benchmark, setBenchmark] = useState<Benchmark>("SP500");
-  const [chartView, setChartView] = useState<ChartView>("cumulative");
+  const [chartView, setChartView] = useState<ChartView>("value");
   const [distPeriod, setDistPeriod] = useState<DistPeriod>("1Y");
 
   const { data: metrics, isLoading: mLoading } = useQuery<PerformanceMetrics | null>({
@@ -259,6 +259,25 @@ export function PerformanceClient() {
     monthlyCalendar: Record<string, number>;
     returnHistogram: { label: string; count: number; normalDensity: number }[];
     portfolioReturns: number[];
+    basis: "ACTUAL" | "BACKTEST";
+    navDollars?: number[];
+    externalFlows?: number[];
+    benchmarkDollars?: number[];
+    summary?: {
+      currentValue: number;
+      openingValue: number;
+      totalPnlDollars: number;
+      netContributions: number;
+      benchmarkValue: number;
+      benchmarkPnlDollars: number;
+    };
+    dataQuality?: {
+      earliestActivityDate: string | null;
+      openingPositionValue: number;
+      unknownActivityTypes: string[];
+      unvaluedInstruments: string[];
+      missingRawCloseDays: number;
+    };
   } | null>({
     queryKey: ["perf-series", activePortfolioId, benchmark],
     queryFn: () =>
@@ -326,10 +345,28 @@ export function PerformanceClient() {
       : null;
 
   const fmtDollars = (v: number) => {
-    if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
-    if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
-    return `$${v.toFixed(0)}`;
+    const a = Math.abs(v);
+    const sign = v < 0 ? "-" : "";
+    if (a >= 1_000_000) return `${sign}$${(a / 1_000_000).toFixed(2)}M`;
+    if (a >= 1_000) return `${sign}$${(a / 1_000).toFixed(1)}K`;
+    return `${sign}$${a.toFixed(0)}`;
   };
+  const fmtDollarsFull = (v: number) =>
+    `${v < 0 ? "-" : ""}$${Math.abs(v).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+
+  // Reconstruction basis + real-dollar headline (actual transaction history).
+  const basis = series?.basis ?? "BACKTEST";
+  const isActual = basis === "ACTUAL";
+  const summary = series?.summary ?? null;
+  const dataQuality = series?.dataQuality ?? null;
+  const outperfDollars =
+    summary != null ? summary.totalPnlDollars - summary.benchmarkPnlDollars : null;
+  const dqIssueCount =
+    (dataQuality?.unknownActivityTypes.length ?? 0) +
+    (dataQuality?.unvaluedInstruments.length ?? 0) +
+    (dataQuality?.missingRawCloseDays ? 1 : 0);
+  const fmtHumanDate = (d: string | null | undefined) =>
+    d ? new Date(d + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—";
 
   const rolling12Data = series?.dates?.map((d, i) => ({
     date: d,
@@ -340,7 +377,67 @@ export function PerformanceClient() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        {/* Basis badge — actual transactions vs hypothetical backtest */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span
+            title={
+              isActual
+                ? "Reconstructed from your real brokerage transactions — actual buys, sells, deposits and withdrawals on the dates they happened."
+                : "This portfolio has no linked transaction history, so performance is a hypothetical constant-mix backtest: today's weights replayed over historical prices."
+            }
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "3px 10px",
+              borderRadius: 999,
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.3px",
+              textTransform: "uppercase",
+              border: `1px solid ${isActual ? "var(--color-positive)" : "var(--color-warning)"}`,
+              color: isActual ? "var(--color-positive)" : "var(--color-warning)",
+              background: "transparent",
+            }}
+          >
+            {isActual
+              ? `Actual transactions since ${fmtHumanDate(dataQuality?.earliestActivityDate)}`
+              : "Hypothetical — constant-mix backtest"}
+          </span>
+          {dqIssueCount > 0 && (
+            <span
+              title={[
+                dataQuality?.unknownActivityTypes.length
+                  ? `Unknown activity types: ${dataQuality.unknownActivityTypes.join(", ")}`
+                  : "",
+                dataQuality?.unvaluedInstruments.length
+                  ? `Unvalued instruments (e.g. options): ${dataQuality.unvaluedInstruments.join(", ")}`
+                  : "",
+                dataQuality?.missingRawCloseDays
+                  ? `${dataQuality.missingRawCloseDays} ticker-days used adjusted close (raw close missing)`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "3px 10px",
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 600,
+                border: "1px solid var(--color-warning)",
+                color: "var(--color-warning)",
+                background: "transparent",
+                cursor: "help",
+              }}
+            >
+              ⚠ {dqIssueCount} data note{dqIssueCount > 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
         <div style={{ display: "flex", gap: 4 }}>
           {BENCHMARKS.map((b) => (
             <button
@@ -362,6 +459,56 @@ export function PerformanceClient() {
         </div>
       </div>
 
+      {/* Dollar headline — the real equity + P&L, the lead of the page */}
+      {isActual && summary && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
+          <MetricCard
+            label="Portfolio Value"
+            value={fmtDollarsFull(summary.currentValue)}
+            tooltip={{
+              name: "Portfolio Value",
+              definition: "Current reconstructed net asset value: shares × latest close, plus cash.",
+              formula: "Σ(shares × close) + cash",
+              dataUsed: "Brokerage positions + unadjusted daily closes",
+            }}
+          />
+          <MetricCard
+            label="Total P&L"
+            value={fmtDollarsFull(summary.totalPnlDollars)}
+            valueColor={summary.totalPnlDollars >= 0 ? "positive" : "negative"}
+            subValue={`since ${fmtHumanDate(dataQuality?.earliestActivityDate)}`}
+            tooltip={{
+              name: "Total P&L (Dollars)",
+              definition: "Investment gain in dollars since the earliest reconstructable date, after removing deposits and withdrawals.",
+              formula: "Current value − net contributions",
+              dataUsed: "Reconstructed NAV + external cash flows",
+            }}
+          />
+          <MetricCard
+            label={`P&L vs ${benchLabel}`}
+            value={outperfDollars != null ? fmtDollarsFull(outperfDollars) : "—"}
+            valueColor={outperfDollars != null && outperfDollars >= 0 ? "positive" : "negative"}
+            subValue="dollar-matched"
+            tooltip={{
+              name: `P&L vs ${benchLabel} (Dollar-Matched)`,
+              definition: `How much more (or less) you made than investing the exact same deposits into ${benchLabel} on the same dates.`,
+              formula: "Your P&L − dollar-matched benchmark P&L",
+              dataUsed: `External flows invested into ${benchLabel} closes`,
+            }}
+          />
+          <MetricCard
+            label="Net Contributions"
+            value={fmtDollarsFull(summary.netContributions)}
+            tooltip={{
+              name: "Net Contributions",
+              definition: "Total capital put in (deposits + transfers-in − withdrawals), including the opening position valued at its first close.",
+              formula: "Σ external flows",
+              dataUsed: "Contribution / withdrawal / transfer activities",
+            }}
+          />
+        </div>
+      )}
+
       {/* Level 1: Risk-adjusted metric cards */}
       {isLoading ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
@@ -380,14 +527,26 @@ export function PerformanceClient() {
           }}
         >
           <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
-            Not enough price history to compute metrics
+            {isActual
+              ? "Risk-adjusted ratios need more history"
+              : "Not enough price history to compute metrics"}
           </div>
           <div style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-            Performance analytics require at least 63 trading days (~3 months) of stored price
-            data for all positions in this portfolio. Use the{" "}
-            <strong style={{ color: "var(--text-primary)" }}>Refresh</strong> button in the top bar
-            or visit the <strong style={{ color: "var(--text-primary)" }}>Data</strong> tab to
-            ingest price history for your holdings.
+            {isActual ? (
+              <>
+                Your dollar equity curve and P&amp;L above are live from the first reconstructable
+                date. The ratio tiles (Sharpe, Sortino, alpha, …) need at least 63 trading days
+                (~3 months) of history and will populate as the record grows.
+              </>
+            ) : (
+              <>
+                Performance analytics require at least 63 trading days (~3 months) of stored price
+                data for all positions in this portfolio. Use the{" "}
+                <strong style={{ color: "var(--text-primary)" }}>Refresh</strong> button in the top
+                bar or visit the <strong style={{ color: "var(--text-primary)" }}>Data</strong> tab
+                to ingest price history for your holdings.
+              </>
+            )}
           </div>
         </div>
       ) : (
@@ -520,12 +679,25 @@ export function PerformanceClient() {
         // The portfolio ends at the actual current value; the benchmark ends
         // wherever its own growth takes it — showing relative performance.
         const valueData = series.dates.map((d, i) => {
+          if (isActual && series.navDollars && series.benchmarkDollars) {
+            // Real reconstructed dollars — no client-side scaling. Flow marks a
+            // deposit/withdrawal/transfer date so a jump reads as a transfer,
+            // not performance.
+            const flow = series.externalFlows?.[i + 1] ?? 0;
+            return {
+              date: d,
+              portfolio: series.navDollars[i + 1] ?? null,
+              benchmark: series.benchmarkDollars[i + 1] ?? null,
+              flow: Math.abs(flow) > 1 ? flow : 0,
+            };
+          }
           const pNAV = series.portfolioNAV[i + 1];
           const bNAV = series.benchmarkNAV[i + 1];
           return {
             date: d,
             portfolio: pNAV != null ? (navScaleFactor != null ? pNAV * navScaleFactor : pNAV) : null,
             benchmark: bNAV != null ? (navScaleFactor != null ? bNAV * navScaleFactor : bNAV) : null,
+            flow: 0,
           };
         });
 
@@ -566,11 +738,13 @@ export function PerformanceClient() {
               ? `Ending: ${fmtCum(lastCumPct)} total gain = ${fmtNAV(lastNAV)} per $1 invested — matches "Portfolio Value" view`
               : "Total % gain from the start of the backtest"
             : chartView === "value"
-              ? navScaleFactor != null && lastNAV != null && lastCumPct != null
-                ? `Ending at ${fmtNAV(lastNAV * navScaleFactor)} (actual portfolio value) · ${fmtCum(lastCumPct)} total return · same NAV as "Cumul. Return" view, scaled to real dollars`
-                : lastNAV != null && lastCumPct != null
-                  ? `Indexed to $1.00 at start · ending ${fmtNAV(lastNAV)} = ${fmtCum(lastCumPct)} total return`
-                  : "Portfolio value scaled to current holdings"
+              ? isActual && summary
+                ? `Actual portfolio value — ending ${fmtDollarsFull(summary.currentValue)} · total P&L ${fmtDollarsFull(summary.totalPnlDollars)} · dots mark deposits/withdrawals. Grey line = same cash invested in ${benchLabel}.`
+                : navScaleFactor != null && lastNAV != null && lastCumPct != null
+                  ? `Ending at ${fmtNAV(lastNAV)} (scaled to current holdings) · ${fmtCum(lastCumPct)} total return · hypothetical constant-mix backtest`
+                  : lastNAV != null && lastCumPct != null
+                    ? `Indexed to $1.00 at start · ending ${fmtNAV(lastNAV)} = ${fmtCum(lastCumPct)} total return`
+                    : "Portfolio value scaled to current holdings"
               : lastSharpe != null
                 ? `Trailing 63 trading days — last value (${lastSharpe.toFixed(2)}) matches the metric card above`
                 : "Annualised Sharpe over the trailing 63 trading days (~1 quarter)";
@@ -581,7 +755,9 @@ export function PerformanceClient() {
               chartView === "cumulative"
                 ? `Portfolio vs ${benchLabel} — Cumulative Return`
                 : chartView === "value"
-                  ? `Portfolio vs ${benchLabel} — Growth of $1`
+                  ? isActual
+                    ? `Portfolio vs ${benchLabel} — Actual Value ($)`
+                    : `Portfolio vs ${benchLabel} — Growth of $1`
                   : "Rolling 63-Day Sharpe Ratio"
             }
             subtitle={chartSubtitle}
@@ -604,11 +780,38 @@ export function PerformanceClient() {
                   <YAxis tickFormatter={(v) => fmtDollars(v as number)} tick={bbAxisTick} axisLine={false} tickLine={false} width={52} />
                   <Tooltip
                     contentStyle={bbTooltipStyle}
-                    formatter={(v) => [`$${(v as number).toLocaleString("en-US", { maximumFractionDigits: 0 })}`]}
+                    formatter={(v, name) => [
+                      `$${(v as number).toLocaleString("en-US", { maximumFractionDigits: 0 })}`,
+                      name,
+                    ]}
                   />
                   <Legend wrapperStyle={{ fontSize: 12, color: "var(--text-secondary)" }} />
-                  <Line type="monotone" dataKey="portfolio" stroke="var(--chart-1)" strokeWidth={2} dot={false} name="Portfolio" />
-                  <Line type="monotone" dataKey="benchmark" stroke="#6b7280" strokeWidth={1.5} strokeDasharray="4 2" dot={false} name={benchLabel} />
+                  <Line
+                    type="monotone"
+                    dataKey="portfolio"
+                    stroke="var(--chart-1)"
+                    strokeWidth={2}
+                    name="Portfolio"
+                    dot={(props: { cx?: number; cy?: number; payload?: { flow?: number } }) => {
+                      const { cx, cy, payload } = props;
+                      if (cx == null || cy == null || !payload?.flow) {
+                        return <g key={`${cx}-${cy}`} />;
+                      }
+                      const inflow = payload.flow > 0;
+                      return (
+                        <circle
+                          key={`${cx}-${cy}`}
+                          cx={cx}
+                          cy={cy}
+                          r={3.5}
+                          fill={inflow ? "var(--color-positive)" : "var(--color-negative)"}
+                          stroke="var(--bg-surface)"
+                          strokeWidth={1}
+                        />
+                      );
+                    }}
+                  />
+                  <Line type="monotone" dataKey="benchmark" stroke="#6b7280" strokeWidth={1.5} strokeDasharray="4 2" dot={false} name={`${benchLabel} (dollar-matched)`} />
                 </LineChart>
               ) : (() => {
                   // Last date that has a valid sharpe value — used to mark the endpoint

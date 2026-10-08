@@ -45,6 +45,8 @@
     "job:institutional-seed": "tsx scripts/institutional-seed-funds.ts",
     "job:institutional": "tsx scripts/institutional-quarterly.ts",
     "job:institutional-validate": "tsx scripts/institutional-fmp-validate.ts",
+    "job:snaptrade-probe": "tsx scripts/snaptrade-activities-probe.ts",
+    "job:snaptrade-activities": "tsx scripts/snaptrade-activities-backfill.ts",
     "job:pairs-probe": "tsx scripts/pairs-probe.ts",
     "job:pairs-backfill": "tsx scripts/pairs-backfill.ts",
     "job:pairs-validation": "tsx scripts/pairs-validation-recompute.ts"
@@ -62,6 +64,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "recharts": "^3.8.1",
+    "snaptrade-typescript-sdk": "^12.2.9",
     "xlsx": "^0.18.5",
     "zod": "^3.24.2",
     "zustand": "^5.0.12"

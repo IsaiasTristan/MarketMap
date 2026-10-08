@@ -8,6 +8,15 @@ import { fetchYahooChartDaily } from "@/infrastructure/providers/yahoo-chart-htt
 import { dailyReturnsFromAdjustedCloses } from "@/domain/calculations/returns";
 import { annualizedRealizedVolatility, annualizedReturnFromDailyWindow } from "@/domain/calculations/volatility";
 import {
+  replayHoldingsBackward,
+  buildDailyNav,
+  openingPositionValue,
+  flowAdjustedDailyReturns,
+  flowMatchedBenchmarkDollars,
+  type ReplayActivity,
+  type ActivityTypeCode,
+} from "@/lib/portfolio/holdings-replay";
+import {
   sortinoRatio,
   maxDrawdown,
   drawdownSeries,
@@ -67,6 +76,30 @@ export interface PerformanceMetrics {
   periodEnd: string;
   benchmarkCode: string;
   riskFreeRate: number;
+  // Reconstruction basis: ACTUAL = real transaction-based holdings history,
+  // BACKTEST = hypothetical constant-mix replay of today's composition.
+  basis: PerformanceBasis;
+}
+
+export type PerformanceBasis = "ACTUAL" | "BACKTEST";
+
+/** Data-quality flags surfaced on the actual-history reconstruction. */
+export interface PerformanceDataQuality {
+  earliestActivityDate: string | null;
+  openingPositionValue: number;
+  unknownActivityTypes: string[];
+  unvaluedInstruments: string[];
+  missingRawCloseDays: number;
+}
+
+/** Dollar headline figures for the actual-history view. */
+export interface PerformanceDollarSummary {
+  currentValue: number;
+  openingValue: number;
+  totalPnlDollars: number;
+  netContributions: number;
+  benchmarkValue: number;
+  benchmarkPnlDollars: number;
 }
 
 export interface PerformanceSeries {
@@ -81,6 +114,14 @@ export interface PerformanceSeries {
   rollingCorr63d: number[];
   monthlyCalendar: Record<string, number>;
   returnHistogram: HistogramBin[];
+  // Reconstruction basis + (ACTUAL only) real-dollar arrays and headline.
+  basis: PerformanceBasis;
+  navDollars?: number[];
+  externalFlows?: number[];
+  benchmarkDollars?: number[];
+  flowDates?: string[];
+  summary?: PerformanceDollarSummary;
+  dataQuality?: PerformanceDataQuality;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -104,7 +145,7 @@ async function fetchYahooPriceMap(
   }
 }
 
-async function getPortfolioReturnSeries(
+async function getConstantMixReturnSeries(
   portfolioId: string,
 ): Promise<{ dates: string[]; navSeries: number[] }> {
   const positions = await db.portfolioPosition.findMany({
@@ -227,6 +268,175 @@ async function getPortfolioReturnSeries(
   return { dates: commonDates, navSeries };
 }
 
+// ── Actual-history reconstruction (brokerage-linked portfolios) ─────────────
+
+/**
+ * Unified portfolio history. For a brokerage-linked portfolio with a
+ * transaction ledger this is the ACTUAL day-by-day reconstruction (real dollar
+ * NAV + flow-adjusted time-weighted returns). Otherwise it falls back to the
+ * hypothetical constant-mix BACKTEST used for manually-built portfolios.
+ *
+ * `navSeries` is an index (starts at 1) whose simple daily ratios equal the
+ * portfolio's daily returns, so every existing metric — which calls
+ * `dailyReturnsFromAdjustedCloses(navSeries)` — keeps working unchanged. For
+ * ACTUAL that index is built from the flow-adjusted returns; for BACKTEST it is
+ * the constant-mix NAV as before.
+ */
+interface PortfolioHistory {
+  basis: PerformanceBasis;
+  dates: string[];
+  navSeries: number[];
+  navDollars?: number[];
+  externalFlows?: number[];
+  openingValue?: number;
+  netContributions?: number;
+  totalPnlDollars?: number;
+  dataQuality?: PerformanceDataQuality;
+}
+
+async function getPortfolioHistory(portfolioId: string): Promise<PortfolioHistory> {
+  const link = await db.brokerageAccountLink.findUnique({
+    where: { portfolioId },
+    select: { id: true, activityCount: true, earliestActivityDate: true, activityIssuesJson: true },
+  });
+
+  if (link && link.activityCount > 0) {
+    const actual = await reconstructActualHistory(portfolioId, link.id, link.activityIssuesJson);
+    if (actual) return actual;
+    // fall through to backtest if reconstruction couldn't produce a series
+  }
+
+  const { dates, navSeries } = await getConstantMixReturnSeries(portfolioId);
+  return { basis: "BACKTEST", dates, navSeries };
+}
+
+/** Build the real-dollar, flow-adjusted history from the activity ledger. */
+async function reconstructActualHistory(
+  portfolioId: string,
+  accountLinkId: string,
+  activityIssuesJson: unknown,
+): Promise<PortfolioHistory | null> {
+  // Current (signed) holdings + cash — the reconstruction anchor.
+  const positions = await db.portfolioPosition.findMany({
+    where: { portfolioId },
+    include: { security: true },
+  });
+  const currentShares: Record<string, number> = {};
+  let currentCash = 0;
+  for (const p of positions) {
+    if (p.isCash) {
+      currentCash += p.cashAmount != null ? Number(p.cashAmount) : 0;
+      continue;
+    }
+    if (!p.security) continue;
+    const signed = (p.isShort ? -1 : 1) * Number(p.shares);
+    currentShares[p.security.ticker.toUpperCase()] =
+      (currentShares[p.security.ticker.toUpperCase()] ?? 0) + signed;
+  }
+
+  const rows = await db.brokerageActivity.findMany({
+    where: { accountLinkId },
+    orderBy: { tradeDate: "asc" },
+    select: {
+      activityType: true,
+      ticker: true,
+      units: true,
+      amount: true,
+      isOption: true,
+      tradeDate: true,
+    },
+  });
+  if (rows.length === 0) return null;
+
+  const activities: ReplayActivity[] = rows.map((r) => ({
+    date: r.tradeDate.toISOString().slice(0, 10),
+    activityType: r.activityType as ActivityTypeCode,
+    ticker: r.ticker,
+    units: r.units != null ? Number(r.units) : null,
+    amount: r.amount != null ? Number(r.amount) : null,
+    isOption: r.isOption,
+  }));
+
+  const replay = replayHoldingsBackward(currentShares, currentCash, activities);
+  const earliest = activities[0]!.date;
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Prices (unadjusted close, adjClose fallback) for every ledger ticker.
+  const secIdByTicker = new Map<string, string>();
+  const secs = await db.security.findMany({
+    where: { ticker: { in: replay.tickers } },
+    select: { id: true, ticker: true },
+  });
+  for (const s of secs) secIdByTicker.set(s.ticker.toUpperCase(), s.id);
+
+  const priceRows = await db.priceHistory.findMany({
+    where: {
+      securityId: { in: [...secIdByTicker.values()] },
+      tradeDate: { gte: new Date(`${earliest}T00:00:00Z`), lte: new Date(`${today}T23:59:59Z`) },
+    },
+    select: { securityId: true, tradeDate: true, close: true, adjClose: true },
+    orderBy: { tradeDate: "asc" },
+  });
+
+  const idByTicker = new Map([...secIdByTicker.entries()].map(([t, id]) => [id, t]));
+  const closeByTickerDate = new Map<string, Map<string, number>>();
+  const tradingDateSet = new Set<string>();
+  let missingRawCloseDays = 0;
+  for (const r of priceRows) {
+    const ticker = idByTicker.get(r.securityId);
+    if (!ticker) continue;
+    const d = r.tradeDate.toISOString().slice(0, 10);
+    tradingDateSet.add(d);
+    let raw = r.close != null ? Number(r.close) : null;
+    if (raw == null) {
+      raw = Number(r.adjClose);
+      missingRawCloseDays++;
+    }
+    if (!closeByTickerDate.has(ticker)) closeByTickerDate.set(ticker, new Map());
+    closeByTickerDate.get(ticker)!.set(d, raw);
+  }
+
+  const tradingDates = [...tradingDateSet].filter((d) => d >= earliest && d <= today).sort();
+  if (tradingDates.length < 2) return null;
+
+  const priceOf = (ticker: string, date: string): number | null =>
+    closeByTickerDate.get(ticker.toUpperCase())?.get(date) ?? null;
+
+  const { navByDate, flowByDate } = buildDailyNav(replay, tradingDates, priceOf);
+
+  const dailyReturns = flowAdjustedDailyReturns(navByDate, flowByDate);
+  const navIndex: number[] = [1];
+  for (const r of dailyReturns) navIndex.push(navIndex[navIndex.length - 1] * (1 + r));
+
+  const netContributions = flowByDate.reduce((s, f) => s + f, 0);
+  const currentValue = navByDate[navByDate.length - 1] ?? 0;
+  const openingValue = openingPositionValue(replay, tradingDates[0], priceOf);
+  const totalPnlDollars = currentValue - netContributions;
+
+  const issues = (activityIssuesJson ?? {}) as {
+    unknownTypes?: string[];
+    unvaluedInstruments?: string[];
+  };
+
+  return {
+    basis: "ACTUAL",
+    dates: tradingDates,
+    navSeries: navIndex,
+    navDollars: navByDate,
+    externalFlows: flowByDate,
+    openingValue,
+    netContributions,
+    totalPnlDollars,
+    dataQuality: {
+      earliestActivityDate: earliest,
+      openingPositionValue: openingValue,
+      unknownActivityTypes: issues.unknownTypes ?? [],
+      unvaluedInstruments: issues.unvaluedInstruments ?? [],
+      missingRawCloseDays,
+    },
+  };
+}
+
 // Maps benchmark codes to Yahoo tickers (all in KNOWN_BARE_INDEX_CODES so
 // toYahooSymbol will prefix them with `^` automatically).
 const BENCHMARK_TICKER: Record<string, string> = {
@@ -235,43 +445,36 @@ const BENCHMARK_TICKER: Record<string, string> = {
   DOW: "DJI",
 };
 
+/** Benchmark adjusted-close price map over [start, end] (DB, Yahoo fallback). */
+async function getBenchmarkPriceMap(
+  benchmarkCode: "SP500" | "NASDAQ" | "DOW",
+  startIso: string,
+  endIso: string,
+): Promise<Map<string, number>> {
+  const bench = await db.benchmark.findUnique({
+    where: { code: benchmarkCode },
+    include: {
+      priceHistory: {
+        where: { tradeDate: { gte: new Date(startIso), lte: new Date(endIso) } },
+        orderBy: { tradeDate: "asc" },
+      },
+    },
+  });
+  if (bench?.priceHistory?.length) {
+    return new Map(
+      bench.priceHistory.map((r) => [r.tradeDate.toISOString().slice(0, 10), Number(r.adjClose)]),
+    );
+  }
+  const ticker = BENCHMARK_TICKER[benchmarkCode] ?? "GSPC";
+  return fetchYahooPriceMap(ticker, startIso, endIso);
+}
+
 async function getBenchmarkReturnSeries(
   benchmarkCode: "SP500" | "NASDAQ" | "DOW",
   dates: string[],
 ): Promise<number[]> {
   if (dates.length < 2) return [];
-
-  // ── 1. Try the stored Benchmark table ────────────────────────────────────
-  const bench = await db.benchmark.findUnique({
-    where: { code: benchmarkCode },
-    include: {
-      priceHistory: {
-        where: {
-          tradeDate: {
-            gte: new Date(dates[0]),
-            lte: new Date(dates[dates.length - 1]),
-          },
-        },
-        orderBy: { tradeDate: "asc" },
-      },
-    },
-  });
-
-  let benchPriceMap: Map<string, number>;
-
-  if (bench?.priceHistory?.length) {
-    benchPriceMap = new Map(
-      bench.priceHistory.map((r) => [
-        r.tradeDate.toISOString().slice(0, 10),
-        Number(r.adjClose),
-      ]),
-    );
-  } else {
-    // ── 2. Fallback: fetch directly from Yahoo ────────────────────────────
-    const ticker = BENCHMARK_TICKER[benchmarkCode] ?? "GSPC";
-    benchPriceMap = await fetchYahooPriceMap(ticker, dates[0], dates[dates.length - 1]);
-  }
-
+  const benchPriceMap = await getBenchmarkPriceMap(benchmarkCode, dates[0], dates[dates.length - 1]);
   const returns: number[] = [];
   for (let i = 1; i < dates.length; i++) {
     const prev = benchPriceMap.get(dates[i - 1]);
@@ -283,6 +486,16 @@ async function getBenchmarkReturnSeries(
     }
   }
   return returns;
+}
+
+/** Benchmark closes aligned 1:1 to `dates` (null when a date has no bar). */
+async function getBenchmarkCloseSeries(
+  benchmarkCode: "SP500" | "NASDAQ" | "DOW",
+  dates: string[],
+): Promise<(number | null)[]> {
+  if (dates.length === 0) return [];
+  const benchPriceMap = await getBenchmarkPriceMap(benchmarkCode, dates[0], dates[dates.length - 1]);
+  return dates.map((d) => benchPriceMap.get(d) ?? null);
 }
 
 async function getRiskFreeRate(): Promise<number> {
@@ -298,10 +511,11 @@ export async function computePerformanceMetrics(
   portfolioId: string,
   benchmarkCode: "SP500" | "NASDAQ" | "DOW" = "SP500",
 ): Promise<PerformanceMetrics | null> {
-  const [{ dates, navSeries }, rfRate] = await Promise.all([
-    getPortfolioReturnSeries(portfolioId),
+  const [history, rfRate] = await Promise.all([
+    getPortfolioHistory(portfolioId),
     getRiskFreeRate(),
   ]);
+  const { dates, navSeries, basis } = history;
 
   if (dates.length < 63) return null;
 
@@ -316,7 +530,7 @@ export async function computePerformanceMetrics(
   const annVol = annualizedRealizedVolatility(pRet) ?? 0;
   const sharpe = annVol > 0 ? (annRet - rfRate) / annVol : NaN;
 
-  const { alpha, beta, rSquared } = ols(pRet, bRet);
+  const { alpha, beta } = ols(pRet, bRet);
 
   return {
     annualizedReturn: annRet,
@@ -340,6 +554,7 @@ export async function computePerformanceMetrics(
     periodEnd: dates[n],
     benchmarkCode,
     riskFreeRate: rfRate,
+    basis,
   };
 }
 
@@ -347,10 +562,11 @@ export async function computePerformanceSeries(
   portfolioId: string,
   benchmarkCode: "SP500" | "NASDAQ" | "DOW" = "SP500",
 ): Promise<PerformanceSeries | null> {
-  const [{ dates, navSeries }, rfRate] = await Promise.all([
-    getPortfolioReturnSeries(portfolioId),
+  const [history, rfRate] = await Promise.all([
+    getPortfolioHistory(portfolioId),
     getRiskFreeRate(),
   ]);
+  const { dates, navSeries, basis } = history;
 
   if (dates.length < 10) return null;
 
@@ -372,7 +588,7 @@ export async function computePerformanceSeries(
   const rollingCorr = rollingCorrelation(pRet, bRet, 63);
   const dd = drawdownSeries(pRet);
 
-  return {
+  const base: PerformanceSeries = {
     dates: usedDates,
     portfolioReturns: pRet,
     benchmarkReturns: bRet,
@@ -384,5 +600,42 @@ export async function computePerformanceSeries(
     rollingCorr63d: rollingCorr,
     monthlyCalendar: calendar,
     returnHistogram: hist,
+    basis,
   };
+
+  // Real-dollar arrays + headline summary, actual-history only. Aligned to the
+  // same index the charts use: navDollars[i+1] pairs with usedDates[i], matching
+  // portfolioNAV.
+  if (basis === "ACTUAL" && history.navDollars && history.externalFlows) {
+    const navDollars = history.navDollars.slice(0, n + 1);
+    const externalFlows = history.externalFlows.slice(0, n + 1);
+    const benchCloses = await getBenchmarkCloseSeries(benchmarkCode, dates.slice(0, n + 1));
+    const benchmarkDollars = flowMatchedBenchmarkDollars(externalFlows, benchCloses);
+
+    const currentValue = navDollars[navDollars.length - 1] ?? 0;
+    const netContributions = history.netContributions ?? externalFlows.reduce((s, f) => s + f, 0);
+    const openingValue = history.openingValue ?? 0;
+    const totalPnlDollars = history.totalPnlDollars ?? currentValue - netContributions;
+    const benchmarkValue = benchmarkDollars[benchmarkDollars.length - 1] ?? 0;
+    const benchmarkPnlDollars = benchmarkValue - netContributions;
+
+    return {
+      ...base,
+      navDollars,
+      externalFlows,
+      benchmarkDollars,
+      flowDates: dates.slice(0, n + 1),
+      summary: {
+        currentValue,
+        openingValue,
+        totalPnlDollars,
+        netContributions,
+        benchmarkValue,
+        benchmarkPnlDollars,
+      },
+      dataQuality: history.dataQuality,
+    };
+  }
+
+  return base;
 }

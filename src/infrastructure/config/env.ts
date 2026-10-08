@@ -57,6 +57,34 @@ export function fmpCallsPerMinute(): number {
   return readNumber("FMP_CALLS_PER_MINUTE", fmpTier() === "premium" ? 700 : 2800);
 }
 
+// ─── SnapTrade (brokerage account linking) ─────────────────────────────────
+
+/**
+ * SnapTrade Personal Client ID (the `PERS-` key from the SnapTrade dashboard).
+ * Empty string when unset so callers can fail loudly rather than silently
+ * hitting the API unauthed.
+ */
+export function snaptradeClientId(): string {
+  return process.env.SNAPTRADE_CLIENT_ID?.trim() ?? "";
+}
+
+/**
+ * SnapTrade Consumer Key — signs every API request. Secret; empty string when
+ * unset. Never sent to the client.
+ */
+export function snaptradeConsumerKey(): string {
+  return process.env.SNAPTRADE_CONSUMER_KEY?.trim() ?? "";
+}
+
+/**
+ * True when SnapTrade credentials are configured. A personal key is bound to a
+ * single auto-provisioned user, so there is no per-user secret to encrypt —
+ * only the client id + consumer key are required.
+ */
+export function snaptradeConfigured(): boolean {
+  return snaptradeClientId().length > 0 && snaptradeConsumerKey().length > 0;
+}
+
 // ─── AEGIS OData (commodities forward curves) ──────────────────────────────
 
 /**

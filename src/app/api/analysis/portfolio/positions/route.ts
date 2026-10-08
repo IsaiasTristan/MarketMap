@@ -8,7 +8,12 @@ import {
   replacePositions,
   type PositionInput,
 } from "@/server/services/position.service";
-import { requirePortfolioAccess, requirePositionAccess } from "@/lib/api/guards";
+import {
+  requirePortfolioAccess,
+  requirePositionAccess,
+  requireUnmanagedPortfolio,
+  requireUnmanagedPositionPortfolio,
+} from "@/lib/api/guards";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -31,6 +36,8 @@ export async function POST(req: Request) {
     }
     const guard = await requirePortfolioAccess(req, portfolioId);
     if (guard) return guard;
+    const managedGuard = await requireUnmanagedPortfolio(portfolioId);
+    if (managedGuard) return managedGuard;
 
     if (isCash) {
       const amount = Number(cashAmount);
@@ -81,6 +88,8 @@ export async function DELETE(req: Request) {
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   const guard = await requirePositionAccess(req, id);
   if (guard) return guard;
+  const managedGuard = await requireUnmanagedPositionPortfolio(id);
+  if (managedGuard) return managedGuard;
   await deletePosition(id);
   return NextResponse.json({ ok: true });
 }
@@ -91,6 +100,8 @@ export async function PATCH(req: Request) {
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   const guard = await requirePositionAccess(req, id);
   if (guard) return guard;
+  const managedGuard = await requireUnmanagedPositionPortfolio(id);
+  if (managedGuard) return managedGuard;
   const body = await req.json().catch(() => ({}));
   const { shares, isShort, sector, cashAmount } = body;
   const input: Parameters<typeof updatePosition>[1] = {};
