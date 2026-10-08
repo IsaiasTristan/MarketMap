@@ -4,6 +4,10 @@ node_modules
 
 # Next
 .next
+# Disposable target for verification builds (NEXT_DIST_DIR), so a failed build
+# never clobbers the directory the live server is reading from
+.next-verify
+.next-old
 out
 
 # Env

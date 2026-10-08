@@ -2,6 +2,10 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  /** A `next build` overwrites the directory the live `next start` reads from, so a
+   *  failed build takes production down. Setting NEXT_DIST_DIR lets a verification
+   *  build land somewhere disposable and leave the serving directory intact. */
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   /** Keep recently-visited routes compiled in dev so switching among the ~7
    *  module tabs doesn't trigger a recompile every time (the prior 2-page /
    *  60s buffer evicted tabs faster than they were revisited). */
